@@ -141,7 +141,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Invalid duplicate policy
         with pytest.raises(ResponseError) as excinfo:
             client.execute_command("TS.CREATE", "ts_invalid_policy", "DUPLICATE_POLICY", "INVALID")
-        assert "invalid duplicate policy" in str(excinfo.value).lower()
+        assert "unknown duplicate_policy" in str(excinfo.value).lower()
 
         # Both DECIMAL_DIGITS and SIGNIFICANT_DIGITS (only one allowed)
         with pytest.raises(ResponseError) as excinfo:
@@ -179,3 +179,47 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
 
         # Verify count in database
         assert client.execute_command("DBSIZE") == 10
+
+    def test_create_label_named_or_valued_labels(self):
+        """The label list starts at the first LABELS keyword; a later `labels` is label data."""
+        self.client.execute_command("TS.CREATE", "lbl:value", "LABELS", "type", "labels")
+        assert self.ts_info("lbl:value")["labels"] == {"type": "labels"}
+
+        self.client.execute_command("TS.CREATE", "lbl:name", "LABELS", "labels", "x")
+        assert self.ts_info("lbl:name")["labels"] == {"labels": "x"}
+
+    def test_option_operand_named_labels_is_not_the_keyword(self):
+        """An option's operand spelled `labels` is that option's value, not the LABELS
+        keyword: `METRIC labels` used to split there and leave METRIC with no operand."""
+        self.client.execute_command("TS.CREATE", "op:metric", "METRIC", "labels")
+        assert self.ts_info("op:metric")["labels"] == {"__name__": "labels"}
+
+        self.client.execute_command(
+            "TS.CREATE", "op:metric_then_opts", "METRIC", "LABELS", "RETENTION", 1000)
+        info = self.ts_info("op:metric_then_opts")
+        assert info["labels"] == {"__name__": "LABELS"}
+        assert info["retentionTime"] == 1000
+
+        # A real LABELS list after such an operand still conflicts with METRIC.
+        with pytest.raises(ResponseError):
+            self.client.execute_command(
+                "TS.CREATE", "op:both", "METRIC", "labels", "LABELS", "a", "b")
+        assert self.client.exists("op:both") == 0
+
+    def test_add_key_named_labels_is_not_a_label_list(self):
+        """`TS.ADD labels <ts> <v>` names a key; it must not start a label list."""
+        self.client.execute_command("TS.ADD", "labels", 1, 2)
+        assert self.ts_info("labels")["labels"] == {}
+
+    def test_retention_nan_rejected(self):
+        """`f64::parse` accepts `nan`, which slipped past every range check as a 0 duration."""
+        for value in ("nan", "NaNms", "inf"):
+            with pytest.raises(ResponseError):
+                self.client.execute_command("TS.CREATE", f"nanret:{value}", "RETENTION", value)
+
+    def test_create_metric_given_twice_rejected(self):
+        """A second METRIC used to replace the first silently; it is rejected like a second
+        rounding option."""
+        with pytest.raises(ResponseError):
+            self.client.execute_command("TS.CREATE", "metric:twice", "METRIC", "a", "METRIC", "b")
+        assert self.client.exists("metric:twice") == 0

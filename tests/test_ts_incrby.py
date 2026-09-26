@@ -162,19 +162,19 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         # Test with a missing key
         self.verify_error_response(
             self.client, 'TS.INCRBY',
-            "wrong number of arguments for 'TS.INCRBY' command"
+            "wrong number of arguments for 'ts.incrby' command"
         )
 
         # Test with invalid increment
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err xyz',
-            "TSDB: invalid value"
+            "TSDB: invalid increase/decrease value"
         )
 
         # Test with invalid timestamp
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err 5 TIMESTAMP invalid',
-            "TSDB: invalid timestamp."
+            "TSDB: invalid timestamp"
         )
 
         # Test with invalid option (ON_DUPLICATE is not a valid option)
@@ -209,7 +209,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         """TS.INCRBY should reject NaN as the increment value"""
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_nan_delta nan',
-            "TSDB: cannot increment/decrement a NaN value"
+            "TSDB: invalid increase/decrease value"
         )
 
     def test_incrby_rejects_when_last_sample_is_nan(self):
@@ -219,9 +219,43 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_nan_sample 1',
-            "TSDB: cannot increment/decrement a NaN value"
+            "TSDB: cannot increment/decrement NaN value"
         )
 
         sample = self.client.execute_command('TS.GET', 'ts_nan_sample')
         assert sample[0] == 1000
         assert sample[1].lower() == b'nan'
+
+    def test_incrby_key_named_timestamp(self):
+        """A key named `timestamp` is a key, not the TIMESTAMP option. Scanning the whole
+        argument vector for the option used to strip the key and delta and then index past
+        the end — a panic that aborted the server."""
+        assert self.client.execute_command("TS.INCRBY", "timestamp", 5, "TIMESTAMP", 1000) == 1000
+        assert self.client.ping()
+        assert self.client.execute_command("TS.INCRBY", "timestamp", 2, "TIMESTAMP", 2000) == 2000
+        assert float(self.client.execute_command("TS.GET", "timestamp")[1]) == 7.0
+
+        # With no options at all: the shape that used to take the server down.
+        self.client.execute_command("TS.INCRBY", "timestamp", 1)
+        assert float(self.client.execute_command("TS.GET", "timestamp")[1]) == 8.0
+
+    def test_incrby_timestamp_inside_labels_is_a_label(self):
+        """LABELS runs to the end of the command: a `timestamp` pair after it is a label."""
+        self.client.execute_command("TS.INCRBY", "incr:lbl", 5, "LABELS", "timestamp", "7")
+        assert self.ts_info("incr:lbl")["labels"] == {"timestamp": "7"}
+        assert self.client.execute_command("TS.GET", "incr:lbl")[0] != 7
+
+        assert self.client.execute_command(
+            "TS.INCRBY", "incr:lbl2", 5, "TIMESTAMP", 10, "LABELS", "a", "b") == 10
+        assert self.ts_info("incr:lbl2")["labels"] == {"a": "b"}
+
+    def test_incrby_option_operand_named_like_a_keyword(self):
+        """Operands are skipped when looking for TIMESTAMP and LABELS: `METRIC labels`
+        does not end the option list, and `METRIC timestamp` is not the TIMESTAMP option."""
+        assert self.client.execute_command(
+            "TS.INCRBY", "incr:op", 5, "METRIC", "labels", "TIMESTAMP", 10) == 10
+        assert self.ts_info("incr:op")["labels"] == {"__name__": "labels"}
+
+        assert self.client.execute_command(
+            "TS.INCRBY", "incr:op2", 5, "METRIC", "timestamp", "TIMESTAMP", 20) == 20
+        assert self.ts_info("incr:op2")["labels"] == {"__name__": "timestamp"}

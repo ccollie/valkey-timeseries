@@ -100,6 +100,42 @@ Detects shifts in the mean by accumulating deviations from the target. No additi
 
 ---
 
+#### ESD
+
+Generalized Extreme Studentized Deviate test (Rosner, 1983).
+
+```
+METHOD ESD [ALPHA alpha] [MAX_OUTLIERS max] [HYBRID | CLASSIC]
+```
+
+**Options:**
+
+* `ALPHA` - Significance level for the test, in the range `(0, 1)`. Default: `0.05`. Lower values are more conservative
+  and report fewer outliers.
+* `MAX_OUTLIERS` - Upper bound on how many outliers to search for. Must be less than half the number of samples in the
+  range. Default: `n/2`.
+* `HYBRID` - Studentize against the median and a normal-consistent MAD. **Default.** Robust: the reference point barely
+  moves as outliers are removed.
+* `CLASSIC` - Studentize against the mean and sample standard deviation, as in Rosner's original procedure. Both are
+  themselves pulled by the outliers under test.
+
+Unlike the fence-based methods, ESD does not take a threshold. It works down from the most extreme observation,
+re-testing after each removal, and compares each test statistic against a critical value derived from `ALPHA` and the
+remaining sample size. The number of outliers is therefore an output of the test rather than a consequence of a
+threshold you picked — which makes ESD the method to reach for when you do not know how deviant "too deviant" is.
+
+`HYBRID` is preferred for most series. `CLASSIC` is available for reproducing published Rosner results and for data
+already known to be clean apart from the outliers being sought; on a series where the outliers are large, the mean and
+standard deviation are inflated by those same outliers and the test loses power against them (the masking effect).
+
+When more than half the samples in the range share a single value, the MAD is zero. `HYBRID` then uses the mean
+absolute deviation from the median, scaled by `1.253314`, as its scale, so a lone spike on a flat series is still
+reported. A perfectly constant series has nothing to report.
+
+ESD reports no `method_info` in `FULL` output — it fits no fences or control limits.
+
+---
+
 #### EWMA
 
 Exponentially Weighted Moving Average.
@@ -156,7 +192,9 @@ METHOD MODIFIED-ZSCORE [THRESHOLD threshold]
 
 * `THRESHOLD` - Modified Z-score threshold. Default: `3.5`. More robust to outliers than standard Z-score.
 
-Uses `0.6745 × (value - median) / MAD` for scoring.
+Uses `0.6745 × (value - median) / MAD` for scoring. When more than half the samples equal the median (so the MAD is
+`0`, as in a flat series with a single spike), the mean absolute deviation, scaled by `1.253314`, is used in place of
+`MAD / 0.6745`. A perfectly constant series has nothing to flag.
 
 ---
 
@@ -223,17 +261,19 @@ METHOD RCF [NUM_TREES trees]
 
 **Options:**
 
-* `NUM_TREES` - Number of trees in forest. Default: `100`
-* `SAMPLE_SIZE` - Sample size per tree. Default: `256`
+* `NUM_TREES` - Number of trees in forest. Default: `100`. Must be an integer from `1` to `512`.
+* `SAMPLE_SIZE` - Sample size per tree. Default: `256`. Must be an integer from `2` to `4096`.
 * `THRESHOLD` - Anomaly score threshold in standard deviations. Default: `3.0`
 * `CONTAMINATION` - The amount of contamination in the data set, i.e., the proportion of outliers in the data set.
-* `SHINGLE_SIZE` - Sliding window size. Default: `1`. Use values > 1 for contextual anomalies.
+* `SHINGLE_SIZE` - Sliding window size. Default: `1`. Must be an integer from `1` to `128` and no larger than the number of samples in the query range. Use values > 1 for contextual anomalies.
 * `OUTPUT_AFTER` - Warmup period (samples). Default: `32`
 * `DECAY` - Time decay factor (0-1). Default: `0.1`. Controls how quickly old data is forgotten.
 
 Either `THRESHOLD` or `CONTAMINATION` must be specified to determine the cutoff for anomaly scores. `THRESHOLD` sets a
 fixed score
 threshold, while `CONTAMINATION` determines the threshold based on the expected proportion of anomalies in the data.
+
+The forest is built with a fixed random seed, so the same query over the same data always returns the same scores.
 
 </details>
 
@@ -248,7 +288,8 @@ Returns anomaly information based on the `OUTPUT` format:
 * `timestamp` - Sample timestamp (integer)
 * `value` - Sample value (float)
 * `signal` - Anomaly direction: `1` (positive) or `-1` (negative)
-* `score` - Anomaly score (0.0-1.0, higher = stronger anomaly)
+* `score` - Anomaly score (0.0-1.0, higher = stronger anomaly). A sample scores exactly `0.5` at the method's detection
+  boundary, so every score reported here is above `0.5`. See [Anomaly scores](#anomaly-scores).
 
 #### FULL format
 
@@ -259,17 +300,49 @@ Returns anomaly information based on the `OUTPUT` format:
 * `samples` - Array of sample tuples: `[[timestamp, value, score, signal], ...]`
     * `timestamp` - Sample timestamp (integer)
     * `value` - Original sample value (double)
-    * `score` - Calculated anomaly score (0.0-1.0)
+    * `score` - Calculated anomaly score (0.0-1.0). `score > 0.5` for the samples the method flagged, `score <= 0.5` for
+      the rest. See [Anomaly scores](#anomaly-scores).
     * `signal` - Deviation direction (`-1`, `0`, `1`)
 * `parameters` - A map of the parameters used for the detection method.
 * `seasonality` - (optional) A map describing the seasonality parameters used.
 * `method_info` - Algorithm-specific metadata (map, if available):
-    * For IQR: `lower_fence`, `upper_fence`
+    * For the fence-based methods (ZSCORE, MODIFIED-ZSCORE, MAD, DOUBLE-MAD, IQR): `lower_fence`, `upper_fence`, and
+      `center_line` where the method defines one
     * For SPC methods (CUSUM, EWMA): `control_limits`, `center_line`
+    * Omitted for ESD, RCF, and SMOOTHED-ZSCORE, which fit no fences or control limits
 
 #### CLEANED format
 
 **Array reply:** Cleaned samples only, as `[[timestamp, value], ...]`
+
+## Anomaly scores
+
+Every method reports `score` on one scale, whatever `METHOD` and `THRESHOLD` were requested:
+
+> **A sample scores exactly `0.5` at the method's detection boundary.**
+> `score > 0.5` means the sample was flagged; `score <= 0.5` means it was not.
+
+The boundary belongs to the not-flagged side: a sample sitting *exactly* on the fence scores `0.5` and is not reported
+as an anomaly.
+
+This makes `score > 0.5` a valid anomaly test without knowing which method produced the number or what threshold it was
+given, and makes scores comparable across methods. `0.0` and `1.0` are asymptotic — a score approaches `1.0` as evidence
+grows, but only degenerate or non-finite input reaches it exactly:
+
+* An infinite sample value is maximally anomalous: score `1.0`, and flagged.
+* A `NaN` sample scores `0.0` and is never flagged — a missing reading is not evidence of an anomaly.
+* When a method's fitted scale collapses to zero (a robust estimator on a series that is more than half constant), the
+  outcome depends on the method: `MAD`, `DOUBLE-MAD`, and `IQR` treat the collapsed fence as zero-width, so any deviation
+  at all scores `1.0` and is flagged; `ZSCORE`, `MODIFIED-ZSCORE`, `CUSUM`, and `EWMA` treat a collapsed scale as having
+  no boundary to test against, so every sample scores `0.0` and stays unflagged.
+
+The `THRESHOLD` echoed back in `parameters` stays on the **method's own** scale — standard deviations for `ZSCORE`, `k`
+for `MAD`, the decision interval for `CUSUM`, a fraction for `CONTAMINATION`. It is not on the score scale, and under
+this contract it is not needed as one: the score-scale boundary is always `0.5`.
+
+**With `SEASONALITY`**, detection runs on the seasonally adjusted residuals. Only the reported `value` is restored to the
+original observation — `score` stays in the adjusted domain, because it describes the residual, which is what was
+actually tested. Scores are comparable across methods only when computed over the same domain.
 
 ## Complexity
 
@@ -383,6 +456,51 @@ Extract normal operating data with anomalies removed:
 </details>
 
 <details open>
+<summary><b>Detect an unknown number of outliers with ESD</b></summary>
+
+Find latency spikes without choosing a threshold — the test decides how many outliers there are:
+
+```valkey-cli
+127.0.0.1:6379> TS.OUTLIERS latency:p99 - + METHOD ESD
+1) 1) (integer) 1609603200000
+   2) "812.4"
+   3) (integer) 1
+   4) "0.9936787608707793"
+2) 1) (integer) 1609606800000
+   2) "655.1"
+   3) (integer) 1
+   4) "0.9919286813470485"
+```
+
+Tighten the significance level and cap the search to report only the most extreme few:
+
+```valkey-cli
+127.0.0.1:6379> TS.OUTLIERS latency:p99 - + METHOD ESD ALPHA 0.01 MAX_OUTLIERS 5 OUTPUT FULL
+1) "method"
+2) "esd"
+3) "direction"
+4) "both"
+5) "samples"
+6)  1) 1) (integer) 1609459200000
+       2) "98"
+       3) "0.28670901283740885"
+       4) (integer) 0
+    ...
+7) "parameters"
+8) 1) "alpha"
+   2) "0.01"
+   3) "hybrid"
+   4) (integer) 1
+   5) "max_outliers"
+   6) (integer) 5
+```
+
+Note the absence of a `method_info` key, and that `parameters` reports `hybrid` as a flag rather than echoing an
+estimator name.
+
+</details>
+
+<details open>
 <summary><b>Random Cut Forest for contextual anomalies</b></summary>
 
 Detect pattern-based anomalies using a sliding window:
@@ -400,7 +518,7 @@ Detect pattern-based anomalies using a sliding window:
 ## Notes
 
 * **Minimum data requirements:**
-    * At least 3 data points required for analysis
+    * At least 3 data points required for analysis (not counting NaN or infinite values)
     * For `SEASONALITY`: requires at least `2 × max(period)` samples
 * **Seasonality constraints:**
     * Maximum 4 periods allowed
@@ -409,12 +527,19 @@ Detect pattern-based anomalies using a sliding window:
 * **Score normalization:**
     * All anomaly scores normalized to [0.0, 1.0] range
     * Higher scores indicate stronger anomalies
+    * `0.5` is the detection boundary for every method — see [Anomaly scores](#anomaly-scores)
+    * With `SEASONALITY`, scores describe the seasonally adjusted residual, not the original value
+* **NaN and infinite values:**
+    * Left out of the analysis: they are neither scored nor flagged, and do not affect how the other samples are
+      scored. In `FULL` output they appear with a `nan` score and a `0` signal.
 * **Timestamp preservation:**
     * Output timestamps match original series timestamps
 * **Performance tips:**
     * Use `DIRECTION` to filter results when only interested in one type of anomaly
     * Single seasonality periods are faster than multiple
     * RCF is more computationally expensive but better for complex patterns
+    * ESD re-tests the sample after each removal, so its cost scales with `MAX_OUTLIERS`; lower that bound if you only
+      care about the few most extreme samples
 
 ## See also
 

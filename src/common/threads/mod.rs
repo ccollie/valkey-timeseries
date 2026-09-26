@@ -1,12 +1,9 @@
-mod batch_worker;
+mod executor;
+
+pub use executor::{BoundedExecutor, ExecutorBusy};
 
 use crate::common::context::{get_current_db, set_current_db};
 use crate::is_main_thread;
-#[allow(unused_imports)]
-pub(crate) use batch_worker::{
-    BatchRequest, BatchWorker, global_valkey_task_worker, submit_task_no_wait,
-    submit_task_with_payload,
-};
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
 use valkey_module::logging::log_notice;
@@ -29,13 +26,42 @@ pub fn init_thread_pool() {
 
 /// Spawn a job which runs asynchronously.
 /// The job must be `'static` and thus cannot borrow local variables.
+///
+/// The job runs on a pool worker, so it must not take the module lock: see
+/// [`spawn_background`].
 pub fn spawn<F: FnOnce() + Send + 'static>(job: F) {
     rayon_core::spawn(job)
 }
 
-/// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).
+/// Spawn a job on its own thread, off the rayon pool.
+///
+/// For jobs that take `MODULE_CONTEXT` (the module GIL). A pool worker that
+/// holds the GIL and then waits on the pool — a `scope`, a `join`, a
+/// `par_*` fan-out — waits by stealing whatever job is pending. If that job
+/// takes the GIL too (a fan-out request, the trim cron, an index sweep), the
+/// worker blocks on a lock it already holds; and once every worker is parked
+/// on the GIL, a main-thread command that waits on the pool while holding it
+/// (TS.JOIN) never gets a worker back. Either way the server freezes. A
+/// detached thread waits on the pool without stealing, so a GIL holder here
+/// can never pick up such a job.
+///
+/// One thread per call, so only for jobs with a bounded number of callers (one-shot
+/// work, or a periodic task guarded against overlapping runs). Per-request work goes
+/// to a [`BoundedExecutor`] instead.
+pub fn spawn_background<F: FnOnce() + Send + 'static>(name: &str, job: F) {
+    if let Err(err) = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(job)
+    {
+        log_notice(format!("failed to spawn background thread {name}: {err}"));
+    }
+}
+
+/// Spawn a job that runs holding the valkey GIL (module lock).
+///
+/// On its own thread, not the pool: see [`spawn_background`].
 pub fn spawn_with_context<F: FnOnce(&Context) + Send + 'static>(job: F) {
-    spawn(move || {
+    spawn_background("ts-with-context", move || {
         let ctx = MODULE_CONTEXT.lock();
         job(&ctx);
     });

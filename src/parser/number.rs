@@ -78,7 +78,11 @@ pub fn parse_positive_number(str: &str) -> ParseResult<f64> {
 
 pub fn parse_number(str: &str) -> ParseResult<f64> {
     let mut str = str;
-    let ch = str.chars().next().unwrap();
+    // Guard the leading-character read the same way `parse_positive_number` does: an
+    // empty operand reaches here from user input (e.g. `TS.CREATE k IGNORE 5 ""`).
+    let Some(ch) = str.chars().next() else {
+        return Err(InvalidNumber(str.to_string()));
+    };
     let mut is_negative = false;
 
     if ch == '+' {
@@ -98,8 +102,9 @@ pub fn parse_number(str: &str) -> ParseResult<f64> {
 type SuffixValue = (&'static str, usize);
 
 fn get_suffix_value(s: &str) -> Option<SuffixValue> {
-    hashify::tiny_map_ignore_case! {
+    hashify::map_ignore_case!(
         s.as_bytes(),
+        SuffixValue,
         "kib" => ("kib", 1024),
         "ki" => ("ki", 1024),
         "kb" => ("kb", 1000),
@@ -116,7 +121,8 @@ fn get_suffix_value(s: &str) -> Option<SuffixValue> {
         "ti" => ("ti", 1024 * 1024 * 1024 * 1024),
         "tb" => ("tb", 1000 * 1000 * 1000 * 1000),
         "t" => ("t", 1000 * 1000 * 1000 * 1000)
-    }
+    )
+    .copied()
 }
 
 // Note: must match above
@@ -133,7 +139,7 @@ pub fn get_number_suffix(s: &str) -> Option<SuffixValue> {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::number::parse_positive_number;
+    use crate::parser::number::{parse_number, parse_positive_number};
 
     fn expect_failure(s: &str) {
         match parse_positive_number(s) {
@@ -244,5 +250,18 @@ mod tests {
         f("12.34E+abc");
         f("12.34e-");
         f("12.weKB")
+    }
+
+    #[test]
+    fn test_parse_number_empty_is_error_not_panic() {
+        // An empty operand reaches `parse_number` from user input (IGNORE operands,
+        // `CONFIG SET ts.ts-ignore-max-val-diff ""`); it must not panic.
+        assert!(parse_number("").is_err());
+        // A bare sign leaves an empty remainder after the sign is stripped.
+        assert!(parse_number("-").is_err());
+        assert!(parse_number("+").is_err());
+        // Signed parsing still works.
+        assert_eq!(parse_number("-12").unwrap(), -12.0);
+        assert_eq!(parse_number("+12").unwrap(), 12.0);
     }
 }

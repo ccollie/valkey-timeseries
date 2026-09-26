@@ -7,12 +7,16 @@ from common import parse_stats_response
 class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
     """Test suite for TS.LABELSTATS command in cluster mode."""
 
-    def get_stats(self, limit: int | None = None, label: str | None = None):
+    def get_stats(self, limit: int | None = None, label: str | None = None, filters=None):
         args = ['TS.LABELSTATS']
         if limit is not None:
             args.extend(['LIMIT', limit])
         if label is not None:
             args.extend(['LABEL', label])
+        # FILTER is variadic, so it always goes last.
+        if filters is not None:
+            args.append('FILTER')
+            args.extend(filters)
 
         client = self.new_client_for_primary(0)
 
@@ -38,6 +42,45 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         # metric=cpu, metric=mem, host=h1, host=h2, host=h3
         # Total: 5 pairs
         assert stats['totalLabelValuePairs'] == 5
+
+    def tag_per_primary(self, cluster_client: ValkeyCluster):
+        """Return one hash tag per primary, each owned by a different node.
+
+        The tag -> slot -> node mapping depends on how the harness splits the slot
+        range across primaries, so the tags are discovered at runtime rather than
+        hard-coded (e.g. {1} and {2} can land on the same primary here).
+        """
+        by_node = {}
+        for i in range(1000):
+            tag = f'tag{i}'
+            node = cluster_client.get_node_from_key('{%s}' % tag)
+            by_node.setdefault((node.host, node.port), tag)
+            if len(by_node) == self.CLUSTER_SIZE:
+                break
+
+        assert len(by_node) == self.CLUSTER_SIZE, \
+            f'found tags for only {len(by_node)} of {self.CLUSTER_SIZE} primaries'
+        return [by_node[node] for node in sorted(by_node)]
+
+    def test_labelstats_hashtag_scopes_cluster_fanout(self):
+        """HASHTAG queries only the slot(s) selected by the supplied hash tag."""
+        cluster: ValkeyCluster = self.new_cluster_client()
+        client = self.new_client_for_primary(0)
+
+        tag1, tag2 = self.tag_per_primary(cluster)[:2]
+
+        cluster.execute_command('TS.CREATE', f'stats:tagged:{{{tag1}}}', 'LABELS', 'scope', 'tagged', 'region', 'one')
+        cluster.execute_command('TS.CREATE', f'stats:tagged:{{{tag2}}}', 'LABELS', 'scope', 'tagged', 'region', 'two')
+
+        stats = parse_stats_response(
+            client.execute_command('TS.LABELSTATS', 'HASHTAG', tag1, 'FILTER', 'scope=tagged')
+        )
+        assert stats['totalSeries'] == 1
+
+        stats = parse_stats_response(
+            client.execute_command('TS.LABELSTATS', 'FILTER', 'scope=tagged', 'HASHTAG', f'{tag1},{tag2}')
+        )
+        assert stats['totalSeries'] == 2
 
     def test_stats_cluster_top_k_aggregation(self):
         """Test TS.LABELSTATS aggregates top-k lists across shards correctly."""
@@ -348,6 +391,106 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         focus_label_counts = {item[0]: item[1] for item in stats['seriesCountByFocusLabelValue']}
         assert focus_label_counts.get(b'metric1') == 2
         assert focus_label_counts.get(b'metric2') == 1
+
+    def test_stats_cluster_focus_section_only_with_label(self):
+        """Test the cluster reply shape matches standalone: focus section iff LABEL was given."""
+        cluster: ValkeyCluster = self.new_cluster_client()
+
+        cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', '__name__', 'm1', 'host', 'h1')
+        cluster.execute_command('TS.CREATE', 'ts:{2}', 'LABELS', '__name__', 'm2', 'host', 'h2')
+
+        assert 'seriesCountByFocusLabelValue' not in self.get_stats()
+        assert 'seriesCountByFocusLabelValue' in self.get_stats(label='host')
+
+        # An explicit empty LABEL still asks for a focus section, defaulting to the metric name.
+        focus = {item[0]: item[1] for item in
+                 self.get_stats(label='')['seriesCountByFocusLabelValue']}
+        assert focus == {b'm1': 1, b'm2': 1}
+
+    def create_filter_fixtures(self):
+        """Six series spread across shards: four in us-east, two in eu-west."""
+        cluster: ValkeyCluster = self.new_cluster_client()
+
+        for i in range(4):
+            cluster.execute_command('TS.CREATE', f'ts:{{{i}}}', 'LABELS',
+                                    '__name__', 'http_requests',
+                                    'region', 'us-east',
+                                    'env', 'prod' if i < 3 else 'dev',
+                                    'id', f'{i}')
+        for i in range(4, 6):
+            cluster.execute_command('TS.CREATE', f'ts:{{{i}}}', 'LABELS',
+                                    '__name__', 'db_queries',
+                                    'region', 'eu-west',
+                                    'env', 'prod',
+                                    'tier', 'edge',
+                                    'id', f'{i}')
+
+    def test_stats_cluster_filter_restricts_counts(self):
+        """Test TS.LABELSTATS FILTER aggregates only matching series across shards."""
+        self.create_filter_fixtures()
+
+        stats = self.get_stats(limit=100, filters=['region=us-east'])
+
+        assert stats['totalSeries'] == 4
+
+        metric_counts = {item[0]: item[1] for item in stats['seriesCountByMetricName']}
+        assert metric_counts.get('http_requests') == 4
+        assert 'db_queries' not in metric_counts
+
+        pair_counts = {item[0]: item[1] for item in stats['seriesCountByLabelValuePair']}
+        assert pair_counts.get('region=us-east') == 4
+        assert pair_counts.get('env=prod') == 3
+        assert pair_counts.get('env=dev') == 1
+        assert 'region=eu-west' not in pair_counts
+
+    def test_stats_cluster_filter_distinct_totals(self):
+        """Test the cluster-wide distinct totals are computed over the matching series only."""
+        self.create_filter_fixtures()
+
+        stats = self.get_stats(limit=100, filters=['region=us-east'])
+
+        # __name__, region, env, id — 'tier' belongs only to the eu-west series.
+        assert stats['totalLabels'] == 4
+        # __name__=http_requests, region=us-east, env=prod, env=dev, and 4 distinct ids.
+        assert stats['totalLabelValuePairs'] == 8
+
+        label_counts = {item[0]: item[1] for item in stats['labelValueCountByLabelName']}
+        assert 'tier' not in label_counts
+
+    def test_stats_cluster_filter_with_label(self):
+        """Test TS.LABELSTATS FILTER combined with LABEL in cluster mode."""
+        self.create_filter_fixtures()
+
+        stats = self.get_stats(label='env', filters=['region=us-east'])
+
+        assert stats['totalSeries'] == 4
+
+        focus_counts = {item[0]: item[1] for item in stats['seriesCountByFocusLabelValue']}
+        assert focus_counts.get(b'prod') == 3
+        assert focus_counts.get(b'dev') == 1
+
+    def test_stats_cluster_filter_multiple_selectors(self):
+        """Test several FILTER selectors are AND-ed across shards."""
+        self.create_filter_fixtures()
+
+        stats = self.get_stats(filters=['region=us-east', 'env=prod'])
+
+        assert stats['totalSeries'] == 3
+
+        pair_counts = {item[0]: item[1] for item in stats['seriesCountByLabelValuePair']}
+        assert pair_counts.get('env=prod') == 3
+        assert 'env=dev' not in pair_counts
+
+    def test_stats_cluster_filter_no_matching_series(self):
+        """Test a FILTER matching nothing on any shard reports zero everywhere."""
+        self.create_filter_fixtures()
+
+        stats = self.get_stats(filters=['region=ap-south'])
+
+        assert stats['totalSeries'] == 0
+        assert stats['totalLabels'] == 0
+        assert stats['totalLabelValuePairs'] == 0
+        assert stats['seriesCountByLabelValuePair'] == []
 
     def test_stats_cluster_label_parameter_across_all_shards(self):
         """Test TS.LABELSTATS LABEL parameter aggregates correctly across all shards."""

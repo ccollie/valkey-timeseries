@@ -68,7 +68,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         # Test user without TS permissions
         no_ts_client = self.get_user_client('no_ts', 'password123')
 
-        with pytest.raises(Exception, match="no permissions to run the 'TS.ADD' command"):
+        with pytest.raises(Exception, match="no permissions to run the 'ts.add' command"):
             no_ts_client.execute_command('TS.ADD', 'ts:acl:denied', '*', 300.5)
 
     def test_ts_range_acl_permissions(self):
@@ -99,6 +99,33 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         with pytest.raises(Exception, match="No permissions to access a key"):
             no_read_client.execute_command('TS.RANGE', 'ts:acl:range_test', '-', '+')
+
+    def test_ts_nrange_acl_permissions(self):
+        """TS.NRANGE fails closed when the user cannot read *every* key it names."""
+        # Two series under different prefixes, so a key pattern can cover one but not the other.
+        for key in ('ts:acl:nrange:allowed', 'ts:acl:other:denied'):
+            self.client.execute_command('TS.CREATE', key)
+            self.client.execute_command('TS.ADD', key, 1000, 1.0)
+
+        self.create_test_user('nrange_partial', 'password123', [
+            '+@read', '+@timeseries', '~ts:acl:nrange:*', '&*'
+        ])
+        partial_client = self.get_user_client('nrange_partial', 'password123')
+
+        # The permitted key on its own is fine.
+        result = partial_client.execute_command('TS.NRANGE', 1, 'ts:acl:nrange:allowed', '-', '+')
+        assert len(result) == 1
+
+        # Adding a key the user cannot read fails the whole query, in either position and in
+        # either direction.
+        for command in ('TS.NRANGE', 'TS.NREVRANGE'):
+            for argv in (
+                    (2, 'ts:acl:nrange:allowed', 'ts:acl:other:denied', '-', '+'),
+                    (2, 'ts:acl:other:denied', 'ts:acl:nrange:allowed', '-', '+'),
+            ):
+                with pytest.raises(ResponseError) as exc_info:
+                    partial_client.execute_command(command, *argv)
+                assert 'NOPERM' in str(exc_info.value) or 'permission' in str(exc_info.value).lower()
 
     def test_compaction_rule_acl_permissions(self):
         """Test compaction rule operations with ACL permissions"""
@@ -194,7 +221,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         # Verify role separation - producer can't create rules
         producer = self.get_user_client('data_producer', 'password123')
-        with pytest.raises(Exception, match="User data_producer has no permissions to run the 'TS.CREATERULE' command"):
+        with pytest.raises(Exception, match="User data_producer has no permissions to run the 'ts.createrule' command"):
             producer.execute_command(
                 'TS.CREATERULE', 'ts:acl:workflow:source', 'ts:acl:workflow:dest2',
                 'AGGREGATION', 'sum', 5000
@@ -202,7 +229,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         # Consumer can't delete rules
         consumer = self.get_user_client('data_consumer', 'password123')
-        with pytest.raises(Exception, match="User data_consumer has no permissions to run the 'TS.DELETERULE' command"):
+        with pytest.raises(Exception, match="User data_consumer has no permissions to run the 'ts.deleterule' command"):
             consumer.execute_command('TS.DELETERULE', 'ts:acl:workflow:source', 'ts:acl:workflow:dest')
 
     def test_acl_command_category_restrictions(self):
@@ -225,7 +252,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         result = read_only_client.execute_command('TS.RANGE', 'ts:acl:categories', '-', '+')
         assert len(result) > 0
 
-        with pytest.raises(Exception, match="User read_only has no permissions to run the 'TS.ADD' command"):
+        with pytest.raises(Exception, match="User read_only has no permissions to run the 'ts.add' command"):
             read_only_client.execute_command('TS.ADD', 'ts:acl:categories', '2000', 100.0)
 
         # TS safe user can use timeseries commands
@@ -326,38 +353,71 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         ## We should throw an error if user does not have access to all keys in that case
 
     def test_timeseries_command_acl_categories(self):
-        # List of commands and their acl categories
-        timeseries_commands = [
-            ('TS.ADD', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.CREATE', [b'write', b'denyoom', b'module'], [b'@write', b'@fast', b'@timeseries']),
-            ('TS.MADD', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.INFO', [b'readonly', b'module'], [b'@read', b'@fast', b'@timeseries']),
-            ('TS.CARD', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.ALTER', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.DEL', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.GET', [b'readonly', b'module', b'fast'], [b'@read', b'@fast', b'@timeseries']),
-            ('TS.RANGE', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.REVRANGE', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.MRANGE', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.MREVRANGE', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.INCRBY', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.DECRBY', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.CREATERULE', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.DELETERULE', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
-            ('TS.QUERYINDEX', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.LABELSTATS', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.JOIN', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.MGET', [b'readonly', b'module', b'fast'], [b'@read', b'@timeseries']),
-            ('TS.LABELNAMES', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.LABELVALUES', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-        ]
-        for cmd in timeseries_commands:
-            # Get the info of the commands and compare the acl categories
-            cmd_info = self.client.execute_command(f'COMMAND INFO {cmd[0]}')
-            assert cmd_info[0][2] == cmd[
-                1], f"ACL categories for command {cmd[0]} do not match. Expected {cmd[1]}, got {cmd_info[0][2]}"
-            for category in cmd[2]:
-                assert category in cmd_info[0][6], f"Category {category} not found in command {cmd[0]}"
+        # Expected flags and ACL categories for every command the module registers, keyed by the
+        # lowercase registered name. `ts._debug`/`ts._restore` come from the positional table in
+        # src/lib.rs; the rest from the `acl_categories!` declaration beside each `#[command]`.
+        #
+        # The command set is discovered from the server rather than listed here, and compared
+        # against this dict's keys with set equality, so a new command fails this test until its
+        # categories are declared below. Categories are compared as exact sets, so an extra or
+        # missing category fails too.
+        expected = {
+            'ts._debug': ([b'readonly', b'module'], {b'@read', b'@admin', b'@timeseries'}),
+            'ts._restore': ([b'write', b'denyoom', b'module'], {b'@write', b'@admin', b'@timeseries'}),
+            'ts.add': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.addbulk': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.alter': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.card': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.create': ([b'write', b'denyoom', b'module'], {b'@write', b'@fast', b'@timeseries'}),
+            'ts.createrule': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.decrby': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.del': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.deleterule': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.get': ([b'readonly', b'module'], {b'@read', b'@fast', b'@timeseries'}),
+            'ts.incrby': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.info': ([b'readonly', b'module'], {b'@read', b'@fast', b'@timeseries'}),
+            'ts.join': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.labelnames': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.labelstats': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.labelvalues': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.madd': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.mdel': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
+            'ts.metricnames': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.mget': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.mrange': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.mrevrange': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            # movablekeys comes from the numkeys key spec: the key positions are not fixed.
+            'ts.nrange': ([b'readonly', b'module', b'movablekeys'], {b'@read', b'@timeseries'}),
+            'ts.nrevrange': ([b'readonly', b'module', b'movablekeys'], {b'@read', b'@timeseries'}),
+            'ts.outliers': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.queryindex': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.querylabels': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.range': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.read': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+            'ts.revrange': ([b'readonly', b'module'], {b'@read', b'@timeseries'}),
+        }
+
+        registered = {
+            name.decode().lower()
+            for name in self.client.execute_command('COMMAND LIST FILTERBY MODULE ts')
+        }
+        assert registered == set(expected), (
+            f"module command set changed; declare categories for "
+            f"{sorted(registered - set(expected))} / drop {sorted(set(expected) - registered)}"
+        )
+
+        for name, (flags, categories) in expected.items():
+            info = self.client.execute_command('COMMAND INFO', name)[0]
+            actual_flags, actual_categories = info[2], set(info[6])
+            assert actual_flags == flags, f"{name}: flags {actual_flags} != {flags}"
+            assert actual_categories == categories, (
+                f"{name}: categories {actual_categories} != {categories}"
+            )
+            # The flag decides the read/write category; the two must never disagree, or a
+            # `-@write` user could run a writing command.
+            assert (b'write' in actual_flags) == (b'@write' in actual_categories), name
+            assert (b'readonly' in actual_flags) == (b'@read' in actual_categories), name
+            assert b'@timeseries' in actual_categories, name
 
     def verify_valid_user_permissions(self, client, cmd):
         cmd_name = cmd[0].split()[0]
@@ -371,3 +431,53 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
                 assert result == cmd[1], f"{cmd_name} should work for default user"
         except Exception as e:
             assert False, f"user should be able to execute {cmd_name}: {str(e)}"
+
+    def test_labelstats_requires_read_access_to_all_keys(self):
+        """TS.LABELSTATS reports every label and value in the keyspace, so it takes the same
+        all-keys gate as TS.LABELNAMES; it used to have no ACL check at all."""
+        self.client.execute_command("TS.CREATE", "abc:1", "LABELS", "team", "eng")
+        self.client.execute_command("TS.CREATE", "hr:1", "LABELS", "salary", "yes")
+        self.create_test_user("scoped_stats", "pw", ["+@all", "~abc*"])
+        scoped = self.get_user_client("scoped_stats", "pw")
+        with pytest.raises(ResponseError, match="read permission"):
+            scoped.execute_command("TS.LABELSTATS")
+        assert self.client.execute_command("TS.LABELSTATS") is not None
+
+    @pytest.mark.parametrize("pattern", ["~?", "~[*]", "~\\*"])
+    def test_metadata_gate_needs_every_key_not_just_star(self, pattern):
+        """The metadata gate used to probe only the literal key `*`, which these patterns match."""
+        self.client.execute_command("TS.CREATE", "meta:1", "LABELS", "secret", "yes")
+        self.create_test_user("star_only", "pw", ["+@all", pattern])
+        client = self.get_user_client("star_only", "pw")
+        with pytest.raises(ResponseError):
+            client.execute_command("TS.LABELNAMES")
+        with pytest.raises(ResponseError):
+            client.execute_command("TS.LABELSTATS")
+
+    def test_metadata_gate_rejects_pattern_matching_the_old_probes(self):
+        """The gate once probed `*` and a 33-byte \\x01/\\xff key; this pattern matches both
+        but not `meta:1`, and used to be handed every label and every series.
+        The two-probe test is gone; only a literal `*` grant counts."""
+        self.client.execute_command("TS.CREATE", "meta:1", "LABELS", "secret", "yes")
+        self.create_test_user("probe_match", "pw", ["+@all", b"~[*\x01]*"])
+        client = self.get_user_client("probe_match", "pw")
+        for cmd in (["TS.LABELNAMES"], ["TS.LABELSTATS"], ["TS.CARD"]):
+            with pytest.raises(ResponseError):
+                client.execute_command(*cmd)
+        # The same test gates per-key checks: it used to skip them for this user.
+        with pytest.raises(ResponseError, match="read permission"):
+            client.execute_command("TS.MGET", "FILTER", "secret=yes")
+
+    @pytest.mark.parametrize("rules", [
+        ["+@all", "%R~*"],
+        ["+@all", "~abc*", "(%R~* +@all)"],
+    ])
+    def test_metadata_gate_admits_read_all_grants(self, rules):
+        self.client.execute_command("TS.CREATE", "meta:1", "LABELS", "secret", "yes")
+        self.create_test_user("read_all", "pw", rules)
+        client = self.get_user_client("read_all", "pw")
+        assert client.execute_command("TS.LABELNAMES")[1] == [b"secret"]
+        # A rule change must not be answered from the cached grant.
+        self.client.execute_command("ACL", "SETUSER", "read_all", "clearselectors", "resetkeys", "~abc*")
+        with pytest.raises(ResponseError):
+            client.execute_command("TS.LABELNAMES")

@@ -1,0 +1,69 @@
+# RedisTimeSeries compatibility harness — reference (and optional subject) servers.
+# See docs/plans/rts-compatibility-test-plan.md §3 (reference environment) and tests/compat/README.md.
+#
+# The reference image is pinned by digest and is the canonical reference artifact.
+# Bumping the digest is a reviewed change and must be accompanied by a changelog scan of
+# the corresponding RedisTimeSeries release notes (plan §11, "Reference drift"), recorded
+# in docs/plans/rts-reference-bumps.md. The native binary pin in tests/reference_server.sh
+# (COMPAT_REFERENCE_VERSION) tracks this image and is bumped in the same change.
+#
+# Licensing note: the redis:8.10 image is used strictly as a black-box test target.
+# Nothing from the RedisTimeSeries source repository may be vendored, copied, ported,
+# or fetched at CI time (plan §3, licensing boundary).
+
+services:
+  reference:
+    # redis:8.10 multi-arch index digest, resolved 2026-08-01.
+    # Bundled timeseries module: 81000 (was 80800 on the previous redis:8.8 pin).
+    image: redis:8.10@sha256:c29e49ab2f85760a3827b53882e6dd9f5c6c3f0bb7d724e07bb31cbf275a5236
+    command:
+      - redis-server
+      - --enable-debug-command
+      - "yes"
+      - --notify-keyspace-events
+      - KEA
+      - --maxmemory-policy
+      - noeviction
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "${COMPAT_REFERENCE_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # Optional: run the subject (valkey-server + this module) in Docker as well.
+  # Requires a Linux build of the module matching the container architecture
+  # (target/release/libvalkey_timeseries.so). The pytest harness launches the subject
+  # as a local process by default, so this service is opt-in:
+  #   docker compose -f docker-compose.compat.yml --profile subject-docker up -d
+  subject:
+    image: valkey/valkey:9.1
+    profiles: ["subject-docker"]
+    volumes:
+      - ./target/release/libvalkey_timeseries.so:/opt/module/libvalkey_timeseries.so:ro
+    command:
+      - valkey-server
+      - --loadmodule
+      - /opt/module/libvalkey_timeseries.so
+      - --enable-debug-command
+      - "yes"
+      - --notify-keyspace-events
+      - KEA
+      - --maxmemory-policy
+      - noeviction
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "${COMPAT_SUBJECT_PORT:-16380}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-p", "6379", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

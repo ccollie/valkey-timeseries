@@ -1,7 +1,8 @@
-use crate::commands::fanout::LabelSearchType;
+use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::label_search_utils::run_label_search;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
+acl_categories!(TS_METRICNAMES, "ts.metricnames", "read timeseries");
 /// TS.METRICNAMES
 /// [SEARCH term [term...]]
 /// [FUZZY_THRESHOLD 0.0..1.0]
@@ -11,9 +12,10 @@ use valkey_module::{Context, ValkeyResult, ValkeyString};
 /// [SORTBY <value|score|cardinality> [ASC|DESC]]
 /// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
 /// [LIMIT limit]
+/// [HASHTAG hash_tag,...]
 /// [FILTER seriesMatcher...]
 #[valkey_module_macros::command({
-    name: "TS.METRICNAMES",
+    name: "ts.metricnames",
     flags: [ReadOnly],
     summary: "Return metric names across time series, optionally filtered.",
     complexity: "O(N) where N is the number of metric names in the index.",

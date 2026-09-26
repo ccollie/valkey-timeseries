@@ -7,13 +7,17 @@ pub struct Samples {
 }
 
 impl Samples {
-    pub fn new(values: Vec<f64>) -> Self {
-        Self::new_sorted_unweighted(values)
-    }
-
+    /// NaN values (missing readings) are dropped rather than sorted in: with
+    /// `total_cmp`, NaN sorts as a real (if extreme) element, which both
+    /// biases every quantile position — `n` counts an observation that carries
+    /// no information — and can make the median itself NaN, silently
+    /// disabling a MAD fit for the whole series. Sorted with
+    /// [`f64::total_cmp`] rather than `partial_cmp().unwrap()`, which panicked
+    /// on any NaN in the sample — reachable from `TS.OUTLIERS METHOD MAD` over
+    /// a series with a missing reading.
     pub fn new_unweighted(values: Vec<f64>) -> Self {
-        let mut values = values;
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut values: Vec<f64> = values.into_iter().filter(|v| !v.is_nan()).collect();
+        values.sort_by(f64::total_cmp);
         Self::new_sorted_unweighted(values)
     }
 
@@ -26,8 +30,13 @@ impl Samples {
         }
     }
 
+    /// A NaN value is dropped along with its weight, for the same reason
+    /// [`Self::new_unweighted`] drops one: it carries no information but would
+    /// still bias `total_weight` and every quantile position derived from it.
+    #[cfg(test)]
     pub fn new_weighted(mut values: Vec<(f64, f64)>) -> Self {
-        values.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        values.retain(|(v, _)| !v.is_nan());
+        values.sort_by(|a, b| a.0.total_cmp(&b.0));
         let total_weight: f64 = values.iter().map(|(_, w)| *w).sum();
         let (sorted_values, sorted_weights): (Vec<f64>, Vec<f64>) = values.into_iter().unzip();
         Samples {
@@ -63,5 +72,50 @@ impl From<Vec<f64>> for Samples {
 impl From<&[f64]> for Samples {
     fn from(values: &[f64]) -> Self {
         Self::new_unweighted(values.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_unweighted_drops_nan_rather_than_sorting_it_in() {
+        let sample = Samples::new_unweighted(vec![1.0, f64::NAN, 2.0, 3.0, f64::NAN]);
+
+        assert_eq!(sample.values, vec![1.0, 2.0, 3.0]);
+        assert_eq!(sample.len(), 3);
+        assert_eq!(sample.weighted_size(), 3.0);
+    }
+
+    #[test]
+    fn new_weighted_drops_nan_and_its_paired_weight() {
+        let sample = Samples::new_weighted(vec![(1.0, 10.0), (f64::NAN, 99.0), (2.0, 20.0)]);
+
+        assert_eq!(sample.values, vec![1.0, 2.0]);
+        assert_eq!(sample.sorted_weights, Some(vec![10.0, 20.0]));
+        assert_eq!(sample.weighted_size(), 30.0);
+    }
+
+    /// All-NaN input (every reading in the window was missing) must produce a
+    /// well-formed empty sample, not just one that happens not to panic while
+    /// being built — callers (e.g. `MadOutlierDetector::train`) decide whether
+    /// to fit against `is_empty()`/`weighted_size() == 0.0`.
+    #[test]
+    fn new_unweighted_all_nan_yields_an_empty_sample() {
+        let sample = Samples::new_unweighted(vec![f64::NAN, f64::NAN, f64::NAN]);
+
+        assert!(sample.is_empty());
+        assert_eq!(sample.len(), 0);
+        assert_eq!(sample.weighted_size(), 0.0);
+    }
+
+    #[test]
+    fn new_weighted_all_nan_yields_an_empty_sample_with_zero_weight() {
+        let sample = Samples::new_weighted(vec![(f64::NAN, 10.0), (f64::NAN, 20.0)]);
+
+        assert!(sample.is_empty());
+        assert_eq!(sample.sorted_weights, Some(Vec::new()));
+        assert_eq!(sample.weighted_size(), 0.0);
     }
 }

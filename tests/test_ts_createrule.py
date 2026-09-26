@@ -125,7 +125,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
             result = self.client.execute_command(
                 "TS.CREATERULE", source_key, key,
-                "AGGREGATION", f"{agg}(<100)", "60000"
+                "AGGREGATION", f"{agg}<100", "60000"
             )
 
             assert result == b"OK"
@@ -142,7 +142,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
     def test_create_rule_missing_required_condition(self):
         """Filtered aggregators (countif, sumif, all, any, none, share) require
-        an inline (op value) condition; omitting it is an error."""
+        an inline op value condition; omitting it is an error."""
         source_key = "test:source_missing_cond"
         dest_key = "test:dest_missing_cond"
 
@@ -157,7 +157,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
     def test_create_rule_disallowed_condition(self):
         """Aggregators that don't support conditions (e.g. avg) must not
-        carry an inline (op value)."""
+        carry an inline op value."""
         source_key = "test:source_bad_cond"
         dest_key = "test:dest_bad_cond"
 
@@ -167,7 +167,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError, match="TSDB: aggregation type does not support a filter condition"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
-                "AGGREGATION", "avg(>5)", "60000"
+                "AGGREGATION", "avg>5", "60000"
             )
 
     def test_disallow_replace_existing(self):
@@ -281,7 +281,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="unknown aggregation type"):
+        with pytest.raises(ResponseError, match="Unknown aggregation type"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "invalid_agg", "60000"
@@ -295,17 +295,21 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="invalid bucket duration"):
+        with pytest.raises(ResponseError, match="Couldn't parse AGGREGATION"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "avg", "invalid"
             )
 
-        with pytest.raises(ResponseError, match="invalid bucket duration"):
-            self.client.execute_command(
-                "TS.CREATERULE", source_key, dest_key,
-                "AGGREGATION", "avg", "-1000"
-            )
+        # A non-positive bucket duration is its own error: zero would reach the
+        # bucket-boundary modulo in the aggregation iterator, and a rule carries
+        # its duration into the RDB.
+        for duration in ("-1000", "0"):
+            with pytest.raises(ResponseError, match="bucketDuration must be greater than zero"):
+                self.client.execute_command(
+                    "TS.CREATERULE", source_key, dest_key,
+                    "AGGREGATION", "avg", duration
+                )
 
     def test_create_rule_invalid_align_timestamp(self):
         """Test error with invalid alignment timestamp"""
@@ -329,7 +333,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="wrong number of arguments for 'TS.CREATERULE' command"):
+        with pytest.raises(ResponseError, match="wrong number of arguments for 'ts.createrule' command"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "avg"
@@ -512,21 +516,15 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         assert len(info["rules"]) == 1
         print(info["rules"])
 
-        self.client.execute_command(
-            "TS.CREATERULE", key_b, key_a,
-            "AGGREGATION", "sum", "60000"
-        )
-
-        print("Created rule from B to A")
-        info_b = self.ts_info(key_b)
-        print(info_b)
-
-        # Try to create a circular rule: B -> A (should fail)
-        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+        # Try to create a circular rule while B has no rules of its own. This
+        # used to bypass the cycle check's early return.
+        with pytest.raises(ResponseError, match="TSDB: circular dependency in compaction rules"):
             self.client.execute_command(
                 "TS.CREATERULE", key_b, key_a,
                 "AGGREGATION", "sum", "60000"
             )
+
+        assert self.ts_info(key_b)["rules"] == []
 
     def test_prevent_indirect_circular_dependency(self):
         """Test preventing indirect circular dependency (A -> B -> C -> A)"""
@@ -548,13 +546,8 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
             "AGGREGATION", "sum", "120000"
         )
 
-        self.client.execute_command(
-            "TS.CREATERULE", key_c, key_a,
-            "AGGREGATION", "max", "300000"
-        )
-
-        # Try to create a circular rule: C -> A (should fail)
-        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+        # Try to create a circular rule: C -> A (should fail, closes the A -> B -> C -> A cycle)
+        with pytest.raises(ResponseError, match="TSDB: circular dependency in compaction rules"):
             self.client.execute_command(
                 "TS.CREATERULE", key_c, key_a,
                 "AGGREGATION", "max", "300000"

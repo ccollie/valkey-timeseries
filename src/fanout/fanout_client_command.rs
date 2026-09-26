@@ -1,14 +1,14 @@
+use crate::common::context::is_blocking_denied;
 use crate::common::replies::ReplyContext;
 use crate::fanout::FanoutCommandResult;
 use crate::fanout::blocked_client::FanoutBlockedClient;
 use crate::fanout::serialization::Serializable;
-use crate::fanout::{
-    FanoutCommand, FanoutResult, FanoutTargetMode, FanoutTargets, NodeInfo, get_fanout_targets,
-};
+use crate::fanout::{FanoutCommand, FanoutContext, FanoutResult, FanoutTarget, NodeInfo};
 use std::sync::{Arc, Mutex};
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
-pub type FanoutContext = ReplyContext;
+/// Same text as the remote path's `validate_cluster_exec` refusal.
+const FANOUT_BLOCKING_DENIED: &str = "Cannot execute in MULTI or Lua context";
 
 /// A trait for cluster-mode commands which send results back to clients after receiving responses from other nodes.
 /// This is a higher-level abstraction over `FanoutCommand` that includes client response handling logic.
@@ -20,20 +20,21 @@ pub trait FanoutClientCommand: Default + Send + 'static {
 
     /// Get the target nodes for the fanout operation, bound to the cluster-map
     /// fingerprint of the snapshot they were selected from.
-    /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
-        get_fanout_targets(ctx, FanoutTargetMode::Random)
+    fn get_targets(&self, ctx: &Context) -> FanoutTarget {
+        super::compute_query_fanout_mode(ctx)
     }
 
-    fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response>;
+    /// Handle a local request on the current node. See
+    /// [`FanoutCommand::get_local_response`] for the locking contract.
+    fn get_local_response(ctx: &FanoutContext, req: Self::Request) -> ValkeyResult<Self::Response>;
 
     fn generate_request(&self) -> Self::Request;
 
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult;
 
-    /// NOTE: Use the provided `FanoutContext` reply helpers. This is already
+    /// NOTE: Use the provided `ReplyContext` reply helpers. This is already
     /// running on the main thread and does not require locking.
-    fn reply(&mut self, ctx: &FanoutContext) -> Status;
+    fn reply(&mut self, ctx: &ReplyContext) -> Status;
 
     /// Execute the fanout operation across cluster nodes.
     /// The `where Self: FanoutCommand` bound is always satisfied via the blanket impl below.
@@ -41,7 +42,19 @@ pub trait FanoutClientCommand: Default + Send + 'static {
     where
         Self: FanoutCommand,
     {
-        let blocked_client = Arc::new(Mutex::new(FanoutBlockedClient::<Self>::new(ctx)));
+        // A fan-out completes asynchronously, so it has to block the client — which the server
+        // refuses inside MULTI, a script, or a module call without the `K` flag (and asserts on
+        // for the last). Refuse up front, before anything runs: the local share of a
+        // local-only fan-out (a single-shard cluster, a HASHTAG owned by this node) used to be
+        // executed anyway, so TS.MDEL deleted keys after the client had already been told the
+        // command failed, outside the transaction it was queued in.
+        if is_blocking_denied(ctx) {
+            return Err(ValkeyError::Str(FANOUT_BLOCKING_DENIED));
+        }
+        let blocked_client = Arc::new(Mutex::new(FanoutBlockedClient::<Self>::new(
+            ctx,
+            self.get_timeout(),
+        )));
         let bc_for_closure = Arc::clone(&blocked_client);
 
         let handle_response = move |op: Self, result: FanoutResult| {
@@ -81,14 +94,14 @@ impl<T: FanoutClientCommand> FanoutCommand for T {
         T::name()
     }
 
-    fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response> {
+    fn get_local_response(ctx: &FanoutContext, req: Self::Request) -> ValkeyResult<Self::Response> {
         T::get_local_response(ctx, req)
     }
 
     /// Get the target nodes for the fanout operation, bound to the cluster-map
     /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
+    fn get_targets(&self, ctx: &Context) -> FanoutTarget {
         FanoutClientCommand::get_targets(self, ctx)
     }
 

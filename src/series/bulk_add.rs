@@ -3,20 +3,28 @@
 //! This module provides bulk insertion of samples into a time series, with support for duplicate
 //! policies and automatic compaction handling. It is optimized for high-throughput data ingestion
 //! scenarios by leveraging parallel processing and efficient sample merging.
-use crate::common::Sample;
+#[cfg(not(test))]
+use crate::common::block_on_keys::signal_timeseries_ready;
+#[cfg(not(test))]
+use crate::common::context::create_key_string;
+use crate::common::{Sample, Timestamp};
 use crate::error_consts;
+#[cfg(not(test))]
+use crate::series::SeriesRef;
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
+#[cfg(not(test))]
 use crate::series::index::with_timeseries_postings;
 use crate::series::ingest_normalize::{NormalizedBatch, normalize_batch};
-use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
-use orx_parallel::{IterIntoParIter, ParIter, ParallelizableCollection};
+use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, seal_chunk};
+use orx_parallel::{IterIntoParIter, Par, ParCollection};
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult};
+#[cfg(not(test))]
+use valkey_module::NotifyEvent;
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub const MAX_SAMPLES_PER_INSERT: usize = 1_000;
-const COMPRESSION_RATIO_CONSERVATIVE: f64 = 2.0;
 const EARLY_CHUNK_CAPACITY_FACTOR: f64 = 0.7;
 const EARLY_CHUNK_SAMPLE_THRESHOLD: usize = 10;
 
@@ -358,6 +366,10 @@ pub(super) fn merge_samples_into_series(
             .map(|&(group_pos, samples)| {
                 let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
                 let res = exec_merge(&mut chunk, samples, resolved_policy);
+                // This group's samples are all this chunk will ever hold: the sort below places
+                // it among chunks that already own every neighbouring timestamp. (The one that
+                // lands last does become the new append target and will regrow once.)
+                seal_chunk(&mut chunk);
                 (group_pos, chunk, res)
             })
             .collect::<Vec<_>>();
@@ -402,7 +414,8 @@ pub(super) fn merge_samples_into_series(
 }
 
 /// Bulk insert for `TS.ADDBULK`: runs the shared merge core, then performs post-merge
-/// maintenance (chunk splitting), keyspace notification and compaction propagation.
+/// maintenance (chunk splitting), keyspace notification, compaction propagation and the
+/// retention trim.
 pub fn bulk_insert_samples(
     ctx: &Context,
     series: &mut TimeSeries,
@@ -452,20 +465,29 @@ pub fn bulk_insert_samples(
 
         // `results` follow the caller's input order; batch compaction needs ascending
         // timestamps. TS.ADDBULK pre-sorts its input, so this is normally a no-op check.
+        // The pre-sort order is kept separately: the DIV-0023 forward-close marker is
+        // input-order sensitive (see `last_forward_close_in_input_order`).
+        let input_order: Vec<Timestamp> = added.iter().map(|s| s.timestamp).collect();
         if !added.is_sorted_by_key(|s| s.timestamp) {
             added.sort_unstable_by_key(|s| s.timestamp);
         }
 
-        if let Err(e) = series.batch_compaction(ctx, &added, prev_last) {
+        if let Err(e) = series.batch_compaction(ctx, &added, prev_last, &input_order) {
             ctx.log_warning(&format!(
                 "Failed to run compactions after bulk insert samples: {e:?}"
             ))
         }
     }
 
+    // Last, as in TS.ADD / TS.MADD: after the sample-count check above, which a trim could
+    // defeat by dropping more than the batch added, and after compaction, which must see the
+    // pre-trim series (see `TimeSeries::apply_retention`).
+    series.apply_retention();
+
     results
 }
 
+#[cfg(not(test))]
 fn notify_added(ctx: &Context, event: &str, ids: &[SeriesRef]) {
     with_timeseries_postings(ctx, |postings| {
         for &id in ids {
@@ -473,8 +495,11 @@ fn notify_added(ctx: &Context, event: &str, ids: &[SeriesRef]) {
                 ctx.log_warning("Compaction notification failed: series key not found");
                 continue;
             };
-            let key = ctx.create_string(key.as_ref());
+            let key = create_key_string(ctx, key.as_ref());
             ctx.notify_keyspace_event(NotifyEvent::MODULE, event, &key);
+            // The sole caller already gated on the series' sample count having grown, which is
+            // exactly the condition that can satisfy a blocked `TS.READ`.
+            signal_timeseries_ready(ctx, &key);
         }
     });
 }
@@ -482,9 +507,17 @@ fn notify_added(ctx: &Context, event: &str, ids: &[SeriesRef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::series::ingest_normalize::get_min_allowed_timestamp;
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
+
+    /// The oldest timestamp the series will accept, derived from its retention window.
+    fn get_min_allowed_timestamp(series: &TimeSeries) -> Timestamp {
+        if series.retention.is_zero() {
+            0
+        } else {
+            series.get_min_timestamp()
+        }
+    }
 
     fn generate_random_samples(count: usize) -> Vec<Sample> {
         DataGenerator::builder()
@@ -555,6 +588,33 @@ mod tests {
         assert!(matches!(batch.results[0], SampleAddResult::TooOld));
         let kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
         assert_eq!(kept, vec![min_allowed]);
+    }
+
+    #[test]
+    fn normalize_retention_gate_is_input_order_sensitive() {
+        // On an empty series with retention, an item is TooOld only if it is older than the floor
+        // induced by items at or before it in INPUT order — matching sequential TS.MADD. A later
+        // item raising the floor does not retroactively reject an earlier accepted one.
+        let mk = || TimeSeries {
+            retention: Duration::from_millis(1_000),
+            ..Default::default()
+        };
+
+        // Newer-first: the older item is below the floor the newer item established -> TooOld.
+        let series = mk();
+        let batch = normalize_batch(&series, &[s(1001, 0.0), s(0, 0.0)], None);
+        assert!(matches!(batch.results[1], SampleAddResult::TooOld));
+        let kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
+        assert_eq!(kept, vec![1001]);
+
+        // Older-first: both accepted (the older one is later removed by the post-merge trim, but is
+        // still reported as accepted, not TooOld).
+        let series = mk();
+        let batch = normalize_batch(&series, &[s(0, 0.0), s(1001, 0.0)], None);
+        assert!(!matches!(batch.results[0], SampleAddResult::TooOld));
+        let mut kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
+        kept.sort();
+        assert_eq!(kept, vec![0, 1001]);
     }
 
     #[test]

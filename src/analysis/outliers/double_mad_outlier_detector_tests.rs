@@ -6,7 +6,47 @@ mod tests {
         EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, check_outliers,
         modified_beta_data_set, real_data_set,
     };
+    use crate::analysis::outliers::{AnomalyDetector, AnomalySignal, MethodInfo, PointDetector};
     use std::collections::HashMap;
+
+    /// A negative threshold inverts the fences. Before `deviation_and_boundary`
+    /// mapped a negative fence distance to NaN, this flagged essentially every
+    /// point — including the median itself — while still scoring it `0.0`,
+    /// since `normalize_evidence` already treated the negative boundary as
+    /// unusable. Both must now agree that there is nothing to be past.
+    #[test]
+    fn negative_threshold_does_not_flag_the_median() {
+        let data = [1.0, 4.0, 4.0, 4.0, 5.0, 5.0, 5.0, 5.0, 7.0, 7.0, 8.0, 10.0];
+        let mut detector = DoubleMadOutlierDetector::new(-3.0, AnomalyMADEstimator::Simple);
+        detector.train(&data).unwrap();
+
+        let Some(MethodInfo::Fenced {
+            center_line: Some(median),
+            ..
+        }) = detector.model_info()
+        else {
+            panic!("expected a fitted center line");
+        };
+
+        assert_eq!(detector.classify(median), AnomalySignal::None);
+        assert_eq!(detector.score(median), 0.0);
+    }
+
+    /// All-NaN training data (every reading in the window was missing) used to
+    /// panic: NaN filtering left `Samples` empty, and the quantile estimators
+    /// index into `sample.values` unconditionally. Training must instead leave
+    /// the detector in its existing untrained state (`fitted: None`), so
+    /// nothing is flagged.
+    #[test]
+    fn train_on_all_nan_data_does_not_panic() {
+        let data = [f64::NAN, f64::NAN, f64::NAN];
+        let mut detector = DoubleMadOutlierDetector::new(3.0, AnomalyMADEstimator::Simple);
+        detector.train(&data).unwrap();
+
+        assert!(!detector.is_trained());
+        assert_eq!(detector.classify(0.0), AnomalySignal::None);
+        assert_eq!(detector.score(0.0), 0.0);
+    }
 
     /// Data cases for SimpleQuantileEstimator
     fn simple_qe_test_data_map() -> HashMap<&'static str, TestData<'static>> {

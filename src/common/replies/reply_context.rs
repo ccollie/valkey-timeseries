@@ -1,14 +1,11 @@
 use super::raw_replies::{
-    IntoRawCtx, reply, reply_error_string, reply_with_array_len, reply_with_bulk_string,
-    reply_with_simple_string,
+    IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_array_len,
+    reply_with_bulk_string,
 };
-use crate::series::index::{TimeSeriesIndexGuard, get_db_index};
 use std::ops::Deref;
 use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
-use valkey_module::{
-    Context, RedisModule_GetSelectedDb, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw,
-};
+use valkey_module::{Context, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw};
 
 /// `ReplyContext` is a thin wrapper around `RedisModuleCtx` that provides efficient,
 /// zero-allocation reply helpers and automatic database state management.
@@ -25,28 +22,34 @@ impl ReplyContext {
         }
     }
 
+    /// The underlying raw context, for the free reply helpers in
+    /// [`super::raw_replies`] that take an [`IntoRawCtx`] rather than a `ReplyContext`.
+    #[inline]
+    pub(crate) fn raw(&self) -> *mut raw::RedisModuleCtx {
+        self.raw_ctx
+    }
+
+    /// The wrapped [`Context`], for helpers that need the crate type — key access, context flags,
+    /// and ACL identity. Inside a blocked-client reply or timeout callback this carries the real
+    /// blocked client, so both protocol detection and ACL lookups behave as they do on the
+    /// original command call.
+    #[inline]
+    pub(crate) fn context(&self) -> &Context {
+        &self.ctx
+    }
+
     /// Log a message at the specified `level` using the underlying context.
     pub fn log(&self, level: ValkeyLogLevel, message: &str) {
         self.ctx.log(level, message);
     }
 
     /// Convenience logging helpers
+    #[allow(dead_code)]
     pub fn log_debug(&self, message: &str) {
         self.log(ValkeyLogLevel::Debug, message);
     }
-    pub fn log_notice(&self, message: &str) {
-        self.log(ValkeyLogLevel::Notice, message);
-    }
-    pub fn log_verbose(&self, message: &str) {
-        self.log(ValkeyLogLevel::Verbose, message);
-    }
     pub fn log_warning(&self, message: &str) {
         self.log(ValkeyLogLevel::Warning, message);
-    }
-
-    /// Return the currently selected DB index from the underlying context.
-    pub fn get_current_db(&self) -> i32 {
-        unsafe { RedisModule_GetSelectedDb.unwrap()(self.raw_ctx) }
     }
 
     /// Reply with a 64-bit integer value.
@@ -64,11 +67,6 @@ impl ReplyContext {
         raw::reply_with_bool(self.raw_ctx, value.into())
     }
 
-    /// Reply with a simple string.
-    pub fn reply_with_simple_string(&self, s: &str) -> Status {
-        reply_with_simple_string(self.raw_ctx, s)
-    }
-
     /// Reply with an error string.
     pub fn reply_error_string(&self, s: &str) -> Status {
         reply_error_string(self.raw_ctx, s)
@@ -79,11 +77,6 @@ impl ReplyContext {
         reply_with_bulk_string(self.raw_ctx, value)
     }
 
-    /// Reply with a NULL value.
-    pub fn reply_with_null(&self) -> Status {
-        raw::reply_with_null(self.raw_ctx)
-    }
-
     /// Start an array reply with the given length.
     pub fn reply_with_array(&self, len: usize) -> Status {
         raw::reply_with_array(self.raw_ctx, len as c_long)
@@ -92,6 +85,18 @@ impl ReplyContext {
     /// Start a map reply with the given length.
     pub fn reply_with_map(&self, len: usize) -> Status {
         raw::reply_with_map(self.raw_ctx, len as c_long)
+    }
+
+    /// Start a set reply (RESP3) or array reply (RESP2) with the given length.
+    ///
+    /// `TS.QUERYLABELS` replies with a set of distinct label names/values; RESP2
+    /// clients receive the equivalent array form.
+    pub fn reply_with_set(&self, len: usize) -> Status {
+        if is_resp3_client(self.raw_ctx) {
+            raw::reply_with_set(self.raw_ctx, len as c_long)
+        } else {
+            self.reply_with_array(len)
+        }
     }
 
     /// Start a postponed-length array reply.
@@ -108,12 +113,6 @@ impl ReplyContext {
     #[allow(clippy::must_use_candidate)]
     pub fn reply(&self, result: ValkeyResult) -> Status {
         reply(self.raw_ctx, result)
-    }
-
-    /// Get the index guard for the currently selected DB.
-    pub fn get_db_index(&self) -> TimeSeriesIndexGuard<'_> {
-        let db = self.get_current_db();
-        get_db_index(db)
     }
 }
 

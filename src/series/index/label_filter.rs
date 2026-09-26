@@ -12,13 +12,15 @@ pub enum FuzzyAlgorithm {
 impl TryFrom<&str> for FuzzyAlgorithm {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let algo = hashify::tiny_map_ignore_case!(
+        let algo = hashify::map_ignore_case!(
             value.as_bytes(),
+            FuzzyAlgorithm,
             "jarowinkler" => FuzzyAlgorithm::JaroWinkler,
             "jaro-winkler" => FuzzyAlgorithm::JaroWinkler,
             "subsequence" => FuzzyAlgorithm::Subsequence,
             "noop" => FuzzyAlgorithm::NoOp,
-        );
+        )
+        .copied();
         if let Some(algo) = algo {
             Ok(algo)
         } else {
@@ -78,22 +80,6 @@ impl SimilarityMatcher {
         }
     }
 
-    pub fn name(&self) -> &'static str {
-        match self {
-            SimilarityMatcher::JaroWinkler(_) => "jarowinkler",
-            SimilarityMatcher::Subsequence(_) => "subsequence",
-            SimilarityMatcher::NoOp(_) => "noop",
-        }
-    }
-
-    pub fn algorithm(&self) -> FuzzyAlgorithm {
-        match self {
-            SimilarityMatcher::JaroWinkler(_) => FuzzyAlgorithm::JaroWinkler,
-            SimilarityMatcher::Subsequence(_) => FuzzyAlgorithm::Subsequence,
-            SimilarityMatcher::NoOp(_) => FuzzyAlgorithm::NoOp,
-        }
-    }
-
     pub fn score(&self, value: &str) -> f64 {
         match self {
             SimilarityMatcher::JaroWinkler(m) => m.score(value),
@@ -111,6 +97,7 @@ pub struct SimilarityFilter {
 }
 
 impl SimilarityFilter {
+    #[cfg(test)]
     pub fn new(pattern: &str, algorithm: FuzzyAlgorithm, threshold: f64) -> Self {
         Self::new_with_case_sensitivity(pattern, algorithm, threshold, true)
     }
@@ -132,14 +119,6 @@ impl SimilarityFilter {
             threshold,
             case_sensitive,
         }
-    }
-
-    pub fn algorithm(&self) -> FuzzyAlgorithm {
-        self.matcher.algorithm()
-    }
-
-    pub fn is_noop(&self) -> bool {
-        matches!(self.matcher, SimilarityMatcher::NoOp(_))
     }
 }
 

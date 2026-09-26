@@ -15,6 +15,8 @@ mod modified_zscore_outlier_detector;
 #[cfg(test)]
 mod outlier_test_data;
 mod rcf_outlier_detector;
+#[cfg(test)]
+mod score_contract_tests;
 mod smoothed_zscores;
 mod utils;
 mod zscore_outlier_detector;
@@ -58,22 +60,6 @@ pub enum AnomalyMethod {
 }
 
 impl AnomalyMethod {
-    /// Returns a human-readable name for the method
-    pub fn name(&self) -> &'static str {
-        match self {
-            AnomalyMethod::Ewma => "EWMA",
-            AnomalyMethod::Cusum => "CUSUM",
-            AnomalyMethod::ZScore => "Z-Score",
-            AnomalyMethod::ModifiedZScore => "Modified Z-Score",
-            AnomalyMethod::SmoothedZScore => "Smoothed Z-Score",
-            AnomalyMethod::Mad => "Median Absolute Deviation (MAD)",
-            AnomalyMethod::DoubleMAD => "Double MAD",
-            AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
-            AnomalyMethod::RandomCutForest => "Random Cut Forest",
-            AnomalyMethod::Esd => "Extreme Studentized Deviate (ESD)",
-        }
-    }
-
     pub fn short_name(&self) -> &'static str {
         match self {
             AnomalyMethod::Ewma => "ewma",
@@ -94,22 +80,22 @@ impl FromStr for AnomalyMethod {
     type Err = ValkeyError;
 
     fn from_str(s: &str) -> ValkeyResult<Self> {
-        let res = hashify::tiny_map_ignore_case! {
+        let res = hashify::map_ignore_case!(
             s.as_bytes(),
-            "esd" => Ok(AnomalyMethod::Esd),
-            "ewma" => Ok(AnomalyMethod::Ewma),
-            "cusum" => Ok(AnomalyMethod::Cusum),
-            "zscore" => Ok(AnomalyMethod::ZScore),
-            "modified-zscore" => Ok(AnomalyMethod::ModifiedZScore),
-            "smoothed-zscore" => Ok(AnomalyMethod::SmoothedZScore),
-            "mad" => Ok(AnomalyMethod::Mad),
-            "double-mad" => Ok(AnomalyMethod::DoubleMAD),
-            "iqr" => Ok(AnomalyMethod::InterquartileRange),
-            "rcf" => Ok(AnomalyMethod::RandomCutForest),
-        };
-        res.unwrap_or(Err(ValkeyError::Str(
-            "TSDB: unknown anomaly detection method",
-        )))
+            AnomalyMethod,
+            "esd" => AnomalyMethod::Esd,
+            "ewma" => AnomalyMethod::Ewma,
+            "cusum" => AnomalyMethod::Cusum,
+            "zscore" => AnomalyMethod::ZScore,
+            "modified-zscore" => AnomalyMethod::ModifiedZScore,
+            "smoothed-zscore" => AnomalyMethod::SmoothedZScore,
+            "mad" => AnomalyMethod::Mad,
+            "double-mad" => AnomalyMethod::DoubleMAD,
+            "iqr" => AnomalyMethod::InterquartileRange,
+            "rcf" => AnomalyMethod::RandomCutForest,
+        )
+        .copied();
+        res.ok_or(ValkeyError::Str("TSDB: unknown anomaly detection method"))
     }
 }
 
@@ -148,14 +134,16 @@ impl FromStr for AnomalyDirection {
     type Err = ValkeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let res = hashify::tiny_map_ignore_case! {
+        let res = hashify::map_ignore_case!(
             s.as_bytes(),
+            AnomalyDirection,
             "+" => AnomalyDirection::Positive,
             "-" => AnomalyDirection::Negative,
             "both" => AnomalyDirection::Both,
             "positive" => AnomalyDirection::Positive,
             "negative" => AnomalyDirection::Negative
-        };
+        )
+        .copied();
         match res {
             Some(direction) => Ok(direction),
             None => {
@@ -247,14 +235,17 @@ pub struct Anomaly {
 }
 
 impl Anomaly {
+    #[allow(dead_code)]
     pub fn is_anomaly(&self) -> bool {
         self.signal.is_anomaly()
     }
 
+    #[cfg(test)]
     pub fn is_negative(&self) -> bool {
         self.signal.is_negative()
     }
 
+    #[cfg(test)]
     pub fn is_positive(&self) -> bool {
         self.signal.is_positive()
     }
@@ -263,11 +254,29 @@ impl Anomaly {
 /// Result of anomaly detection
 #[derive(Debug, Clone)]
 pub struct AnomalyResult {
-    /// Anomaly scores for each point (higher scores indicate more anomalous)
+    /// Anomaly score for each point, in `[0, 1]`, higher being more anomalous.
+    ///
+    /// On the score scale the detection boundary is always `0.5` — see the
+    /// contract on [`AnomalyDetector::detect`]. Scores are therefore comparable
+    /// across methods and across threshold settings, which raw statistics are
+    /// not.
+    ///
+    /// When `SEASONALITY` is requested, detection runs on the seasonally
+    /// adjusted residuals and only [`Anomaly::value`] is restored to the
+    /// original observation. These scores stay in the adjusted domain: they
+    /// describe the residual, which is what was actually tested. Two scores are
+    /// comparable only when computed over the same domain.
     pub scores: Vec<f64>,
     /// Detected anomalies
     pub anomalies: Vec<Anomaly>,
-    /// Threshold used for binary classification
+    /// Threshold used for binary classification, on the *method's own* scale —
+    /// z-score multiples for `zscore`, `k` for `mad`, the decision interval `h`
+    /// for `cusum`, a contamination fraction for `rcf`, and so on. It is echoed
+    /// to clients in `parameters` to document what was requested.
+    ///
+    /// This is deliberately *not* rescaled onto the score scale. On the score
+    /// scale the boundary is always `0.5`, which is what makes this field
+    /// unnecessary as a comparison anchor.
     pub threshold: f64,
     /// Method used for detection
     pub method: AnomalyMethod,
@@ -276,18 +285,14 @@ pub struct AnomalyResult {
 }
 
 impl AnomalyResult {
-    /// Count the number of detected anomalies
-    pub fn count_anomalies(&self) -> usize {
-        self.anomalies.len()
-    }
-
     /// Get outlier percentage.
+    #[allow(dead_code)]
     pub fn outlier_percentage(&self) -> f64 {
-        let count = self.count_anomalies();
-        if count == 0 {
+        let total = self.scores.len();
+        if total == 0 {
             0.0
         } else {
-            100.0 * count as f64 / self.scores.len() as f64
+            100.0 * self.anomalies.len() as f64 / total as f64
         }
     }
 }
@@ -307,13 +312,19 @@ impl AnomalyMADEstimator {
             AnomalyMADEstimator::Invariant => "Invariant",
         }
     }
+}
 
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            AnomalyMADEstimator::Simple => "simple",
-            AnomalyMADEstimator::HarrellDavis => "harrelldavis",
-            AnomalyMADEstimator::Invariant => "invariant",
-        }
+impl Display for AnomalyMADEstimator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AnomalyMADEstimator::Simple => "simple",
+                AnomalyMADEstimator::HarrellDavis => "harrelldavis",
+                AnomalyMADEstimator::Invariant => "invariant",
+            }
+        )
     }
 }
 
@@ -321,14 +332,16 @@ impl FromStr for AnomalyMADEstimator {
     type Err = ValkeyError;
 
     fn from_str(s: &str) -> ValkeyResult<Self> {
-        let res = hashify::tiny_map_ignore_case! {
+        let res = hashify::map_ignore_case!(
             s.as_bytes(),
+            AnomalyMADEstimator,
             "simple" => AnomalyMADEstimator::Simple,
             "harrell-davis" => AnomalyMADEstimator::HarrellDavis,
             "harrelldavis" => AnomalyMADEstimator::HarrellDavis,
             "hd" => AnomalyMADEstimator::HarrellDavis,
             "invariant" => AnomalyMADEstimator::Invariant,
-        };
+        )
+        .copied();
         match res {
             Some(estimator) => Ok(estimator),
             None => {
@@ -389,6 +402,30 @@ pub trait AnomalyDetector {
     ///
     /// Implementations must return exactly one score per element of `ts`, each
     /// in `[0, 1]`, and every `Anomaly::index` must index into `ts`.
+    ///
+    /// # The 0.5 contract
+    ///
+    /// A sample scores exactly `0.5` at the method's detection boundary, so
+    /// `score > 0.5` ⟺ flagged and `score <= 0.5` ⟺ not flagged. The boundary
+    /// belongs to the not-flagged side, matching the strict comparisons every
+    /// classifier here uses. Scores are strictly monotone in evidence; `0.0` and
+    /// `1.0` are asymptotic, reached only by degenerate or non-finite input.
+    ///
+    /// Implementations get this by reducing their verdict to an
+    /// evidence/boundary pair and handing it to
+    /// [`normalize_evidence`](utils::normalize_evidence) — never by normalizing
+    /// raw evidence, which would anchor the boundary wherever the threshold
+    /// happened to put it and make scores incomparable across methods.
+    ///
+    /// Two windows are exempt, because they are scored without ever being
+    /// classified:
+    ///
+    /// - RCF's warmup window (`0..output_after`),
+    /// - the smoothed z-score's first `lag` samples.
+    ///
+    /// `±∞` observations are maximally anomalous: they score `1.0` and are
+    /// flagged. `NaN` observations score `0.0` and are never flagged — a missing
+    /// reading is not evidence of an anomaly.
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult>;
 }
 
@@ -480,7 +517,7 @@ mod tests {
 
     impl PointDetector for FenceDetector {
         fn score(&self, value: f64) -> f64 {
-            utils::normalize_unbounded_score((value.abs() - 1.0).max(0.0))
+            utils::normalize_evidence((value.abs() - 1.0).max(0.0), 1.0)
         }
 
         fn classify(&self, value: f64) -> AnomalySignal {

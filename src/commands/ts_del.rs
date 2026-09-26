@@ -5,16 +5,21 @@ use valkey_module::{
     ValkeyValue,
 };
 
+acl_categories!(TS_DEL, "ts.del", "write timeseries");
 ///
 /// TS.DEL key fromTimestamp toTimestamp
 ///
 #[valkey_module_macros::command({
-    name: "TS.DEL",
+    name: "ts.del",
     flags: [Write, DenyOOM],
     summary: "Delete samples of a time series within a timestamp range.",
     complexity: "O(N) where N is the number of samples removed.",
     since: "1.0.0",
-    arity: -3,
+    // Exactly `TS.DEL key fromTimestamp toTimestamp`: both bounds are required, and nothing
+    // may follow them. The server rejects any other count before the handler runs, with the
+    // same "wrong number of arguments" reply as the reference; a variable arity let
+    // `TS.DEL key 5` (end defaulting to `+`) and `TS.DEL key - + garbage` through.
+    arity: 4,
     key_spec: [{
         flags: [ReadWrite, Delete],
         begin_search: Index({ index: 1 }),
@@ -26,22 +31,32 @@ pub fn ts_del_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = args.next_arg()?;
 
     let date_range = parse_timestamp_range(&mut args)?;
-    let count = with_timeseries_mut(ctx, &key, Some(AclPermissions::DELETE), |series| {
-        let (start_ts, end_ts) = date_range.get_series_range(series, None, false);
+    let (count, start_ts, end_ts) =
+        with_timeseries_mut(ctx, &key, Some(AclPermissions::DELETE), |series| {
+            let (start_ts, end_ts) = date_range.get_series_range(series, None, false);
 
-        if series.is_older_than_retention(start_ts) {
-            return Err(ValkeyError::String(
-                "TSDB: cannot delete samples older than retention".to_string(),
-            ));
-        }
+            // A range below the retention window is not an error: RedisTimeSeries deletes
+            // whatever the range intersects and reports the count (0 when it covers only
+            // already-expired time). Rejecting it here was an over-strict divergence found by
+            // the differential fuzzer.
+            let count = series
+                .remove_range_with_compaction(ctx, start_ts, end_ts)
+                .map_err(|_e| ValkeyError::String("TSDB: error deleting range".to_string()))?;
+            // todo: better error
+            Ok((count, start_ts, end_ts))
+        })?;
 
-        series
-            .remove_range_with_compaction(ctx, start_ts, end_ts)
-            .map_err(|_e| ValkeyError::String("TSDB: error deleting range".to_string()))
-        // todo: better error
-    })?;
-
-    ctx.replicate_verbatim();
+    // Propagate the resolved bounds, as TS.MDEL does. The range grammar accepts relative and
+    // symbolic bounds (`-1h`, `*`, `-`, `+`); replicated verbatim, a replica or an AOF replay
+    // resolves them against its own clock and series and deletes a different window.
+    ctx.replicate(
+        "TS.DEL",
+        &[
+            &key,
+            &ctx.create_string(start_ts.to_string()),
+            &ctx.create_string(end_ts.to_string()),
+        ],
+    );
     ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", &key);
 
     Ok(ValkeyValue::from(count))

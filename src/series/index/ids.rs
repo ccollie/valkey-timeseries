@@ -6,9 +6,10 @@
 //! plain atomic increment. This gives:
 //!
 //! - **Cluster-wide uniqueness (probabilistic)**: two nodes collide only if
-//!   they draw the same 24-bit epoch. Collisions are detected and remapped
-//!   at the single point where two ID spaces merge — slot import (see
-//!   `reindex.rs`) — so uniqueness only needs to be rare-failure, not
+//!   they draw the same 24-bit epoch. A series that arrives carrying a
+//!   serialized id (slot import, `RESTORE`, `TS._RESTORE`) is checked against
+//!   the index as it is indexed and remapped on a collision (see
+//!   `index_loaded_series`), so uniqueness only needs to be rare-failure, not
 //!   absolute.
 //! - **Dense postings bitmaps**: all IDs minted by one process share their
 //!   high 24 bits and increment in the low bits, so roaring containers in
@@ -25,6 +26,7 @@
 //! epoch `0`. A wrap requires exhausting 2^40 (~1.1 trillion) IDs in one
 //! process lifetime; the carried epoch is as uniformly random as a fresh
 //! draw, so wrapping is harmless anyway.
+#[allow(dead_code)]
 use crate::series::TimeseriesId;
 use rand::{RngExt, rng};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +35,7 @@ pub const EPOCH_BITS: u32 = 24;
 pub const COUNTER_BITS: u32 = 40;
 
 const EPOCH_MASK: u64 = (1 << EPOCH_BITS) - 1;
+#[cfg(test)]
 const COUNTER_MASK: u64 = (1 << COUNTER_BITS) - 1;
 
 /// Generates unique timeseries IDs.
@@ -76,18 +79,17 @@ impl IdGenerator {
         self.state.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    pub fn generate(&self) -> TimeseriesId {
-        self.next_id()
-    }
-
+    #[cfg(test)]
     pub fn epoch(&self) -> u32 {
         extract_epoch(self.state.load(Ordering::Relaxed))
     }
 
+    #[cfg(test)]
     pub fn extract_epoch(id: TimeseriesId) -> u32 {
         extract_epoch(id)
     }
 
+    #[cfg(test)]
     pub fn extract_counter(id: TimeseriesId) -> u64 {
         extract_counter(id)
     }
@@ -108,10 +110,12 @@ pub fn next_timeseries_id() -> TimeseriesId {
     generate()
 }
 
+#[cfg(test)]
 pub fn extract_epoch(id: TimeseriesId) -> u32 {
     (id >> COUNTER_BITS) as u32
 }
 
+#[cfg(test)]
 pub fn extract_counter(id: TimeseriesId) -> u64 {
     id & COUNTER_MASK
 }

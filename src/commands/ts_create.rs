@@ -5,9 +5,11 @@ use crate::commands::command_parser::{
 };
 use crate::error_consts;
 use crate::labels::Label;
+use crate::series::chunks::ChunkEncoding;
 use crate::series::{DuplicatePolicy, TimeSeriesOptions, create_and_store_series};
 use valkey_module::{Context, NextArg, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString};
 
+acl_categories!(TS_CREATE, "ts.create", "write fast timeseries");
 /// Create a new time series
 ///
 /// TS.CREATE key
@@ -20,7 +22,7 @@ use valkey_module::{Context, NextArg, VALKEY_OK, ValkeyError, ValkeyResult, Valk
 ///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///   [LABELS label1=value1 label2=value2 ...]
 #[valkey_module_macros::command({
-    name: "TS.CREATE",
+    name: "ts.create",
     flags: [Write, DenyOOM],
     summary: "Create a new time series.",
     complexity: "O(1)",
@@ -66,12 +68,38 @@ pub fn parse_series_options(
     args_to_skip: usize,
     invalid_args: &[CommandArgToken],
 ) -> ValkeyResult<TimeSeriesOptions> {
+    parse_series_options_onto(
+        TimeSeriesOptions::from_config(),
+        args,
+        args_to_skip,
+        invalid_args,
+    )
+}
+
+/// Parse series options onto `base`.
+///
+/// Creating a series starts from the module configuration, so every unset option
+/// lands on its configured default. Altering one starts from
+/// [`TimeSeriesOptions::empty`] instead: `TS.ALTER` must leave a property it was
+/// not given alone, which it can only tell apart if the parser leaves it `None`.
+pub fn parse_series_options_onto(
+    base: TimeSeriesOptions,
+    args: Vec<ValkeyString>,
+    args_to_skip: usize,
+    invalid_args: &[CommandArgToken],
+) -> ValkeyResult<TimeSeriesOptions> {
     let mut metric_set = false;
 
-    let mut options = TimeSeriesOptions::from_config();
+    let mut options = base;
 
-    // Labels are variadic, so we handle them first to make parsing easier.
-    let pos = args.iter().rposition(|x| x.eq_ignore_ascii_case(b"labels"));
+    // Labels are variadic, so we handle them first to make parsing easier. LABELS ends
+    // the option list (DIV-0043), so the list starts at the first LABELS *keyword* in
+    // the option region — found by walking option boundaries, not by matching raw
+    // arguments, so an operand spelled `labels` (`METRIC labels`, `LABELS type labels`,
+    // a key named `labels` in `TS.ADD labels <ts> <v>`) is never taken for it.
+    let pos = series_option_keywords(&args, args_to_skip)
+        .find(|&(_, token)| token == CommandArgToken::Labels)
+        .map(|(pos, _)| pos);
 
     // Extract and process labels if they exist
     let args = if let Some(pos) = pos {
@@ -92,10 +120,44 @@ pub fn parse_series_options(
     // Process the remaining arguments (skipping the key)
     let mut args_iter = args.into_iter().skip(args_to_skip).peekable();
 
+    // RedisTimeSeries resolves each option from its *first* occurrence and never
+    // looks at a later one — `RETENTION 100 RETENTION bogus` is accepted and
+    // keeps 100. Repeats of the shared options are therefore consumed (operands
+    // included, unvalidated) and discarded rather than overwriting the value.
+    let mut seen: Vec<CommandArgToken> = Vec::new();
+
     while let Some(arg) = args_iter.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         if invalid_args.contains(&token) {
             return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
+        }
+
+        if let Some(operands) = first_occurrence_wins_operands(token) {
+            if seen.contains(&token) {
+                for _ in 0..operands {
+                    if args_iter.next().is_none() {
+                        break;
+                    }
+                }
+                continue;
+            }
+            seen.push(token);
+        }
+
+        // Encoding has two spellings and they are not symmetric on RTS: an
+        // explicit `ENCODING <v>` wins over a bare COMPRESSED/UNCOMPRESSED keyword
+        // wherever the two appear relative to each other, while two bare keywords
+        // resolve first-wins like every other option.
+        if matches!(
+            token,
+            CommandArgToken::Compressed | CommandArgToken::Uncompressed
+        ) {
+            if seen.contains(&CommandArgToken::Encoding)
+                || seen.contains(&CommandArgToken::Compressed)
+            {
+                continue;
+            }
+            seen.push(CommandArgToken::Compressed);
         }
 
         match token {
@@ -107,6 +169,15 @@ pub fn parse_series_options(
             }
             CommandArgToken::Encoding => {
                 options.chunk_encoding = parse_chunk_compression(&mut args_iter)?;
+            }
+            // RTS still accepts the pre-ENCODING spelling — a bare COMPRESSED or
+            // UNCOMPRESSED keyword with no operand — on TS.CREATE, TS.ADD and the
+            // counter commands.
+            CommandArgToken::Compressed => {
+                options.chunk_encoding = ChunkEncoding::default();
+            }
+            CommandArgToken::Uncompressed => {
+                options.chunk_encoding = ChunkEncoding::Uncompressed;
             }
             CommandArgToken::DecimalDigits => {
                 if options.rounding.is_some() {
@@ -120,9 +191,7 @@ pub fn parse_series_options(
                     return Err(ValkeyError::Str(error_consts::MISSING_DUPLICATE_POLICY));
                 };
                 let policy: DuplicatePolicy = DuplicatePolicy::try_from(arg.as_slice())?;
-                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
-                ignore_options.policy = Some(policy);
-                options.sample_duplicate_policy = Some(ignore_options);
+                options.duplicate_policy = Some(policy);
             }
             CommandArgToken::OnDuplicate => {
                 options.on_duplicate = Some(parse_duplicate_policy(&mut args_iter)?);
@@ -131,16 +200,15 @@ pub fn parse_series_options(
                 if metric_set {
                     return Err(ValkeyError::Str(error_consts::METRIC_ALREADY_SET));
                 }
+                // Set here too, not only by LABELS: a second METRIC used to replace the first.
+                metric_set = true;
                 let metric = args_iter.next_string()?;
                 options.labels = Some(parse_metric_name(&metric)?);
             }
             CommandArgToken::Ignore => {
                 let (ignore_max_timediff, ignore_max_val_diff) =
                     parse_ignore_options(&mut args_iter)?;
-                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
-                ignore_options.max_time_delta = ignore_max_timediff as u64;
-                ignore_options.max_value_delta = ignore_max_val_diff;
-                options.sample_duplicate_policy = Some(ignore_options);
+                options.ignore = Some((ignore_max_timediff as u64, ignore_max_val_diff));
             }
             CommandArgToken::Retention => options.retention(parse_retention(&mut args_iter)?),
             CommandArgToken::SignificantDigits => {
@@ -156,6 +224,65 @@ pub fn parse_series_options(
     }
 
     Ok(options)
+}
+
+/// Operand count for the options RedisTimeSeries resolves first-occurrence-wins,
+/// or `None` for options outside that shared surface — the Valkey-TimeSeries-only
+/// ones keep their own already-set diagnostics. The bare COMPRESSED/UNCOMPRESSED
+/// keywords are handled separately (see the call site).
+fn first_occurrence_wins_operands(token: CommandArgToken) -> Option<usize> {
+    matches!(
+        token,
+        CommandArgToken::Retention
+            | CommandArgToken::Encoding
+            | CommandArgToken::ChunkSize
+            | CommandArgToken::DuplicatePolicy
+            | CommandArgToken::OnDuplicate
+            | CommandArgToken::Ignore
+    )
+    .then(|| series_option_operands(token))
+}
+
+/// The option keywords of a series-option list starting at `start`, with their
+/// indexes, walked the way the option parser consumes them: each keyword is followed
+/// by its operands, which are skipped rather than inspected. The walk stops after
+/// LABELS, whose variadic operands end the list.
+///
+/// Unknown tokens are yielded as `CommandArgToken::default()` with no operands; the
+/// option parser rejects them.
+pub(crate) fn series_option_keywords(
+    args: &[ValkeyString],
+    start: usize,
+) -> impl Iterator<Item = (usize, CommandArgToken)> + '_ {
+    let mut index = start;
+    std::iter::from_fn(move || {
+        let arg = args.get(index)?;
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        let at = index;
+        index = if token == CommandArgToken::Labels {
+            args.len()
+        } else {
+            index + 1 + series_option_operands(token)
+        };
+        Some((at, token))
+    })
+}
+
+/// Operand count of each series option (including TS.INCRBY/TS.DECRBY's TIMESTAMP).
+fn series_option_operands(token: CommandArgToken) -> usize {
+    match token {
+        CommandArgToken::ChunkSize
+        | CommandArgToken::DecimalDigits
+        | CommandArgToken::DuplicatePolicy
+        | CommandArgToken::Encoding
+        | CommandArgToken::Metric
+        | CommandArgToken::OnDuplicate
+        | CommandArgToken::Retention
+        | CommandArgToken::SignificantDigits
+        | CommandArgToken::Timestamp => 1,
+        CommandArgToken::Ignore => 2,
+        _ => 0,
+    }
 }
 
 /// Parse labels from the command arguments. It's variadic, so it should be the last argument
@@ -175,7 +302,9 @@ fn parse_labels(args: &[ValkeyString]) -> ValkeyResult<Vec<Label>> {
         let value = &arg[1];
 
         if name.is_empty() || value.is_empty() {
-            return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
+            // An empty label name or value is a LABELS parse failure, not a
+            // duplicate — and "Couldn't parse LABELS" is the RTS text for it.
+            return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_LABELS));
         }
 
         let label = Label::new(name.to_string_lossy(), value.to_string_lossy());

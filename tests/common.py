@@ -21,7 +21,10 @@ SERVER_PATH = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{SE
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 SERVER_VERSION = os.environ.get("SERVER_VERSION", "unstable")
 VALKEY_SERVER_PATH = f"{SCRIPT_DIR}/build/binaries/{SERVER_VERSION}/valkey-server"
-TEST_DIR = f"{ROOT_PATH}/test-data"
+# TEST_DIR is overridable so that each pytest-xdist worker can be given its own
+# directory (tests/conftest.py sets it before this module is imported). Serial runs
+# see the unsuffixed default and are unaffected.
+TEST_DIR = os.environ.get("TEST_DIR") or f"{ROOT_PATH}/test-data"
 LOGS_DIR = f"{TEST_DIR}/logs"
 
 if "VALKEY_SERVER_PATH" in os.environ:
@@ -179,7 +182,10 @@ class CompactionRule:
             self.alignment = int(alignment)
 
     def __key(self):
-        return self.dest_key, self.bucket_duration, self.aggregation, self.alignment
+        # Aggregator identity is case-insensitive: `avg` and `AVG` denote the
+        # same aggregator. TS.INFO reports it uppercase (matching
+        # RedisTimeSeries); rule equality here should not depend on that case.
+        return self.dest_key, self.bucket_duration, self.aggregation.lower(), self.alignment
 
     def __hash__(self):
         return hash(self.__key())
@@ -198,7 +204,7 @@ class CompactionRule:
             return False
         return (self.dest_key == other.dest_key and
                 self.bucket_duration == other.bucket_duration and
-                self.aggregation == other.aggregation and
+                self.aggregation.lower() == other.aggregation.lower() and
                 self.alignment == other.alignment)
     def __repr__(self):
         return f"CompactionRule(dest_key={self.dest_key}, bucket_duration={self.bucket_duration}, " \

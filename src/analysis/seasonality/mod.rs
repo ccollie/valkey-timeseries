@@ -1,18 +1,13 @@
 pub mod mstl;
 mod periodogram;
 pub mod stl;
-mod test_data;
+#[cfg(test)]
+pub mod test_data;
 
 use crate::analysis::seasonality::mstl::Mstl;
 use crate::analysis::seasonality::stl::Stl;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 pub use periodogram::Detector as PeriodogramDetector;
-
-/// A detector of periodic signals in a time series.
-pub trait SeasonalityDetector {
-    /// Detects the periods of a time series.
-    fn detect(&self, data: &[f64]) -> Vec<u32>;
-}
 
 #[derive(Clone, Debug)]
 pub enum Seasonality {
@@ -223,5 +218,13 @@ mod tests {
             result, data,
             "with no detectable period the input must be returned unchanged"
         );
+    }
+
+    #[test]
+    fn test_auto_three_samples_returns_input_unchanged() {
+        let data = vec![1.0, 2.0, 1.0];
+        let result = seasonally_adjust(&data, &Seasonality::Auto).unwrap();
+
+        assert_eq!(result, data);
     }
 }

@@ -1,11 +1,8 @@
-use crate::fanout::FanoutTargetMode;
-use std::sync::atomic::AtomicBool;
+use crate::fanout::FanoutTarget;
 use valkey_module::{Context, ContextFlags, ValkeyResult};
 pub(crate) const SLOT_SIZE: u16 = 16384;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
-
-pub static FORCE_REPLICAS_READONLY: AtomicBool = AtomicBool::new(false);
 
 pub fn is_client_read_only(ctx: &Context) -> ValkeyResult<bool> {
     let info = ctx.get_client_info()?;
@@ -30,31 +27,35 @@ fn is_valkey_version_legacy(context: &Context) -> bool {
         .is_ok_and(|version| version.major < 9)
 }
 
-pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
-    #[cfg(test)]
-    if FORCE_REPLICAS_READONLY.load(std::sync::atomic::Ordering::Relaxed) {
-        // Testing only
-        return FanoutTargetMode::ReplicasOnly;
-    }
-
-    // Determine fanout mode based on Valkey version and client read-only status.
-    // The following logic is based on the issue https://github.com/valkey-io/valkey-search/issues/139
+/// Determines whether a query may fan out to replicas based on Valkey version and client
+/// read-only status. The following logic is based on the issue
+/// https://github.com/valkey-io/valkey-search/issues/139
+///
+/// Returns `true` if replicas may be targeted (client is READONLY, or its status can't be
+/// determined), `false` if only primaries should be targeted.
+pub fn client_allows_replica_fanout(context: &Context) -> bool {
     if is_valkey_version_legacy(context) {
         // Valkey 8 doesn't provide a way to determine if a client is READONLY,
         // So we choose random distribution.
-        FanoutTargetMode::Random
-    } else {
-        match is_client_read_only(context) {
-            Ok(true) => FanoutTargetMode::Random,
-            Ok(false) => FanoutTargetMode::Primary,
-            Err(_) => {
-                // If we can't determine client read-only status, default to Random
-                crate::common::logging::log_warning(
-                    "Could not determine client read-only status, defaulting to Random fanout mode.",
-                );
-                FanoutTargetMode::Random
-            }
+        return true;
+    }
+    match is_client_read_only(context) {
+        Ok(allowed) => allowed,
+        Err(_) => {
+            // If we can't determine client read-only status, default to Random
+            crate::common::logging::log_warning(
+                "Could not determine client read-only status, defaulting to Random fanout mode.",
+            );
+            true
         }
+    }
+}
+
+pub fn compute_query_fanout_mode(context: &Context) -> FanoutTarget {
+    if client_allows_replica_fanout(context) {
+        FanoutTarget::Random
+    } else {
+        FanoutTarget::Primary
     }
 }
 

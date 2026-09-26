@@ -1,6 +1,9 @@
-use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::commands::fanout::{DateRange, MDelRequest, MDelResponse};
+use crate::commands::fanout_codec::filters::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout_codec::{CountResponse, DateRange, MDelRequest};
+use crate::common::context::is_replica;
+use crate::common::replies::ReplyContext;
 use crate::error_consts;
+use crate::fanout::FanoutTarget;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::labels::filters::SeriesSelector;
@@ -11,11 +14,16 @@ use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 pub struct MDelFanoutCommand {
     selectors: Vec<SeriesSelector>,
     date_range: Option<DateRange>,
+    tags: Vec<String>,
     total_deleted: usize,
 }
 
 impl MDelFanoutCommand {
-    pub fn new(selectors: Vec<SeriesSelector>, date_range: Option<TimestampRange>) -> Self {
+    pub fn new(
+        selectors: Vec<SeriesSelector>,
+        date_range: Option<TimestampRange>,
+        tags: Vec<String>,
+    ) -> Self {
         let date_range = date_range.map(|dr| {
             let (start, end) = dr.get_timestamps(None);
             DateRange { start, end }
@@ -23,6 +31,7 @@ impl MDelFanoutCommand {
         MDelFanoutCommand {
             selectors,
             date_range,
+            tags,
             total_deleted: 0,
         }
     }
@@ -30,13 +39,26 @@ impl MDelFanoutCommand {
 
 impl FanoutClientCommand for MDelFanoutCommand {
     type Request = MDelRequest;
-    type Response = MDelResponse;
+    type Response = CountResponse;
 
     fn name() -> &'static str {
         "mdel"
     }
 
-    fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response> {
+    /// Unlike every other fanout command in this module, `TS.MDEL` is a write. The trait default
+    /// (`FanoutTarget::Random`) picks uniformly among each shard's primary *and* its replicas,
+    /// which would delete keys directly on a replica — a write the replica's primary never made,
+    /// and one the next full resync silently reverts. A write has exactly one correct target per
+    /// shard.
+    fn get_targets(&self, _ctx: &Context) -> FanoutTarget {
+        if self.tags.is_empty() {
+            FanoutTarget::Primary
+        } else {
+            FanoutTarget::HashTagsPrimary(self.tags.clone())
+        }
+    }
+
+    fn get_local_response(ctx: &FanoutContext, req: Self::Request) -> ValkeyResult<Self::Response> {
         let filters = deserialize_matchers_list(Some(req.filters))
             .map_err(|_e| ValkeyError::Str(error_consts::COMMAND_DESERIALIZATION_ERROR))?;
 
@@ -47,9 +69,23 @@ impl FanoutClientCommand for MDelFanoutCommand {
             None
         };
 
-        let deleted_count = delete_series_by_selectors(ctx, &filters, range)?;
-        Ok(MDelResponse {
-            deleted_count: deleted_count as u64,
+        let ctx = ctx.lock()?;
+
+        // Defence in depth behind `get_targets`: the coordinator picked us from *its* cluster map,
+        // and a failover between selection and delivery can leave that map naming a node that has
+        // since been demoted. Fail this shard's slice loudly rather than diverge the replica.
+        // Checked under the same lock as the delete so the role can't flip in between.
+        if is_replica(&ctx) {
+            return Err(ValkeyError::Str(error_consts::FANOUT_WRITE_ON_REPLICA));
+        }
+
+        // `delete_series_by_selectors` propagates its own effects (`DEL` / `TS.DEL`) to this
+        // node's replicas. The command itself cannot be propagated from here: this runs in a
+        // fanout RPC handler whose context has no client argv for `ReplicateVerbatim` to copy,
+        // and a replica replaying `TS.MDEL` would fan the command out a second time.
+        let deleted_count = delete_series_by_selectors(&ctx, &filters, range)?;
+        Ok(CountResponse {
+            count: deleted_count as u64,
         })
     }
 
@@ -64,11 +100,11 @@ impl FanoutClientCommand for MDelFanoutCommand {
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
-        self.total_deleted += resp.deleted_count as usize;
+        self.total_deleted += resp.count as usize;
         Ok(())
     }
 
-    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+    fn reply(&mut self, ctx: &ReplyContext) -> Status {
         ctx.reply(Ok(ValkeyValue::Integer(self.total_deleted as i64)))
     }
 }

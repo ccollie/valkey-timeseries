@@ -1,10 +1,7 @@
 use super::GorillaIterator;
 use super::varbit_xor::write_varbit_xor;
 use crate::common::Sample;
-use crate::common::encoding::{
-    try_read_f64_le, try_read_signed_varint as read_varint, try_read_uvarint, write_f64_le,
-    write_uvarint,
-};
+use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_f64_le, write_uvarint};
 use crate::common::hash::hash_f64;
 use crate::common::logging::log_warning;
 use crate::common::rdb::{
@@ -87,6 +84,19 @@ impl GorillaEncoder {
         self.trailing_bits = 0;
         self.timestamp_delta = 0;
         self.first_ts = 0;
+    }
+
+    /// An empty encoder whose bit stream will not allocate past `max_size` (plus a few
+    /// bytes of slack) while it is within budget; see `BitStream::set_soft_cap`.
+    pub fn with_soft_cap(max_size: usize) -> GorillaEncoder {
+        let mut encoder = Self::new();
+        encoder.writer.set_soft_cap(max_size);
+        encoder
+    }
+
+    /// See `BitStream::set_soft_cap`. A loaded chunk calls this once it knows its budget.
+    pub fn set_soft_cap(&mut self, max_size: usize) {
+        self.writer.set_soft_cap(max_size);
     }
 
     pub fn add_sample(&mut self, sample: &Sample) -> std::io::Result<()> {
@@ -178,8 +188,28 @@ impl GorillaEncoder {
         self.writer.get_ref()
     }
 
+    /// Bits written so far, counting the partial trailing byte exactly.
+    #[cfg(test)]
+    pub(crate) fn stream_bit_len(&self) -> usize {
+        self.writer.len() * 8 - self.writer.count as usize
+    }
+
+    /// `(leading_bits, trailing_bits, timestamp_delta)`: the rolling state the next append
+    /// starts from.
+    #[cfg(test)]
+    pub(crate) fn window_state(&self) -> (u8, u8, i64) {
+        (self.leading_bits, self.trailing_bits, self.timestamp_delta)
+    }
+
     pub(crate) fn shrink_to_fit(&mut self) {
         self.writer.shrink_to_fit()
+    }
+
+    /// Keeps only the first `len` bytes of the stream while leaving `num_samples` and the
+    /// last-sample metadata as they were: a stream that claims more than it holds.
+    #[cfg(test)]
+    pub(crate) fn truncate_stream_for_test(&mut self, len: usize) {
+        self.writer.truncate(len);
     }
 
     pub fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
@@ -302,9 +332,6 @@ impl PartialEq<Self> for GorillaEncoder {
     }
 }
 
-fn read_signed_varint(buf: &mut &[u8]) -> TsdbResult<i64> {
-    read_varint(buf).map_err(|_| TsdbError::ChunkDecoding)
-}
 fn read_unsigned_varint(buf: &mut &[u8]) -> TsdbResult<u64> {
     try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
 }

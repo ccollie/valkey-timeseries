@@ -5,6 +5,7 @@ use crate::common::rounding::{
     MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, MIN_SIGNIFICANT_DIGITS, RoundingStrategy,
 };
 use crate::common::time::current_time_millis;
+use crate::config::is_strict_rts_compat;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
@@ -15,34 +16,30 @@ use crate::parser::number::parse_number;
 use crate::parser::{
     metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
     parse_positive_duration_value, timestamp::parse_timestamp as parse_timestamp_internal,
+    timestamp::timestamp_error,
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
-    MetaDateRangeFilter, RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
+    MetaDateRangeFilter, NRangeOptions, RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
 };
 use crate::series::types::{DuplicatePolicy, ValueFilter};
 use crate::series::{TimestampRange, TimestampValue};
-use ahash::AHashMap;
+use ahash::AHashSet;
 use smallvec::SmallVec;
-use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::iter::{Peekable, Skip};
 use std::time::Duration;
 use std::vec::IntoIter;
-use strum_macros::EnumIter;
 use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 pub const MAX_TS_VALUES_FILTER: usize = 128;
 
-// Kept because these are referenced directly in the parsing logic below.
-const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
-const CMD_ARG_COUNT: &str = "COUNT";
-const CMD_ARG_REDUCE: &str = "REDUCE";
-
 macro_rules! command_arg_tokens {
     ( $( $variant:ident => $lit:literal ),+ $(,)? ) => {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default, EnumIter)]
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+        // Only the token round-trip test iterates the variants.
+        #[cfg_attr(test, derive(strum_macros::EnumIter))]
         pub enum CommandArgToken {
             $(
                 $variant,
@@ -64,12 +61,13 @@ macro_rules! command_arg_tokens {
         }
 
         pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
-            hashify::tiny_map_ignore_case! {
+            hashify::map_ignore_case!(
                 arg,
+                CommandArgToken,
                 $(
                     $lit => CommandArgToken::$variant,
                 )+
-            }
+            ).copied()
         }
     };
 }
@@ -91,6 +89,7 @@ command_arg_tokens! {
     Empty => "EMPTY",
     Encoding => "ENCODING",
     End => "END",
+    ExcludeEmpty => "EXCLUDEEMPTY",
     False => "FALSE",
     Filter => "FILTER",
     FilterByTs => "FILTER_BY_TS",
@@ -126,6 +125,7 @@ command_arg_tokens! {
     SignificantDigits => "SIGNIFICANT_DIGITS",
     Start => "START",
     Step => "STEP",
+    HashTag => "HASHTAG",
     Timestamp => "TIMESTAMP",
     True => "TRUE",
     Uncompressed => "UNCOMPRESSED",
@@ -140,71 +140,48 @@ impl Display for CommandArgToken {
 
 pub type CommandArgIterator = Peekable<Skip<IntoIter<ValkeyString>>>;
 
-pub fn parse_number_arg(arg: &ValkeyString, name: &str) -> ValkeyResult<f64> {
-    if let Ok(value) = arg.parse_float() {
-        return Ok(value);
-    }
-    let arg_str = arg.to_string_lossy();
-    parse_number_with_unit(&arg_str).map_err(|_| {
-        let msg = format!("ERR invalid number parsing {name}");
-        ValkeyError::String(msg)
-    })
-}
-
-pub fn parse_integer_arg(
-    arg: &ValkeyString,
-    name: &str,
-    allow_negative: bool,
-) -> ValkeyResult<i64> {
-    let value = if let Ok(val) = arg.parse_integer() {
-        val
-    } else {
-        let num = parse_number_arg(arg, name)?;
-        if num != num.floor() {
-            return Err(ValkeyError::Str(error_consts::INVALID_INTEGER));
-        }
-        if num > i64::MAX as f64 {
-            return Err(ValkeyError::Str("TSDB: value is too large"));
-        }
-        num as i64
-    };
-    if !allow_negative && value < 0 {
-        let msg = format!("TSDB: {name} must be a non-negative integer");
-        return Err(ValkeyError::String(msg));
-    }
-    Ok(value)
-}
-
 pub fn parse_timestamp(arg: &str) -> ValkeyResult<Timestamp> {
     if arg == "*" {
         return Ok(current_time_millis());
     }
-    parse_timestamp_internal(arg, false)
-        .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
-}
-
-pub fn parse_timestamp_arg(arg: &str, name: &str) -> Result<TimestampValue, ValkeyError> {
-    parse_timestamp_range_value(arg).map_err(|_e| {
-        let msg = format!("TSDB: invalid {name} timestamp");
-        ValkeyError::String(msg)
-    })
+    parse_timestamp_internal(arg, false).map_err(|e| ValkeyError::Str(timestamp_error(&e)))
 }
 
 pub fn parse_timestamp_range_value(arg: &str) -> ValkeyResult<TimestampValue> {
     TimestampValue::try_from(arg)
 }
 
-pub fn parse_duration_arg(arg: &ValkeyString) -> ValkeyResult<Duration> {
+/// Parse a bucket duration (the `AGGREGATION <aggregator> <bucketDuration>` operand,
+/// shared by the range family and TS.CREATERULE).
+///
+/// A zero duration reaches the bucket-boundary modulo in the aggregation iterator,
+/// so it must be rejected here rather than deeper: `bucket_duration` is also
+/// persisted with a compaction rule, where a zero would survive a reload.
+pub fn parse_bucket_duration_arg(arg: &ValkeyString) -> ValkeyResult<Duration> {
     if let Ok(value) = arg.parse_integer() {
-        if value < 0 {
-            return Err(ValkeyError::Str(
-                "TSDB: invalid duration, must be a non-negative integer",
-            ));
-        }
-        return Ok(Duration::from_millis(value as u64));
+        return bucket_duration_from_millis(value);
     }
-    let value_str = arg.to_string_lossy();
-    parse_duration(&value_str)
+    parse_bucket_duration_str(&arg.to_string_lossy())
+}
+
+/// String form of [`parse_bucket_duration_arg`], for callers holding a `&str`.
+pub fn parse_bucket_duration_str(arg: &str) -> ValkeyResult<Duration> {
+    if let Ok(value) = arg.parse::<i64>() {
+        return bucket_duration_from_millis(value);
+    }
+    let duration = parse_duration(arg)
+        .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_AGGREGATION))?;
+    if duration.is_zero() {
+        return Err(ValkeyError::Str(error_consts::BUCKET_DURATION_TOO_SMALL));
+    }
+    Ok(duration)
+}
+
+fn bucket_duration_from_millis(value: i64) -> ValkeyResult<Duration> {
+    if value <= 0 {
+        return Err(ValkeyError::Str(error_consts::BUCKET_DURATION_TOO_SMALL));
+    }
+    Ok(Duration::from_millis(value as u64))
 }
 
 pub fn parse_duration(arg: &str) -> ValkeyResult<Duration> {
@@ -251,7 +228,7 @@ pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
 pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
     fn get_error_result() -> ValkeyResult<usize> {
         let msg = format!(
-            "TSDB: CHUNK_SIZE value must be an integer multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]"
+            "TSDB: CHUNK_SIZE value must be a multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]"
         );
         Err(ValkeyError::String(msg))
     }
@@ -280,7 +257,8 @@ pub fn parse_chunk_compression(args: &mut CommandArgIterator) -> ValkeyResult<Ch
         ChunkEncoding::try_from(next)
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING))
     } else {
-        Err(ValkeyError::Str(error_consts::MISSING_CHUNK_ENCODING))
+        // RTS reports a trailing ENCODING with no value as wrong arity.
+        Err(ValkeyError::WrongArity)
     }
 }
 
@@ -326,8 +304,10 @@ pub fn parse_timestamp_filter(
             .next_str()
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER))?;
 
-        let timestamp =
-            parse_timestamp(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
+        // An unparseable entry is reported as a FILTER_BY_TS argument problem
+        // rather than a bare "invalid timestamp": the list is the operand.
+        let timestamp = parse_timestamp(arg)
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER))?;
 
         values.push(timestamp);
 
@@ -348,9 +328,15 @@ pub fn parse_timestamp_filter(
 }
 
 pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFilter> {
-    let min = parse_number_with_unit(args.next_str()?)
+    let min_arg = args
+        .next_str()
+        .map_err(|_| ValkeyError::Str(error_consts::FILTER_BY_VALUE_MISSING_ARGS))?;
+    let min = parse_number_with_unit(min_arg)
         .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MIN))?;
-    let max = parse_number_with_unit(args.next_str()?)
+    let max_arg = args
+        .next_str()
+        .map_err(|_| ValkeyError::Str(error_consts::FILTER_BY_VALUE_MISSING_ARGS))?;
+    let max = parse_number_with_unit(max_arg)
         .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MAX))?;
     if min.is_nan() {
         return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_MIN));
@@ -358,20 +344,24 @@ pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFi
     if max.is_nan() {
         return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_MAX));
     }
-    if max < min {
-        return Err(ValkeyError::Str(
-            "TSDB filter min parameter is greater than max",
-        ));
-    }
+    // min > max is deliberately not rejected: it matches no sample, which is
+    // what RTS replies for the same input.
     ValueFilter::new(min, max)
 }
 
+/// Parse a COUNT operand. The value must be >= 1: zero is rejected rather than
+/// treated as "return no samples", so that a caller can not silently receive an
+/// empty reply from a typo.
 pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     let next = args
         .next_arg()
         .map_err(|_| ValkeyError::Str(error_consts::MISSING_COUNT_VALUE))?;
-    let count = parse_integer_arg(&next, CMD_ARG_COUNT, false)
-        .map_err(|_| ValkeyError::Str(error_consts::NEGATIVE_COUNT))?;
+    let count = next
+        .parse_integer()
+        .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_COUNT))?;
+    if count < 1 {
+        return Err(ValkeyError::Str(error_consts::INVALID_COUNT_VALUE));
+    }
     Ok(count as usize)
 }
 
@@ -396,34 +386,6 @@ fn expect_next_token(args: &mut CommandArgIterator, expected: CommandArgToken) -
     Ok(())
 }
 
-pub(crate) fn parse_next_token(
-    args: &mut CommandArgIterator,
-    tokens: Option<&[CommandArgToken]>,
-) -> ValkeyResult<Option<CommandArgToken>> {
-    let arg = args.next_str()?;
-    let Some(token) = parse_command_arg_token(arg.as_bytes()) else {
-        return Ok(None);
-    };
-    let Some(valid_tokens) = tokens else {
-        return Ok(Some(token));
-    };
-    if valid_tokens.contains(&token) {
-        return Ok(Some(token));
-    }
-    let msg = if valid_tokens.len() == 1 {
-        format!(
-            "TSDB: expected \"{}\", found \"{arg}\"",
-            valid_tokens[0].as_str()
-        )
-    } else {
-        format!(
-            "TSDB: expected one of {:?}, found \"{arg}\"",
-            valid_tokens.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
-        )
-    };
-    Err(ValkeyError::String(msg))
-}
-
 pub(crate) fn advance_if_next_token_one_of(
     args: &mut CommandArgIterator,
     tokens: &[CommandArgToken],
@@ -440,14 +402,6 @@ pub(crate) fn advance_if_next_token_one_of(
 
 pub(super) fn peek_token(args: &mut CommandArgIterator) -> Option<CommandArgToken> {
     args.peek().and_then(|next| parse_command_arg_token(next))
-}
-
-fn next_token(args: &mut CommandArgIterator) -> ValkeyResult<Option<CommandArgToken>> {
-    let arg = match args.next_str() {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    Ok(parse_command_arg_token(arg.as_bytes()))
 }
 
 pub(super) fn parse_optional_token_block(
@@ -490,78 +444,48 @@ pub fn parse_label_list(
     args: &mut CommandArgIterator,
     stop_tokens: &[CommandArgToken],
 ) -> ValkeyResult<Vec<String>> {
-    let mut labels: BTreeSet<String> = BTreeSet::new();
+    // Kept in the requested order: SELECTED_LABELS replies list the labels in the order they
+    // were asked for (as the reference does), and a set here used to sort them. The set only
+    // detects duplicates.
+    let mut labels: Vec<String> = Vec::new();
+    let mut seen: AHashSet<String> = AHashSet::new();
 
     for_each_arg_until_stop(args, stop_tokens, |label| {
-        if labels.contains(label) {
+        if seen.contains(label) {
             return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
         }
         if labels.len() == MAX_LABELS_PER_SERIES {
             return Err(ValkeyError::Str(error_consts::TOO_MANY_LABELS));
         }
-        labels.insert(label.to_string());
+        seen.insert(label.to_string());
+        labels.push(label.to_string());
         Ok(())
     })?;
-
-    Ok(labels.into_iter().collect())
-}
-
-pub fn parse_label_value_pairs(
-    args: &mut CommandArgIterator,
-    stop_tokens: &[CommandArgToken],
-) -> ValkeyResult<AHashMap<String, String>> {
-    let mut labels: AHashMap<String, String> = AHashMap::new();
-
-    while !is_stop_token_or_end(args, stop_tokens) {
-        let name = args
-            .next_str()
-            .map_err(|_| ValkeyError::Str(error_consts::INVALID_LABEL_NAME))?;
-
-        if name.is_empty() {
-            return Err(ValkeyError::Str(error_consts::INVALID_LABEL_NAME));
-        }
-
-        // Must have a value next; if we hit stop/end here, it's an odd number of args.
-        if is_stop_token_or_end(args, stop_tokens) || args.peek().is_none() {
-            return Err(ValkeyError::Str(error_consts::INVALID_LABEL_VALUE));
-        }
-
-        let value = args
-            .next_str()
-            .map_err(|_| ValkeyError::Str(error_consts::INVALID_LABEL_VALUE))?;
-
-        if labels.insert(name.to_string(), value.to_string()).is_some() {
-            return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
-        }
-    }
 
     Ok(labels)
 }
 
 /// An `AGGREGATION` list element paired with its optional inline condition,
-/// e.g. the `(CountIf, Some(>5))` parsed from `countif(>5)`.
+/// e.g. the `(CountIf, Some(>5))` parsed from `countif>5`.
 type AggregationListElement = (AggregationType, Option<ValueComparisonFilter>);
 
-/// Split an aggregator token into its bare name and optional parenthesized
-/// inline-condition substring, e.g. `countif(>5)` -> (`"countif"`, `Some(">5")`),
-/// `avg` -> (`"avg"`, `None`).
+/// Split an aggregator token into its bare name and optional inline-condition
+/// substring, e.g. `countif>=5` -> (`"countif"`, `Some(">=5")`); a name with no
+/// condition at all (`avg`) yields `None`. No aggregator name contains `<`,
+/// `>`, `=`, or `!`, so the first such character unambiguously marks where the
+/// name ends.
 pub(super) fn split_aggregator_condition(part: &str) -> ValkeyResult<(&str, Option<&str>)> {
-    match part.find('(') {
+    match part.find(['<', '>', '=', '!']) {
         Some(0) => Err(ValkeyError::Str(error_consts::INVALID_AGGREGATION_LIST)),
-        Some(open) => {
-            if !part.ends_with(')') {
-                return Err(ValkeyError::Str(error_consts::INVALID_AGGREGATION_LIST));
-            }
-            Ok((&part[..open], Some(&part[open + 1..part.len() - 1])))
-        }
+        Some(op) => Ok((&part[..op], Some(&part[op..]))),
         None => Ok((part, None)),
     }
 }
 
-/// Split the parenthesized suffix of an inline condition (e.g. `>5`,
-/// `<=2.5`) into its operator and value substring. Two-character operators
-/// are tried before one-character ones so `>=`/`<=` aren't parsed as a
-/// truncated `>`/`<` followed by a malformed value.
+/// Split the suffix of an inline condition (e.g. `>5`, `<=2.5`) into its
+/// operator and value substring. Two-character operators are tried before
+/// one-character ones so `>=`/`<=` aren't parsed as a truncated `>`/`<`
+/// followed by a malformed value.
 fn split_condition_operator(cond_str: &str) -> Option<(ComparisonOperator, &str)> {
     [2usize, 1usize].into_iter().find_map(|len| {
         let prefix = cond_str.get(..len)?;
@@ -570,8 +494,8 @@ fn split_condition_operator(cond_str: &str) -> Option<(ComparisonOperator, &str)
     })
 }
 
-/// Parse the parenthesized suffix of an inline per-aggregator condition,
-/// e.g. `>5` or `<=2.5` (the part between the parens in `countif(>5)`).
+/// Parse the suffix of an inline per-aggregator condition, e.g. `>5` or
+/// `<=2.5` (the part following the name in `countif>5`).
 pub(super) fn parse_inline_condition(cond_str: &str) -> ValkeyResult<ValueComparisonFilter> {
     let (operator, value_str) = split_condition_operator(cond_str).ok_or(ValkeyError::Str(
         error_consts::INVALID_AGGREGATION_CONDITION,
@@ -589,7 +513,7 @@ pub(super) fn parse_inline_condition(cond_str: &str) -> ValkeyResult<ValueCompar
 
 /// Parse one element of a comma-separated `AGGREGATION` list: either a bare
 /// aggregator name (`avg`) or one carrying its own inline condition
-/// (`countif(>5)`). The inline form is the only way to attach a condition to
+/// (`countif>5`). The inline form is the only way to attach a condition to
 /// an aggregator; each element in the list can use a different one. Whether
 /// the condition is required, optional, or disallowed for a given aggregator
 /// is enforced later by [`AggregatorConfig::new`].
@@ -602,7 +526,7 @@ fn parse_aggregation_list_element(part: &str) -> ValkeyResult<AggregationListEle
 
 /// Parse the comma-separated aggregator list of an AGGREGATION clause, e.g.
 /// `avg`, `avg,max,count`, or with inline per-aggregator conditions,
-/// `countif(>5),sumif(<=2)`. Order is preserved (it defines the output
+/// `countif>5,sumif<=2`. Order is preserved (it defines the output
 /// column order), duplicate aggregator *types* are rejected regardless of any
 /// inline condition, and the list is capped at [`MAX_AGGREGATIONS`].
 fn parse_aggregation_list(agg_str: &str) -> ValkeyResult<SmallVec<[AggregationListElement; 2]>> {
@@ -627,13 +551,17 @@ fn parse_aggregation_list(agg_str: &str) -> ValkeyResult<SmallVec<[AggregationLi
 pub fn parse_aggregation_options(
     args: &mut CommandArgIterator,
 ) -> ValkeyResult<AggregationOptions> {
-    // AGGREGATION token already seen
+    // AGGREGATION token already seen. A missing operand is a parse failure
+    // ("Couldn't parse AGGREGATION"); a present but unrecognized aggregator name
+    // is the distinct "Unknown aggregation type" reported by parse_aggregation_list.
     let agg_str = args
         .next_str()
-        .map_err(|_e| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
+        .map_err(|_e| ValkeyError::Str(error_consts::CANNOT_PARSE_AGGREGATION))?;
     let aggregators = parse_aggregation_list(agg_str)?;
-    let bucket_duration = parse_duration_arg(&args.next_arg()?)
-        .map_err(|_e| ValkeyError::Str("TSDB: Couldn't parse bucket duration"))?;
+    let bucket_duration_arg = args
+        .next_arg()
+        .map_err(|_e| ValkeyError::Str(error_consts::CANNOT_PARSE_AGGREGATION))?;
+    let bucket_duration = parse_bucket_duration_arg(&bucket_duration_arg)?;
 
     let mut aggr: AggregationOptions = AggregationOptions {
         bucket_duration: bucket_duration.as_millis() as u64,
@@ -641,13 +569,27 @@ pub fn parse_aggregation_options(
         ..Default::default()
     };
 
-    let valid_tokens = [
+    parse_aggregation_modifiers(args, &mut aggr)?;
+
+    aggr.aggregations = build_aggregator_configs(aggregators)?;
+
+    Ok(aggr)
+}
+
+/// Parse the trailing modifiers of an AGGREGATION clause (`ALIGN`, `BUCKETTIMESTAMP`,
+/// `EMPTY`), which follow the bucket duration in any order. Shared by the single-clause
+/// form and TS.NRANGE's per-key form, where one set of modifiers governs every key.
+fn parse_aggregation_modifiers(
+    args: &mut CommandArgIterator,
+    aggr: &mut AggregationOptions,
+) -> ValkeyResult<()> {
+    const VALID_TOKENS: [CommandArgToken; 3] = [
         CommandArgToken::Align,
         CommandArgToken::Empty,
         CommandArgToken::BucketTimestamp,
     ];
 
-    parse_optional_token_block(args, &valid_tokens, 3, |token, args| match token {
+    parse_optional_token_block(args, &VALID_TOKENS, 3, |token, args| match token {
         CommandArgToken::Empty => {
             aggr.report_empty = true;
             Ok(())
@@ -663,15 +605,11 @@ pub fn parse_aggregation_options(
             Ok(())
         }
         _ => Ok(()),
-    })?;
-
-    aggr.aggregations = build_aggregator_configs(aggregators)?;
-
-    Ok(aggr)
+    })
 }
 
 /// Build the per-aggregator configs of an AGGREGATION clause from the parsed
-/// list elements. Each element's inline condition (`countif(>5)`, parsed by
+/// list elements. Each element's inline condition (`countif>5`, parsed by
 /// [`parse_aggregation_list_element`]) is passed straight through to
 /// [`AggregatorConfig::new`], which rejects a condition-requiring aggregator
 /// left without one and a condition attached to an aggregator that doesn't
@@ -683,6 +621,43 @@ fn build_aggregator_configs(
         .into_iter()
         .map(|(ty, condition)| AggregatorConfig::new(ty, condition))
         .collect()
+}
+
+/// ALIGN `start`/`end` need an explicit range bound: aligning to `start` is
+/// meaningless when the start is `-` (earliest), and likewise `end` with `+`.
+/// Shared by TS.RANGE and the TS.MRANGE family so both reject it identically.
+fn validate_align_against_bounds(
+    date_range: &TimestampRange,
+    aggregation: Option<&AggregationOptions>,
+) -> ValkeyResult<()> {
+    let Some(aggregation) = aggregation else {
+        return Ok(());
+    };
+    if date_range.start == TimestampValue::Earliest
+        && aggregation.alignment == BucketAlignment::Start
+    {
+        return Err(ValkeyError::Str(
+            error_consts::START_ALIGN_NEEDS_EXPLICIT_START,
+        ));
+    }
+    if date_range.end == TimestampValue::Latest && aggregation.alignment == BucketAlignment::End {
+        return Err(ValkeyError::Str(error_consts::END_ALIGN_NEEDS_EXPLICIT_END));
+    }
+    Ok(())
+}
+
+/// Whether an aggregator may be used as a `GROUPBY ... REDUCE` reducer.
+///
+/// Rejects the scan-order-dependent aggregators (`first`/`last`) and `Rate` (it
+/// needs a time window), matching RedisTimeSeries, which reports "Invalid
+/// reducer type" for them. Everything else `AggregationType` recognizes stays
+/// valid — including this engine's filtered-reducer extensions (`countif`,
+/// `sumif`, …), which RTS lacks but which are out of scope for parity and must
+/// keep working (tests/test_ts_mrange.py). Unknown names never reach here: they
+/// fail `AggregationType::try_from` and are rejected on the same path.
+fn is_valid_reducer(agg: &AggregationType) -> bool {
+    use AggregationType::*;
+    !matches!(agg, First | Last | Rate)
 }
 
 pub(super) fn parse_grouping_params(
@@ -700,16 +675,14 @@ pub(super) fn parse_grouping_params(
 
     let (name, cond_str) = split_aggregator_condition(agg_str)?;
 
-    let aggregator = AggregationType::try_from(name).map_err(|_| {
-        let msg = format!("TSDB: invalid grouping aggregator \"{name}\"");
-        ValkeyError::String(msg)
-    })?;
-
-    // Rate requires a time range, so it is not valid for grouping.
-    if aggregator == AggregationType::Rate {
-        let msg = "TSDB: aggregator not supported for GROUPBY reducer";
-        return Err(ValkeyError::Str(msg));
-    }
+    // GROUPBY ... REDUCE accepts a strict subset of the aggregators, matching
+    // RedisTimeSeries: the scan-order-dependent (first/last) and time-weighted
+    // (twa) aggregators are not reducers, and neither is any unknown name — all
+    // are rejected with the same "Invalid reducer type" as the reference.
+    let aggregator = AggregationType::try_from(name)
+        .ok()
+        .filter(is_valid_reducer)
+        .ok_or(ValkeyError::Str(error_consts::INVALID_REDUCER_TYPE))?;
 
     let value_filter = cond_str.map(parse_inline_condition).transpose()?;
     let aggregation = AggregatorConfig::new(aggregator, value_filter)?;
@@ -747,12 +720,24 @@ pub fn parse_decimal_digit_rounding(
 }
 
 pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResult<(i64, f64)> {
+    // A missing operand is reported as a parse failure of IGNORE itself, not as
+    // wrong arity: that is what RTS replies for both `IGNORE` and `IGNORE <n>` at
+    // the end of the argument list.
+    let missing = || ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE);
+
     // ignoreMaxTimediff
-    let mut str = args.next_str()?;
-    let ignore_max_timediff =
-        parse_duration_ms(str).map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE))?;
+    let mut str = args.next_str().map_err(|_| missing())?;
+    let ignore_max_timediff = parse_duration_ms(str).map_err(|_| {
+        // A negative time diff does not parse as a duration; report it as the
+        // negative-argument case rather than as unparseable (RTS text).
+        if parse_number(str).is_ok_and(|n| n < 0.0) {
+            ValkeyError::Str(error_consts::NEGATIVE_IGNORE_VALUES)
+        } else {
+            ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE)
+        }
+    })?;
     // ignoreMaxValDiff
-    str = args.next_str()?;
+    str = args.next_str().map_err(|_| missing())?;
     let ignore_max_val_diff =
         parse_number(str).map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE))?;
     if ignore_max_timediff < 0 || ignore_max_val_diff < 0.0 {
@@ -771,11 +756,16 @@ pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResul
 ///
 /// Must be called by every command that assembles a complete filter set — validating a single
 /// selector as it is parsed would reject legitimate multi-argument queries.
+///
+/// Reports `MISSING_FILTER`, the same text RTS uses, rather than naming the boundedness rule:
+/// the condition is identical on both engines (verified across single- and multi-selector
+/// lists), so a more descriptive message would be a gratuitous error-text divergence for a
+/// client migrating from RedisTimeSeries. It is also what the empty-list check below reports.
 pub fn validate_selector_list(selectors: &[SeriesSelector]) -> ValkeyResult<()> {
     if selectors.iter().any(SeriesSelector::is_bounded) {
         Ok(())
     } else {
-        Err(ValkeyError::Str(error_consts::UNBOUNDED_SERIES_FILTERS))
+        Err(ValkeyError::Str(error_consts::MISSING_FILTER))
     }
 }
 
@@ -814,11 +804,47 @@ fn parse_align_for_aggregation(args: &mut CommandArgIterator) -> ValkeyResult<Ag
     let alignment_str = args.next_str()?;
 
     expect_next_token(args, CommandArgToken::Aggregation)
-        .map_err(|_| ValkeyError::Str("TSDB: missing AGGREGATION"))?;
+        .map_err(|_| ValkeyError::Str(error_consts::ALIGN_REQUIRES_AGGREGATION))?;
 
     let mut aggregation = parse_aggregation_options(args)?;
     aggregation.alignment = BucketAlignment::try_from(alignment_str)?;
     Ok(aggregation)
+}
+
+/// Resolves a *repeated* option the way RedisTimeSeries resolves it (DIV-0014).
+///
+/// Given `TS.RANGE k - + COUNT 5 COUNT 2`, RTS 8.6 keeps the first occurrence
+/// and we keep the last. Both engines accept the input and neither errors, so
+/// the divergence is a silently different answer to a query both engines call
+/// valid — exactly the case `ts-compatibility-mode strict` exists to close. A
+/// query builder that appends an option twice is the realistic way to hit it.
+///
+/// The duplicate's operands are always parsed regardless of mode: they have to
+/// be consumed from the argument stream either way, and a malformed operand is
+/// still an error. This only decides whether the parsed value is *stored*.
+#[derive(Default)]
+struct RepeatedOptions {
+    strict: bool,
+    seen: SmallVec<[CommandArgToken; 8]>,
+}
+
+impl RepeatedOptions {
+    fn new() -> Self {
+        Self {
+            strict: is_strict_rts_compat(),
+            seen: SmallVec::new(),
+        }
+    }
+
+    /// Record `token` and report whether its parsed value should be stored:
+    /// always in `extended` mode, only on first occurrence in `strict`.
+    fn accept(&mut self, token: CommandArgToken) -> bool {
+        let first = !self.seen.contains(&token);
+        if first {
+            self.seen.push(token);
+        }
+        first || !self.strict
+    }
 }
 
 pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
@@ -839,25 +865,48 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         ..Default::default()
     };
 
+    let mut repeated = RepeatedOptions::new();
+
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
-                options.aggregation = Some(parse_align_for_aggregation(args)?);
+                let value = parse_align_for_aggregation(args)?;
+                // ALIGN consumes the AGGREGATION that must follow it, so it fills
+                // both option slots. Non-short-circuiting `&` so each is recorded
+                // whichever one has already been seen.
+                if repeated.accept(CommandArgToken::Align)
+                    & repeated.accept(CommandArgToken::Aggregation)
+                {
+                    options.aggregation = Some(value);
+                }
             }
             CommandArgToken::Aggregation => {
-                options.aggregation = Some(parse_aggregation_options(args)?);
+                let value = parse_aggregation_options(args)?;
+                if repeated.accept(token) {
+                    options.aggregation = Some(value);
+                }
             }
             CommandArgToken::Count => {
-                options.count = Some(parse_count_arg(args)?);
+                let value = parse_count_arg(args)?;
+                if repeated.accept(token) {
+                    options.count = Some(value);
+                }
             }
             CommandArgToken::FilterByValue => {
-                options.value_filter = Some(parse_value_filter(args)?);
+                let value = parse_value_filter(args)?;
+                if repeated.accept(token) {
+                    options.value_filter = Some(value);
+                }
             }
             CommandArgToken::FilterByTs => {
-                options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
+                let value = parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?;
+                if repeated.accept(token) {
+                    options.timestamp_filter = Some(value);
+                }
             }
             CommandArgToken::Latest => {
+                // Idempotent: a repeat sets the same flag, so no resolution needed.
                 options.latest = true;
             }
             _ => {
@@ -871,27 +920,215 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         }
     }
 
-    // according to docs, align cannot be Start if start time is Earliest, or End if end time is Latest
-    if let Some(aggregation) = &options.aggregation {
-        if options.date_range.start == TimestampValue::Earliest
-            && aggregation.alignment == BucketAlignment::Start
-        {
-            return Err(ValkeyError::Str(
-                "TSDB: cannot use 'start' align with '-' range start timestamp",
-            ));
-        }
-        if options.date_range.end == TimestampValue::Latest
-            && aggregation.alignment == BucketAlignment::End
-        {
-            return Err(ValkeyError::Str(
-                "TSDB: cannot use 'end' align with '+' range end timestamp",
-            ));
-        }
-    }
+    validate_align_against_bounds(&options.date_range, options.aggregation.as_ref())?;
 
     // filter out timestamp filters that are outside the range
     if let Some(ts_filter) = options.timestamp_filter.as_mut() {
         let (start_ts, end_ts) = options.date_range.get_timestamps(None);
+        ts_filter.retain(|&ts| ts >= start_ts && ts <= end_ts);
+    }
+
+    Ok(options)
+}
+
+/// Parse the `numkeys key [key ...]` prefix of TS.NRANGE.
+///
+/// Key order and duplicates are preserved: the reply has one column block per key argument, in
+/// the order given, so the list is kept verbatim rather than deduplicated (unlike TS.JOIN,
+/// which rejects a repeated key because its two sides would then be the same series).
+fn parse_numkeys_and_keys(args: &mut CommandArgIterator) -> ValkeyResult<Vec<ValkeyString>> {
+    let arg = args.next_arg().map_err(|_| ValkeyError::WrongArity)?;
+    let numkeys = arg
+        .parse_integer()
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_NUMKEYS))?;
+    if numkeys < 1 {
+        return Err(ValkeyError::Str(error_consts::INVALID_NUMKEYS));
+    }
+    let numkeys = numkeys as usize;
+
+    // The two range bounds follow the keys and are mandatory, so a numkeys that would swallow
+    // them is wrong arity — which is what RedisTimeSeries reports for it, rather than the
+    // unparseable timestamp the overrun turns into.
+    if args.len() < numkeys + 2 {
+        return Err(ValkeyError::WrongArity);
+    }
+
+    let mut keys = Vec::with_capacity(numkeys);
+    for _ in 0..numkeys {
+        keys.push(args.next_arg()?);
+    }
+    Ok(keys)
+}
+
+/// Parse TS.NRANGE's `AGGREGATION` clause: one aggregator list per key, in key order, followed
+/// by the single `bucketDuration` and modifiers that every key shares.
+///
+/// Each list is the same comma-separated form TS.RANGE accepts (`avg`, `min,max`,
+/// `countif>5`), so a key contributes one output column per aggregator it names.
+fn parse_nrange_aggregation_options(
+    args: &mut CommandArgIterator,
+    key_count: usize,
+) -> ValkeyResult<Vec<AggregationOptions>> {
+    // AGGREGATION token already seen.
+    let mut per_key = Vec::with_capacity(key_count);
+    for index in 0..key_count {
+        let arg = args
+            .next_str()
+            .map_err(|_e| ValkeyError::Str(error_consts::AGGREGATOR_COUNT_MISMATCH))?;
+        let elements = parse_aggregation_list(arg).map_err(|e| {
+            // A well-formed bucket duration where an aggregator was expected means fewer
+            // aggregators than keys were supplied; say that rather than reporting the
+            // duration as an unknown aggregation type.
+            if index > 0 && parse_bucket_duration_str(arg).is_ok() {
+                ValkeyError::Str(error_consts::AGGREGATOR_COUNT_MISMATCH)
+            } else {
+                e
+            }
+        })?;
+        per_key.push(elements);
+    }
+
+    let bucket_duration_arg = args
+        .next_arg()
+        .map_err(|_e| ValkeyError::Str(error_consts::AGGREGATOR_COUNT_MISMATCH))?;
+    let bucket_duration = parse_bucket_duration_arg(&bucket_duration_arg).map_err(|e| {
+        // Symmetrically: another aggregator list where the duration belongs means more
+        // aggregators than keys.
+        if parse_aggregation_list(&bucket_duration_arg.to_string_lossy()).is_ok() {
+            ValkeyError::Str(error_consts::AGGREGATOR_COUNT_MISMATCH)
+        } else {
+            e
+        }
+    })?;
+
+    let mut shared: AggregationOptions = AggregationOptions {
+        bucket_duration: bucket_duration.as_millis() as u64,
+        timestamp_output: BucketTimestamp::Start,
+        ..Default::default()
+    };
+    parse_aggregation_modifiers(args, &mut shared)?;
+
+    per_key
+        .into_iter()
+        .map(|elements| {
+            Ok(AggregationOptions {
+                aggregations: build_aggregator_configs(elements)?,
+                ..shared.clone()
+            })
+        })
+        .collect()
+}
+
+/// TS.NRANGE twin of [`parse_align_for_aggregation`]: `ALIGN align` must be followed by the
+/// AGGREGATION clause it aligns, and the alignment then applies to every key.
+fn parse_align_for_nrange_aggregation(
+    args: &mut CommandArgIterator,
+    key_count: usize,
+) -> ValkeyResult<Vec<AggregationOptions>> {
+    // ALIGN token already seen
+    let alignment_str = args.next_str()?;
+    let alignment = BucketAlignment::try_from(alignment_str)?;
+
+    expect_next_token(args, CommandArgToken::Aggregation)
+        .map_err(|_| ValkeyError::Str(error_consts::ALIGN_REQUIRES_AGGREGATION))?;
+
+    let mut aggregations = parse_nrange_aggregation_options(args, key_count)?;
+    for aggregation in aggregations.iter_mut() {
+        aggregation.alignment = alignment;
+    }
+    Ok(aggregations)
+}
+
+/// TS.NRANGE / TS.NREVRANGE numkeys key [key ...] fromTimestamp toTimestamp
+///   [LATEST]
+///   [FILTER_BY_TS ts...]
+///   [FILTER_BY_VALUE min max]
+///   [COUNT count]
+///   [[ALIGN align] AGGREGATION aggregators [aggregators ...] bucketDuration
+///   [BUCKETTIMESTAMP bt] [EMPTY]]
+pub(super) fn parse_nrange_options(args: &mut CommandArgIterator) -> ValkeyResult<NRangeOptions> {
+    const NRANGE_OPTION_ARGS: [CommandArgToken; 7] = [
+        CommandArgToken::Align,
+        CommandArgToken::Aggregation,
+        CommandArgToken::Count,
+        CommandArgToken::BucketTimestamp,
+        CommandArgToken::FilterByTs,
+        CommandArgToken::FilterByValue,
+        CommandArgToken::Latest,
+    ];
+
+    let keys = parse_numkeys_and_keys(args)?;
+    let key_count = keys.len();
+    let date_range = parse_timestamp_range(args)?;
+
+    let mut options = NRangeOptions {
+        range: RangeOptions {
+            date_range,
+            ..Default::default()
+        },
+        keys,
+        ..Default::default()
+    };
+
+    let mut repeated = RepeatedOptions::new();
+
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        match token {
+            CommandArgToken::Align => {
+                let value = parse_align_for_nrange_aggregation(args, key_count)?;
+                // See parse_range_options: ALIGN fills the AGGREGATION slot too.
+                if repeated.accept(CommandArgToken::Align)
+                    & repeated.accept(CommandArgToken::Aggregation)
+                {
+                    options.aggregations = value;
+                }
+            }
+            CommandArgToken::Aggregation => {
+                let value = parse_nrange_aggregation_options(args, key_count)?;
+                if repeated.accept(token) {
+                    options.aggregations = value;
+                }
+            }
+            CommandArgToken::Count => {
+                let value = parse_count_arg(args)?;
+                if repeated.accept(token) {
+                    options.range.count = Some(value);
+                }
+            }
+            CommandArgToken::FilterByValue => {
+                let value = parse_value_filter(args)?;
+                if repeated.accept(token) {
+                    options.range.value_filter = Some(value);
+                }
+            }
+            CommandArgToken::FilterByTs => {
+                let value = parse_timestamp_filter(args, &NRANGE_OPTION_ARGS)?;
+                if repeated.accept(token) {
+                    options.range.timestamp_filter = Some(value);
+                }
+            }
+            CommandArgToken::Latest => {
+                // Idempotent: a repeat sets the same flag, so no resolution needed.
+                options.range.latest = true;
+            }
+            _ => {
+                return if token == CommandArgToken::Invalid {
+                    Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT))
+                } else {
+                    let msg = format!("TSDB: invalid argument '{token}'");
+                    Err(ValkeyError::String(msg))
+                };
+            }
+        }
+    }
+
+    // Every key shares one alignment, so checking the first is checking all of them.
+    validate_align_against_bounds(&options.range.date_range, options.aggregations.first())?;
+
+    // filter out timestamp filters that are outside the range
+    if let Some(ts_filter) = options.range.timestamp_filter.as_mut() {
+        let (start_ts, end_ts) = options.range.date_range.get_timestamps(None);
         ts_filter.retain(|&ts| ts >= start_ts && ts <= end_ts);
     }
 
@@ -917,12 +1154,31 @@ pub(super) fn parse_filter_by_range_options(
     }
 }
 
+pub(super) fn parse_hash_tags(args: &mut CommandArgIterator) -> ValkeyResult<Vec<String>> {
+    let Some(arg) = args.peek() else {
+        return Err(ValkeyError::Str(error_consts::MISSING_HASHTAG));
+    };
+    if arg.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_HASHTAG));
+    }
+    let arg = arg.to_string_lossy();
+    args.next();
+    let tags: Vec<String> = arg.split(',').map(|s| s.to_string()).collect();
+    if tags.iter().any(|tag| tag.is_empty()) {
+        return Err(ValkeyError::Str(error_consts::MISSING_HASHTAG));
+    }
+    Ok(tags)
+}
+
 pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 12] = [
+    // Tokens that end a variable-length argument list (FILTER, SELECTED_LABELS,
+    // FILTER_BY_TS).
+    const RANGE_OPTION_ARGS: &[CommandArgToken] = &[
         CommandArgToken::Align,
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
         CommandArgToken::BucketTimestamp,
+        CommandArgToken::ExcludeEmpty,
         CommandArgToken::Filter,
         CommandArgToken::FilterByTs,
         CommandArgToken::FilterByValue,
@@ -930,6 +1186,7 @@ pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResul
         CommandArgToken::GroupBy,
         CommandArgToken::Reduce,
         CommandArgToken::SelectedLabels,
+        CommandArgToken::HashTag,
         CommandArgToken::WithLabels,
     ];
 
@@ -943,47 +1200,115 @@ pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResul
         ..Default::default()
     };
 
+    let mut repeated = RepeatedOptions::new();
+
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
-                options.range.aggregation = Some(parse_align_for_aggregation(args)?);
+                let value = parse_align_for_aggregation(args)?;
+                // See parse_range_options: ALIGN fills the AGGREGATION slot too.
+                if repeated.accept(CommandArgToken::Align)
+                    & repeated.accept(CommandArgToken::Aggregation)
+                {
+                    options.range.aggregation = Some(value);
+                }
             }
             CommandArgToken::Aggregation => {
-                options.range.aggregation = Some(parse_aggregation_options(args)?);
+                let value = parse_aggregation_options(args)?;
+                if repeated.accept(token) {
+                    options.range.aggregation = Some(value);
+                }
             }
             CommandArgToken::Count => {
-                options.range.count = Some(parse_count_arg(args)?);
+                let value = parse_count_arg(args)?;
+                if repeated.accept(token) {
+                    options.range.count = Some(value);
+                }
             }
             CommandArgToken::Filter => {
-                options.filters = parse_series_selector_list(args, &RANGE_OPTION_ARGS)?;
+                let value = parse_series_selector_list(args, RANGE_OPTION_ARGS)?;
+                if repeated.accept(token) {
+                    options.filters = value;
+                }
             }
             CommandArgToken::FilterByValue => {
-                options.range.value_filter = Some(parse_value_filter(args)?);
+                let value = parse_value_filter(args)?;
+                if repeated.accept(token) {
+                    options.range.value_filter = Some(value);
+                }
             }
             CommandArgToken::FilterByTs => {
-                options.range.timestamp_filter =
-                    Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
+                let value = parse_timestamp_filter(args, RANGE_OPTION_ARGS)?;
+                if repeated.accept(token) {
+                    options.range.timestamp_filter = Some(value);
+                }
+            }
+            CommandArgToken::ExcludeEmpty => {
+                // Accepted in any option position, including the trailing one the
+                // documented syntax uses (`FILTER ... [GROUPBY ...] [EXCLUDEEMPTY]`).
+                // The reference rejects `FILTER l=v EXCLUDEEMPTY` because its filter
+                // list does not stop at the token; ours does, like every other option
+                // token. Registered as DIV-0050 — in this dialect a bare word is a
+                // metric-name selector, so not stopping would silently turn the
+                // documented form into `__name__="EXCLUDEEMPTY"` and reply empty.
+                options.exclude_empty = true;
             }
             CommandArgToken::GroupBy => {
-                options.grouping = Some(parse_grouping_params(args)?);
+                let value = parse_grouping_params(args)?;
+                if repeated.accept(token) {
+                    options.grouping = Some(value);
+                }
+            }
+            CommandArgToken::Reduce => {
+                // REDUCE is consumed inside GROUPBY parsing; reaching it here
+                // means it appeared without a preceding GROUPBY. RTS rejects the
+                // same input (it parses REDUCE as a stray filter token).
+                return Err(ValkeyError::Str("TSDB: REDUCE without GROUPBY"));
             }
             CommandArgToken::Latest => {
                 options.range.latest = true;
             }
             CommandArgToken::SelectedLabels => {
-                options.selected_labels = parse_label_list(args, &RANGE_OPTION_ARGS)?;
+                let value = parse_label_list(args, RANGE_OPTION_ARGS)?;
+                if value.is_empty() {
+                    return Err(ValkeyError::Str(error_consts::EMPTY_SELECTED_LABELS));
+                }
+                if repeated.accept(token) {
+                    options.selected_labels = value;
+                }
+            }
+            CommandArgToken::HashTag => {
+                let value = parse_hash_tags(args)?;
+                if repeated.accept(token) {
+                    options.tags = value;
+                }
             }
             CommandArgToken::WithLabels => {
                 options.with_labels = true;
             }
-            _ => {}
+            // Rejected, as TS.RANGE rejects them (DIV-0042). The reference skips arguments it
+            // does not recognize, and so did this parser: a misspelled `AGREGATION avg 10`
+            // quietly returned raw samples.
+            _ => {
+                return if token == CommandArgToken::Invalid {
+                    Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT))
+                } else {
+                    let msg = format!("TSDB: invalid argument '{token}'");
+                    Err(ValkeyError::String(msg))
+                };
+            }
         }
     }
 
     if options.filters.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
+
+    validate_align_against_bounds(
+        &options.range.date_range,
+        options.range.aggregation.as_ref(),
+    )?;
 
     // filter out timestamp filters that are outside the range
     if let Some(ts_filter) = options.range.timestamp_filter.as_mut() {
@@ -997,14 +1322,22 @@ pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResul
         ));
     }
 
+    // GROUPBY collapses the matched series into per-group results, so there is no
+    // per-series emptiness left for EXCLUDEEMPTY to act on; the reference rejects
+    // the combination rather than picking a meaning for it.
+    if options.exclude_empty && options.grouping.is_some() {
+        return Err(ValkeyError::Str(error_consts::EXCLUDE_EMPTY_WITH_GROUPBY));
+    }
+
     Ok(options)
 }
 
 fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
     use CommandArgToken::*;
 
-    // ASOF already seen
-    let mut tolerance = Duration::default();
+    // ASOF already seen. No tolerance means no limit on the distance to a match; an explicit
+    // `0` means exact timestamps only.
+    let mut tolerance: Option<Duration> = None;
     let mut strategy = AsOfJoinStrategy::Backward;
 
     // ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] [ALLOW_EXACT_MATCH [true|false]]
@@ -1019,24 +1352,18 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
 
     let mut allow_exact_match = true;
     if args.peek().is_some() {
-        if let Some(next_token) = peek_token(args) {
-            // If the next thing is a known token, it's not a duration.
-            if next_token != AllowExactMatch {
-                // no-op; duration parsing below will handle only digit-starting strings
-            }
-        }
-
         if let Some(next_arg) = args.peek()
             && let Ok(arg_str) = next_arg.try_as_str()
         {
-            // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms
-            let ch = arg_str.chars().next().unwrap();
-            if ch.is_ascii_digit() {
+            // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms.
+            // An empty argument is not a duration; fall through and let the syntax
+            // handling below report it rather than indexing into an empty string.
+            if arg_str.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
                 let tolerance_ms = parse_duration_ms(arg_str)?;
                 if tolerance_ms < 0 {
                     return Err(ValkeyError::Str(error_consts::INVALID_ASOF_TOLERANCE));
                 }
-                tolerance = Duration::from_millis(tolerance_ms as u64);
+                tolerance = Some(Duration::from_millis(tolerance_ms as u64));
                 let _ = args.next_arg()?;
             }
         }
@@ -1170,13 +1497,17 @@ pub(super) fn parse_join_args(
 pub(crate) fn parse_metadata_command_args(
     args: &mut CommandArgIterator,
     require_matchers: bool,
-) -> ValkeyResult<MatchFilterOptions> {
-    const ARG_TOKENS: [CommandArgToken; 2] =
-        [CommandArgToken::FilterByRange, CommandArgToken::Limit];
+) -> ValkeyResult<(MatchFilterOptions, Vec<String>)> {
+    const ARG_TOKENS: [CommandArgToken; 3] = [
+        CommandArgToken::FilterByRange,
+        CommandArgToken::Limit,
+        CommandArgToken::HashTag,
+    ];
 
     let mut matchers = Vec::with_capacity(4);
     let mut limit: Option<usize> = None;
     let mut date_range: Option<MetaDateRangeFilter> = None;
+    let mut tags = Vec::new();
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -1194,6 +1525,9 @@ pub(crate) fn parse_metadata_command_args(
                     .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
                 limit = parse_limit_value(next)?;
             }
+            CommandArgToken::HashTag => {
+                tags = parse_hash_tags(args)?;
+            }
             _ => {
                 let msg = "TSDB: invalid argument";
                 return Err(ValkeyError::Str(msg));
@@ -1205,30 +1539,58 @@ pub(crate) fn parse_metadata_command_args(
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
 
-    Ok(MatchFilterOptions {
-        matchers,
-        limit,
-        date_range,
-    })
+    Ok((
+        MatchFilterOptions {
+            matchers,
+            limit,
+            date_range,
+        },
+        tags,
+    ))
 }
 
+/// Parses `TS.QUERYINDEX [FILTER_BY_RANGE [NOT] <from> <to>] [HASHTAG hash_tag,...] selector [selector ...]`.
+///
+/// Returns the match options plus the hash tags that scope only the cluster fan-out.
+///
+/// Unlike the `FILTER`-keyed metadata commands, `TS.QUERYINDEX` takes bare selectors, so the
+/// leading options are not separable from the selector list by a keyword: both `FILTER_BY_RANGE`
+/// and `HASHTAG` must precede the first selector (in either order) or they would be read as
+/// selector expressions.
 pub(super) fn parse_query_index_command_args(
     args: &mut CommandArgIterator,
-) -> ValkeyResult<MatchFilterOptions> {
-    let mut date_range: Option<MetaDateRangeFilter> = None;
+) -> ValkeyResult<(MatchFilterOptions, Vec<String>)> {
+    const LEADING_TOKENS: [CommandArgToken; 2] =
+        [CommandArgToken::FilterByRange, CommandArgToken::HashTag];
 
-    if let Some(token) = peek_token(args)
-        && token == CommandArgToken::FilterByRange
-    {
-        // FILTER_BY_RANGE [NOT] <from> <to>
-        args.next(); // consume token
-        date_range = Some(parse_filter_by_range_options(args)?);
-    };
+    let mut date_range: Option<MetaDateRangeFilter> = None;
+    let mut tags = Vec::new();
+
+    parse_optional_token_block(
+        args,
+        &LEADING_TOKENS,
+        LEADING_TOKENS.len(),
+        |token, args| {
+            match token {
+                // FILTER_BY_RANGE [NOT] <from> <to>
+                CommandArgToken::FilterByRange => {
+                    date_range = Some(parse_filter_by_range_options(args)?)
+                }
+                CommandArgToken::HashTag => tags = parse_hash_tags(args)?,
+                _ => unreachable!("parse_optional_token_block yields only LEADING_TOKENS"),
+            }
+            Ok(())
+        },
+    )?;
 
     // everything else are filters
 
     let mut matchers = Vec::with_capacity(4);
     while let Ok(arg) = args.next_str() {
+        // The `?` surfaces the parser's detailed diagnostic (e.g. `parse error:
+        // unexpected token "["`), a deliberate feature — see
+        // tests/test_queryindex_prometheus.py. It differs in wording from RTS's
+        // "failed parsing labels"; the compat suite pins that per-engine.
         let selector = parse_series_selector(arg)?;
         matchers.push(selector);
     }
@@ -1239,33 +1601,128 @@ pub(super) fn parse_query_index_command_args(
 
     validate_selector_list(&matchers)?;
 
-    Ok(MatchFilterOptions {
-        date_range,
+    Ok((
+        MatchFilterOptions {
+            date_range,
+            matchers,
+            limit: None,
+        },
+        tags,
+    ))
+}
+
+/// Options parsed from the `TS.QUERYLABELS` argument list.
+///
+/// `label` is `None` for the `LABELS` subtype and `Some(name)` for `VALUES name`.
+/// `matchers` is empty when no `FILTER` block was given, meaning "all indexed series".
+#[derive(Debug, Clone, Default)]
+pub struct QueryLabelsOptions {
+    pub label: Option<String>,
+    pub matchers: Vec<SeriesSelector>,
+    pub tags: Vec<String>,
+}
+
+/// Parses `TS.QUERYLABELS <LABELS | VALUES label> [FILTER filterExpr [filterExpr ...]]`.
+///
+/// Mirrors the RedisTimeSeries 8.10 surface: the `FILTER` keyword is explicit (unlike
+/// `TS.QUERYINDEX`, whose selectors are bare), `LABELS`/`VALUES` are case-insensitive,
+/// a `VALUES` without a label is an arity error, and an `FILTER` block must carry at
+/// least one expression and one bounded matcher (`label=value` / `label=(...)`).
+pub(super) fn parse_query_labels_command_args(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<QueryLabelsOptions> {
+    // <LABELS | VALUES label>
+    let Some(subtype) = args.next() else {
+        return Err(ValkeyError::Str(error_consts::UNKNOWN_QUERY_LABELS_SUBTYPE));
+    };
+    let label = if subtype.eq_ignore_ascii_case(b"LABELS") {
+        None
+    } else if subtype.eq_ignore_ascii_case(b"VALUES") {
+        let Some(label) = args.next() else {
+            return Err(ValkeyError::WrongArity);
+        };
+        Some(label.to_string_lossy())
+    } else {
+        return Err(ValkeyError::Str(error_consts::UNKNOWN_QUERY_LABELS_SUBTYPE));
+    };
+
+    let mut tags = Vec::new();
+
+    // [HASHTAG hash_tag,...]
+    if let Some(token) = peek_token(args)
+        && token == CommandArgToken::HashTag
+    {
+        args.next(); // consume HASHTAG
+        tags = parse_hash_tags(args)?;
+    }
+
+    // [FILTER filterExpr [filterExpr ...]]
+    let mut matchers = Vec::with_capacity(4);
+    if let Some(token) = peek_token(args)
+        && token == CommandArgToken::Filter
+    {
+        args.next(); // consume FILTER
+        while let Ok(arg) = args.next_str() {
+            let selector = parse_series_selector(arg)?;
+            matchers.push(selector);
+        }
+        if matchers.is_empty() {
+            return Err(ValkeyError::Str(error_consts::FILTER_WITH_NO_EXPRESSIONS));
+        }
+        validate_selector_list(&matchers)?;
+    } else if args.peek().is_some() {
+        // Anything other than FILTER after the subtype is rejected.
+        return Err(ValkeyError::Str(error_consts::QUERY_LABELS_EXPECTED_FILTER));
+    }
+
+    Ok(QueryLabelsOptions {
+        label,
         matchers,
-        limit: None,
+        tags,
     })
 }
 
 pub const DEFAULT_STATS_RESULTS_LIMIT: usize = 10;
 pub const MAX_STATS_RESULTS_LIMIT: usize = 1000;
 
+#[derive(Debug, Clone, Default)]
+pub struct LabelStatsOptions {
+    pub label: Option<String>,
+    pub limit: usize,
+    pub filters: Vec<SeriesSelector>,
+    /// Optional hash tags that scope only the cluster fan-out.
+    pub tags: Vec<String>,
+}
+
+/// Parses `TS.LABELSTATS [LABEL <label>] [LIMIT <n>] [HASHTAG hash_tag,...] [FILTER filterExpr [filterExpr ...]]`.
+///
+/// `FILTER` is variadic; `HASHTAG` is its sole terminating option so it may also appear after the
+/// filter list. `LABEL` or `LIMIT` after `FILTER` would be read as selector expressions.
 pub(super) fn parse_stats_command_args(
     args: &mut CommandArgIterator,
-) -> ValkeyResult<(Option<String>, usize)> {
-    let mut label: Option<String> = None;
-    let mut limit = DEFAULT_STATS_RESULTS_LIMIT;
+) -> ValkeyResult<LabelStatsOptions> {
+    let mut options = LabelStatsOptions {
+        limit: DEFAULT_STATS_RESULTS_LIMIT,
+        ..Default::default()
+    };
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Label => {
-                label = Some(args.next_string()?);
+                options.label = Some(args.next_string()?);
             }
             CommandArgToken::Limit => {
                 let next = args
                     .next_str()
                     .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
-                limit = parse_limit_value(next)?.unwrap_or(DEFAULT_STATS_RESULTS_LIMIT);
+                options.limit = parse_limit_value(next)?.unwrap_or(DEFAULT_STATS_RESULTS_LIMIT);
+            }
+            CommandArgToken::HashTag => {
+                options.tags = parse_hash_tags(args)?;
+            }
+            CommandArgToken::Filter => {
+                options.filters = parse_series_selector_list(args, &[CommandArgToken::HashTag])?;
             }
             _ => {
                 let msg = "TSDB: invalid argument";
@@ -1274,7 +1731,7 @@ pub(super) fn parse_stats_command_args(
         };
     }
 
-    Ok((label, limit))
+    Ok(options)
 }
 
 fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {
@@ -1291,26 +1748,68 @@ fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {
     Ok(Some(limit as usize))
 }
 
-pub(super) fn find_last_token_instance(
-    args: &[ValkeyString],
-    cmd_tokens: &[CommandArgToken],
-) -> Option<(CommandArgToken, usize)> {
-    let mut i = args.len() - 1;
-    for arg in args.iter().rev() {
-        if let Some(token) = parse_command_arg_token(arg)
-            && cmd_tokens.contains(&token)
-        {
-            return Some((token, i));
-        }
-        i -= 1;
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    /// DIV-0014. Built directly rather than through `RepeatedOptions::new()` so
+    /// the two modes are exercised without touching the process-wide config,
+    /// which the rest of the suite runs against in parallel.
+    #[test]
+    fn test_repeated_option_resolution() {
+        let count = CommandArgToken::Count;
+        let agg = CommandArgToken::Aggregation;
+
+        // extended: every occurrence is stored, so the last one wins.
+        let mut extended = RepeatedOptions {
+            strict: false,
+            seen: SmallVec::new(),
+        };
+        assert!(extended.accept(count));
+        assert!(extended.accept(count));
+        assert!(extended.accept(count));
+
+        // strict: only the first occurrence is stored, per token.
+        let mut strict = RepeatedOptions {
+            strict: true,
+            seen: SmallVec::new(),
+        };
+        assert!(strict.accept(count));
+        assert!(!strict.accept(count));
+        // A different option is unaffected by another's repeat.
+        assert!(strict.accept(agg));
+        assert!(!strict.accept(agg));
+        assert!(!strict.accept(count));
+    }
+
+    /// ALIGN consumes the AGGREGATION that follows it, so it occupies both slots
+    /// — a later bare AGGREGATION must not override it in strict mode. The `&`
+    /// at the call site must not short-circuit, or the second slot goes
+    /// unrecorded whenever the first already matched.
+    #[test]
+    fn test_align_occupies_the_aggregation_slot() {
+        let align = CommandArgToken::Align;
+        let agg = CommandArgToken::Aggregation;
+
+        let mut strict = RepeatedOptions {
+            strict: true,
+            seen: SmallVec::new(),
+        };
+        assert!(strict.accept(align) & strict.accept(agg));
+        assert!(
+            !strict.accept(agg),
+            "bare AGGREGATION after ALIGN is a repeat"
+        );
+
+        // Reverse order: a bare AGGREGATION first makes the later ALIGN a repeat.
+        let mut reversed = RepeatedOptions {
+            strict: true,
+            seen: SmallVec::new(),
+        };
+        assert!(reversed.accept(agg));
+        assert!(!(reversed.accept(align) & reversed.accept(agg)));
+    }
 
     #[test]
     fn test_aggregation_list_single_and_order() {
@@ -1365,7 +1864,7 @@ mod tests {
     #[test]
     fn test_inline_aggregation_condition() {
         // each element carries its own condition
-        let list = parse_aggregation_list("countif(>5),sumif(<=2.5)").unwrap();
+        let list = parse_aggregation_list("countif>5,sumif<=2.5").unwrap();
         assert_eq!(list[0].0, AggregationType::CountIf);
         let cond = list[0].1.unwrap();
         assert_eq!(cond.operator, ComparisonOperator::GreaterThan);
@@ -1376,7 +1875,7 @@ mod tests {
         assert_eq!(cond.value, 2.5);
 
         // mixed: inline condition alongside a plain (uncontitional) element
-        let list = parse_aggregation_list("countif(>5),avg").unwrap();
+        let list = parse_aggregation_list("countif>5,avg").unwrap();
         assert!(list[0].1.is_some());
         assert!(list[1].1.is_none());
 
@@ -1389,25 +1888,23 @@ mod tests {
             ("==5", ComparisonOperator::Equal),
             ("!=5", ComparisonOperator::NotEqual),
         ] {
-            let list = parse_aggregation_list(&format!("countif({text})")).unwrap();
+            let list = parse_aggregation_list(&format!("countif{text}")).unwrap();
             assert_eq!(list[0].1.unwrap().operator, expected, "operator {text}");
         }
 
         // negative and fractional values
-        let list = parse_aggregation_list("sumif(<-3.5)").unwrap();
+        let list = parse_aggregation_list("sumif<-3.5").unwrap();
         assert_eq!(list[0].1.unwrap().value, -3.5);
     }
 
     #[test]
     fn test_inline_aggregation_condition_errors() {
-        assert!(parse_aggregation_list("countif(>5").is_err()); // missing ')'
-        assert!(parse_aggregation_list("(>5)").is_err()); // empty aggregator name
-        assert!(parse_aggregation_list("countif()").is_err()); // empty condition
-        assert!(parse_aggregation_list("countif(5)").is_err()); // missing operator
-        assert!(parse_aggregation_list("countif(>bogus)").is_err()); // bad value
-        assert!(parse_aggregation_list("bogus(>5)").is_err()); // unknown aggregator
+        assert!(parse_aggregation_list(">5").is_err()); // empty aggregator name
+        assert!(parse_aggregation_list("countif5").is_err()); // no operator char -> unknown aggregator name
+        assert!(parse_aggregation_list("countif>bogus").is_err()); // bad value
+        assert!(parse_aggregation_list("bogus>5").is_err()); // unknown aggregator
         // duplicate detection ignores inline condition differences
-        let err = parse_aggregation_list("countif(>5),countif(<10)").unwrap_err();
+        let err = parse_aggregation_list("countif>5,countif<10").unwrap_err();
         assert!(err.to_string().contains("duplicate aggregation 'countif'"));
     }
 
@@ -1415,7 +1912,7 @@ mod tests {
     fn test_condition_distribution() {
         // each filter-capable element carries its own inline condition
         let configs =
-            build_aggregator_configs(parse_aggregation_list("countif(>5),avg,sum(>5)").unwrap())
+            build_aggregator_configs(parse_aggregation_list("countif>5,avg,sum>5").unwrap())
                 .unwrap();
         assert_eq!(configs.len(), 3);
         assert!(configs[0].filter().is_some()); // countif
@@ -1435,7 +1932,7 @@ mod tests {
 
     #[test]
     fn test_inline_condition_on_non_filterable_aggregator_is_an_error() {
-        let elements = parse_aggregation_list("avg(>5)").unwrap();
+        let elements = parse_aggregation_list("avg>5").unwrap();
         let err = build_aggregator_configs(elements).unwrap_err();
         assert!(err.to_string().contains("does not support a filter"));
     }

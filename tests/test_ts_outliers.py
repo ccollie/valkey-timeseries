@@ -52,10 +52,31 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore')
         assert 'insufficient data' in str(exc_info.value).lower()
 
+    def test_auto_seasonality_on_three_samples_does_not_panic(self):
+        """Auto seasonality treats a three-sample range as having no period."""
+        key = 'test:outliers:seasonality:auto:three_samples'
+        for i, value in enumerate((1.0, 2.0, 1.0)):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, value)
+
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'OUTPUT', 'full', 'METHOD', 'zscore', 'SEASONALITY', 'auto',
+        )
+
+        assert len(TSOutliersFullResult.parse(result).samples) == 3
+
     def test_outliers_nonexistent_key(self):
         """Test outlier detection on non-existent key."""
         with pytest.raises(ResponseError, match="the key does not exist"):
             self.client.execute_command('TS.OUTLIERS', 'nonexistent', "-", "+", "method", "zscore")
+
+    def test_esd_rejects_alpha_outside_open_unit_interval(self):
+        """ESD alpha must be validated before it reaches statrs' inverse CDF."""
+        with pytest.raises(ResponseError, match="ALPHA must be greater than 0 and less than 1"):
+            self.client.execute_command(
+                'TS.OUTLIERS', 'test:outliers:esd:alpha', '-', '+',
+                'METHOD', 'esd', 'ALPHA', 13,
+            )
 
     def test_method_spc_cusum_negative_spike(self):
         """Test SPC CUSUM control chart method negative spike."""

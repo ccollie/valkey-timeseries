@@ -1,12 +1,13 @@
 use std::ops::Deref;
 pub(crate) mod bulk_build;
 mod index_key;
+mod memory;
 mod posting_stats;
 mod postings;
 mod querier;
 mod timeseries_index;
 
-use crate::common::context::get_current_db;
+use crate::common::context::{create_key_string, get_current_db};
 use croaring::Portable;
 use papaya::{Guard, HashMap, LocalGuard};
 use std::sync::LazyLock;
@@ -16,13 +17,15 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::log_warning;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
+use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, try_get_timeseries_mut};
 pub use index_key::IndexKey;
+pub use memory::{IndexMemory, index_memory_usage};
 pub use posting_stats::*;
 pub use postings::PostingsBitmap;
 pub use querier::*;
 pub use timeseries_index::*;
 
+pub(crate) mod asm;
 mod ids;
 mod key_buffer;
 mod label_filter;
@@ -126,10 +129,12 @@ where
     Ok(())
 }
 
+/// Resolves a series id through the index and opens its key for writing. `Ok(None)` when
+/// the id is unknown (or its key has since disappeared); the ACL and type checks are those
+/// of [`try_get_timeseries_mut`].
 pub fn get_series_by_id(
     ctx: &'_ Context,
     id: SeriesRef,
-    must_exist: bool,
     permissions: Option<AclPermissions>,
 ) -> ValkeyResult<Option<SeriesGuardMut<'_>>> {
     let map = TIMESERIES_INDEX.pin();
@@ -138,13 +143,19 @@ pub fn get_series_by_id(
         return Ok(None);
     };
     let mut state = 0;
-    index.with_postings(&mut state, |posting, _| {
-        let Some(key) = posting.get_key_by_id(id) else {
-            return Ok(None);
-        };
-        let real_key = ctx.create_string(key.as_ref());
-        get_timeseries_mut(ctx, &real_key, must_exist, permissions)
-    })
+    // Resolve the key under the postings guard, then open it *after* the guard is gone.
+    // Opening a key runs the server's lazy-expiry check, which reaps an expired series through
+    // this module's `unlink` callback -- and that takes the postings write lock on this same
+    // thread. See `series::index::querier::resolve_series_keys`.
+    let real_key = index.with_postings(&mut state, |posting, _| {
+        posting
+            .get_key_by_id(id)
+            .map(|key| create_key_string(ctx, key.as_ref()))
+    });
+    let Some(real_key) = real_key else {
+        return Ok(None);
+    };
+    try_get_timeseries_mut(ctx, &real_key, permissions)
 }
 
 pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString> {
@@ -153,43 +164,72 @@ pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString
     let mut state = 0;
     index_guard.with_postings(&mut state, |posting, _| {
         let key = posting.get_key_by_id(id)?;
-        Some(ctx.create_string(key.as_ref()))
+        Some(create_key_string(ctx, key.as_ref()))
     })
-}
-
-pub fn remove_series_from_index(ts: &TimeSeries) {
-    let Some(db) = ts._db else {
-        log_warning(format!(
-            "Skipping index removal for series id {} because _db is unassigned",
-            ts.id
-        ));
-        return;
-    };
-    let guard = get_db_index(db);
-    guard.remove_timeseries(ts);
 }
 
 /// Index a timeseries by its key. Looks up the series from the key, assigns the current
 /// database, and inserts it into the index if not already present.
 pub fn index_series_by_key(ctx: &Context, key: &[u8]) {
     let db = get_current_db(ctx);
-    let valkey_key = ctx.create_string(key);
-    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+    let valkey_key = create_key_string(ctx, key);
+    // Open the key before taking the index lock: opening runs lazy expiry, which can reach
+    // the `unlink` callback and its write lock on this same thread.
+    let Ok(Some(mut series)) = try_get_timeseries_mut(ctx, &valkey_key, None) else {
         return;
     };
     series._db = Some(db);
     let index = get_db_index(db);
-    if !index.has_id(series.id) {
-        index.index_timeseries(&series, key);
+    let mut postings = index.get_postings_mut();
+    index_loaded_series(&mut postings, &mut series, key);
+}
+
+/// Index a series that entered the keyspace carrying a serialized id (RESTORE, `TS._RESTORE`,
+/// a slot import), unless it is already indexed under `key` (an RDB load whose index was
+/// preloaded from the aux payload).
+///
+/// A serialized id is not guaranteed to be free. `RESTORE b <DUMP a>` with `a` still live
+/// brings back `a`'s id verbatim; skipping it as "already indexed" left `b` unqueryable, and
+/// indexing it anyway would merge the two series' postings. Such a series is a new series
+/// that happens to share bytes with another, so it gets a fresh id and — like `COPY` — drops
+/// its compaction linkage, which refers to other series by id and still belongs to the
+/// original.
+pub(crate) fn index_loaded_series(postings: &mut Postings, series: &mut TimeSeries, key: &[u8]) {
+    let collides = match postings.get_key_by_id(series.id) {
+        Some(owner) if owner.as_ref() == key => return,
+        Some(_) => true,
+        None => false,
+    };
+    if collides {
+        let old_id = series.id;
+        series.id = next_timeseries_id();
+        let dropped_rules = series.rules.len();
+        let had_source = series.src_series.take().is_some();
+        series.rules.clear();
+        log_warning(format!(
+            "series id {old_id} for key {} is already in use by another key; reassigned id {} \
+             (dropped {dropped_rules} compaction rule(s){})",
+            String::from_utf8_lossy(key),
+            series.id,
+            if had_source {
+                " and its source link"
+            } else {
+                ""
+            }
+        ));
     }
+    postings.index_timeseries(series, key);
 }
 
-pub fn clear_timeseries_index(ctx: &Context) {
-    let db = get_current_db(ctx);
-    let map = TIMESERIES_INDEX.pin();
-    map.remove(&db);
+/// Drops the index for a single database. Takes the db explicitly: the only caller is the
+/// FLUSHDB handler, whose event context should not have its selected db mutated just to
+/// communicate which database was flushed.
+pub fn clear_timeseries_index(db: i32) {
+    TIMESERIES_INDEX.pin().remove(&db);
 }
 
+/// Drops every database's index. Used for the `dbnum == -1` flush -- `FLUSHALL`, and the
+/// implicit flush a replica performs on a full resync.
 pub fn clear_all_timeseries_indexes() {
     TIMESERIES_INDEX.pin().clear();
 }

@@ -3,10 +3,34 @@ use std::os::raw::c_int;
 use valkey_module::{
     Context, ContextFlags, RedisModule_GetSelectedDb, RedisModule_SelectDb, Status, ValkeyError,
     ValkeyModule_GetServerInfo, ValkeyModule_ServerInfoGetFieldSigned, ValkeyModuleCtx,
-    ValkeyModuleServerInfoData, ValkeyResult, raw,
+    ValkeyModuleServerInfoData, ValkeyResult, ValkeyString, raw,
 };
 
-use crate::fanout::{FANOUT_ACL_USER, fanout_acl_scope_active, is_clustered};
+use crate::fanout::FANOUT_ACL_USER;
+
+/// Build a `ValkeyString` from raw key bytes without going through `CString`.
+///
+/// `Context::create_string` funnels its argument through `CString::new(..).unwrap()`, so any
+/// byte string holding an interior NUL panics. Valkey key names are binary-safe, so that is not
+/// a corrupt-input-only concern: `TS.CREATE "a\0b"` is a legal key, and the same bytes come back
+/// out of an RDB, a `RESTORE`, a rename, or the postings index. Worse, most of those paths run
+/// inside a keyspace-notification or data-type callback, which is `extern "C"` and cannot unwind
+/// — the panic becomes an `abort`, taking the whole server down with it.
+///
+/// Every conversion of keyspace-derived bytes into a `ValkeyString` must go through here.
+/// `create_string` stays fine for module-authored literals and formatted numbers.
+pub fn create_key_string(ctx: &Context, key: &[u8]) -> ValkeyString {
+    ValkeyString::create_from_slice(ctx.ctx, key)
+}
+
+/// Render a binary key name for a log line or an error message.
+///
+/// Lossy on purpose, and only for human-readable diagnostics: a key holding a non-UTF-8 byte
+/// still has to appear in a message somehow. Never build a client reply out of this — reply with
+/// the raw bytes (`reply_with_slice`) so the caller gets back exactly the name it used.
+pub fn key_for_display(key: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(key)
+}
 
 // Safety: RedisModule_GetSelectedDb is safe to call
 pub fn get_current_db(ctx: &Context) -> i32 {
@@ -40,6 +64,28 @@ pub fn is_real_user_client(ctx: &Context) -> bool {
     true
 }
 
+/// Whether this server is a replica.
+///
+/// Server-level state, not client state: `RM_GetContextFlags` reads it from the server, so this
+/// is valid from a detached/thread-safe context as well as from a command context. Used to keep
+/// a cluster fanout write from being applied locally when the coordinator's cluster map is stale
+/// enough to have addressed us as a primary (see `MDelFanoutCommand::get_local_response`).
+#[inline]
+pub fn is_replica(ctx: &Context) -> bool {
+    ctx.get_flags().contains(ContextFlags::SLAVE)
+}
+
+/// Whether the current execution context forbids blocking the client — inside `MULTI`, a Lua
+/// script, or a nested module call.
+///
+/// This must be consulted before every `RM_BlockClientOnKeys*` call. It is not a defensive check:
+/// the server asserts `!deny_blocking || (islua || ismulti)` inside `moduleBlockClient` and aborts
+/// the process when it fails.
+#[inline]
+pub fn is_blocking_denied(ctx: &Context) -> bool {
+    ctx.get_flags().contains(ContextFlags::DENY_BLOCKING)
+}
+
 #[inline]
 pub fn is_acl_enforced(ctx: &Context) -> bool {
     // Replicated (master-link) and AOF-applied commands must not trigger ACL checks:
@@ -49,15 +95,18 @@ pub fn is_acl_enforced(ctx: &Context) -> bool {
     // `RedisModule_GetModuleUserFromUserName` and crashing the server. `is_real_user_client`
     // already excludes client_id == 0 (internal/module contexts), the AOF sentinel,
     // and the REPLICATED flag.
-    is_real_user_client(ctx) || fanout_acl_scope_active()
+    //
+    // Fan-out request handlers run on the detached `MODULE_CONTEXT`, whose client is a
+    // real (fake-flagged) client with a non-zero id and no REPLICATED flag, so they are
+    // enforced by this same test; the fan-out ACL scope only supplies *which* user to
+    // check (see `get_acl_user`), never *whether* to check.
+    is_real_user_client(ctx)
 }
 
 pub fn get_acl_user(ctx: &Context) -> valkey_module::ValkeyString {
-    if is_clustered(ctx) {
-        let fanout_user = FANOUT_ACL_USER.with(|u| u.borrow().clone());
-        if let Some(user) = fanout_user {
-            return ctx.create_string(user.as_str());
-        }
+    let fanout_identity = FANOUT_ACL_USER.with(|u| u.borrow().clone());
+    if let Some(identity) = fanout_identity {
+        return ctx.create_string(identity.name.as_str());
     }
     ctx.get_current_user()
 }

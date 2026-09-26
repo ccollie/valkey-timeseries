@@ -1,25 +1,32 @@
-use super::fanout::generated::{
+use super::fanout_codec;
+use super::fanout_codec::generated::{
     GroupPartialSeries, MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse,
 };
+use crate::aggregators::EmptyFillBounds;
 use crate::aggregators::MultiAggregateIterator;
 use crate::aggregators::{PartialReducer, PartialState};
-use crate::commands::utils::reply_with_mrange_series_results;
+use crate::commands::utils::{
+    MRangeReplyShape, get_multi_command_targets, reply_with_mrange_series_results,
+};
+use crate::common::context::key_for_display;
+use crate::common::replies::ReplyContext;
 use crate::common::{MultiSample, Sample};
-use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::iterators::{
-    MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, create_sample_iterator_adapter,
+    MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, SampleReducer,
+    create_sample_iterator_adapter,
 };
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
-    SampleLimit, build_mrange_grouped_labels, collect_rows, process_mrange_group_partials,
-    process_mrange_query, sort_mrange_results,
+    SampleLimit, build_mrange_grouped_labels, collect_rows, collect_samples,
+    process_mrange_group_partials, process_mrange_query, sort_mrange_results,
 };
 use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, SeriesResultData,
 };
-use orx_parallel::ParIter;
-use orx_parallel::ParIterResult;
+use orx_parallel::Par;
+use orx_parallel::ParResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,7 +96,7 @@ impl FanoutClientCommand for MRangeFanoutCommand {
     }
 
     fn get_local_response(
-        ctx: &Context,
+        ctx: &FanoutContext,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
         let apply_aggregation = req.apply_aggregation;
@@ -121,7 +128,10 @@ impl FanoutClientCommand for MRangeFanoutCommand {
             // GROUPBY/REDUCE push-down: pre-reduce local group members per
             // bucket (per-series aggregation included when present) and ship
             // partial states instead of per-series samples.
-            let partials = process_mrange_group_partials(ctx, options, limit)?;
+            let partials = {
+                let ctx = ctx.lock()?;
+                process_mrange_group_partials(&ctx, options, limit)?
+            };
             return Ok(MultiRangeResponse {
                 series: Vec::new(),
                 group_partials: partials.into_iter().map(Into::into).collect(),
@@ -130,6 +140,9 @@ impl FanoutClientCommand for MRangeFanoutCommand {
                 applied_aggregation: true,
                 applied_group_reduce: true,
                 applied_count: apply_count,
+                // No `series` in this branch, so nothing to intern.
+                symbol_table_names: Vec::new(),
+                symbol_table_values: Vec::new(),
             });
         }
 
@@ -138,20 +151,37 @@ impl FanoutClientCommand for MRangeFanoutCommand {
             options.range.aggregation = None;
         }
 
-        // Process the MRange query locally
-        let series = process_mrange_query(ctx, options, true, limit)?;
+        // Process the MRange query locally. The results are owned, so the
+        // encoding below (including label interning) runs with the GIL released.
+        let series = {
+            let ctx = ctx.lock()?;
+            process_mrange_query(&ctx, options, true, limit)?
+        };
 
         // Convert MRangeSeriesResult to SeriesResponse
-        let serialized: Result<Vec<SeriesRangeResponse>, _> =
-            series.into_iter().map(|x| x.try_into()).collect();
+        let mut serialized: Vec<SeriesRangeResponse> = series
+            .into_iter()
+            .map(|x| x.try_into())
+            .collect::<Result<_, _>>()?;
+
+        // Unconditional: the ref arrays are self-describing, so no request
+        // opt-in or response echo is needed to make this decodable.
+        let (symbol_table_names, symbol_table_values) =
+            fanout_codec::symbol_table::intern_labels(&mut serialized);
 
         Ok(MultiRangeResponse {
-            series: serialized?,
+            series: serialized,
             group_partials: Vec::new(),
             applied_aggregation: apply_aggregation,
             applied_group_reduce: false,
             applied_count: apply_count,
+            symbol_table_names,
+            symbol_table_values,
         })
+    }
+
+    fn get_targets(&self, ctx: &Context) -> FanoutTarget {
+        get_multi_command_targets(ctx, &self.options.tags)
     }
 
     fn generate_request(&self) -> MultiRangeRequest {
@@ -163,17 +193,10 @@ impl FanoutClientCommand for MRangeFanoutCommand {
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
-        let mut resp = resp;
-        // Tag each series with the shard's applied_aggregation echo so the
-        // reply path can compensate per response (compatibility handshake).
-        let bucketed = resp.applied_aggregation;
-        self.series
-            .extend(resp.series.into_iter().map(|series| (series, bucketed)));
-        self.group_partials.append(&mut resp.group_partials);
-        Ok(())
+        self.ingest_response(resp).map_err(Into::into)
     }
 
-    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+    fn reply(&mut self, ctx: &ReplyContext) -> Status {
         self.options.range.latest = false;
         self.options.range.timestamp_filter = None;
         self.options.range.value_filter = None;
@@ -182,10 +205,14 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         let series = std::mem::take(&mut self.series);
         let group_partials = std::mem::take(&mut self.group_partials);
 
+        // Captured before process_responses, which clears aggregation options
+        // under push-down (the RESP3 reply still reports the aggregator names).
+        let shape = MRangeReplyShape::from_options(&self.options);
+
         match self.process_responses(series, group_partials) {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
-                let _ = reply_with_mrange_series_results(ctx, &series);
+                let _ = reply_with_mrange_series_results(ctx, &series, &shape);
                 Status::Ok
             }
             Err(e) => {
@@ -199,6 +226,28 @@ impl FanoutClientCommand for MRangeFanoutCommand {
 }
 
 impl MRangeFanoutCommand {
+    /// Resolve symbol-table label refs (if the shard used them) and fold the
+    /// response into accumulated state. Split out from `on_response` so it can
+    /// be driven directly in tests without constructing a `NodeInfo`.
+    fn ingest_response(&mut self, mut resp: MultiRangeResponse) -> ValkeyResult<()> {
+        // Resolve here, while the response still owns its symbol table —
+        // downstream (self.series and everything built from it) never needs to
+        // know interning happened. No flag to check: `resolve_labels` is driven
+        // by the per-series ref arrays and is a no-op where there are none.
+        fanout_codec::symbol_table::resolve_labels(
+            &mut resp.series,
+            &resp.symbol_table_names,
+            &resp.symbol_table_values,
+        )?;
+        // Tag each series with the shard's applied_aggregation echo so the
+        // reply path can compensate per response (compatibility handshake).
+        let bucketed = resp.applied_aggregation;
+        self.series
+            .extend(resp.series.into_iter().map(|series| (series, bucketed)));
+        self.group_partials.append(&mut resp.group_partials);
+        Ok(())
+    }
+
     /// Post-process the accumulated shard responses into the final reply
     /// series, compensating per response for shards that did not honor the
     /// push-down flags (compatibility handshake): raw series are aggregated
@@ -230,7 +279,16 @@ impl MRangeFanoutCommand {
         } else if self.options.grouping.is_some() {
             handle_grouping(series, &self.options)
         } else {
-            handle_basic(series, &self.options)
+            let mut results = handle_basic(series, &self.options)?;
+            // Authoritative EXCLUDEEMPTY pass. Shards already drop empty series
+            // when they honor `exclude_empty`, but a peer that ignores the field
+            // (or coordinator-side aggregation that empties a series) must not
+            // change the reply. GROUPBY is rejected with EXCLUDEEMPTY at parse
+            // time, so only this branch can see the flag.
+            if self.options.exclude_empty {
+                results.retain(|result| !result.data.is_empty());
+            }
+            Ok(results)
         }
     }
 }
@@ -262,11 +320,16 @@ fn normalize_response_series(
                 return Ok(response);
             }
             let mut result = MRangeSeriesResult::try_from(response)?;
+            // Default `EMPTY` bounds: the coordinator holds the shard's samples, already
+            // clipped to the query window, and no series to look outside it with — so the
+            // fill stays anchored to those samples (interior gaps only). A shard that
+            // bucketed for itself returns above with the wider fill applied.
             let samples: Vec<Sample> = create_sample_iterator_adapter(
                 result.data.sample_iter(),
                 &shard_range,
                 &None,
                 false,
+                EmptyFillBounds::default(),
             )
             .collect();
             result.data = SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
@@ -274,7 +337,7 @@ fn normalize_response_series(
             ));
             result.try_into()
         })
-        .into_fallible_result()
+        .into_fallible()
         .collect()
 }
 
@@ -307,7 +370,7 @@ fn compensate_group_partials(
     let results = series
         .into_par()
         .map(MRangeSeriesResult::try_from)
-        .into_fallible_result()
+        .into_fallible()
         .collect()?;
     let grouped = construct_group_map(results);
 
@@ -361,7 +424,7 @@ fn handle_basic(
     series
         .into_par()
         .map(MRangeSeriesResult::try_from) // Explicit conversion
-        .into_fallible_result()
+        .into_fallible()
         .map(|series| process_series_samples(series, options))
         .collect()
 }
@@ -374,11 +437,9 @@ fn serialize_request(request: &MRangeOptions) -> MultiRangeRequest {
 }
 
 struct GroupData {
-    keys: SmallVec<[String; 8]>,
+    keys: SmallVec<[Vec<u8>; 8]>,
     series: Vec<MRangeSeriesResult>,
 }
-
-type GroupMap = BTreeMap<String, GroupData>;
 
 /// Apply GROUPBY/REDUCE to the series coming from remote nodes
 fn handle_grouping(
@@ -392,7 +453,7 @@ fn handle_grouping(
     let results = series
         .into_par()
         .map(MRangeSeriesResult::try_from)
-        .into_fallible_result()
+        .into_fallible()
         .collect()?;
     let grouped_by_key = construct_group_map(results);
 
@@ -406,12 +467,12 @@ fn handle_grouping(
 /// Short, bounded rendering of a partial's source keys for error/log context:
 /// enough to identify the owning shard without flooding the message when a
 /// group has many members.
-fn sources_preview(source_keys: &[String]) -> String {
+fn sources_preview(source_keys: &[Vec<u8>]) -> String {
     const MAX_SHOWN: usize = 3;
     let mut preview = source_keys
         .iter()
         .take(MAX_SHOWN)
-        .cloned()
+        .map(|key| key_for_display(key))
         .collect::<Vec<_>>()
         .join(",");
     if source_keys.len() > MAX_SHOWN {
@@ -454,7 +515,7 @@ fn handle_group_partials(
     };
 
     type BucketStates = SmallVec<[PartialState; 4]>;
-    type MergedGroup = (BTreeMap<i64, BucketStates>, BTreeSet<String>);
+    type MergedGroup = (BTreeMap<i64, BucketStates>, BTreeSet<Vec<u8>>);
     let mut groups: BTreeMap<String, MergedGroup> = BTreeMap::new();
     for partial in partials {
         // Corrupt-peer defense: states must be row-major with exactly the
@@ -523,7 +584,7 @@ fn handle_group_partials(
                 )))
             };
 
-            let sources: Vec<String> = sources.into_iter().collect(); // sorted via BTreeSet
+            let sources: Vec<Vec<u8>> = sources.into_iter().collect(); // sorted via BTreeSet
             let labels = if options.with_labels {
                 build_mrange_grouped_labels(
                     &group_options.group_label,
@@ -536,9 +597,10 @@ fn handle_group_partials(
             };
 
             MRangeSeriesResult {
-                key: format!("{}={}", group_options.group_label, label),
+                key: format!("{}={}", group_options.group_label, label).into_bytes(),
                 group_label_value: Some(label),
                 labels,
+                sources,
                 data,
             }
         })
@@ -639,6 +701,13 @@ fn process_group(
             options.is_reverse,
             options.range.count,
         ))
+    } else if options.range.aggregation.is_some() {
+        // The shards sent raw samples (no aggregation push-down): bucket each series first,
+        // then reduce across series.
+        let samples = reduce_aggregated_group(&data.series, options, group_options);
+        SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
+            samples,
+        )))
     } else {
         let samples = process_series_list(&data.series, options);
         SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
@@ -661,11 +730,46 @@ fn process_group(
     };
 
     MRangeSeriesResult {
-        key: format!("{}={}", group_options.group_label, label),
+        key: format!("{}={}", group_options.group_label, label).into_bytes(),
         group_label_value: Some(label),
         labels,
+        sources: data.keys.to_vec(),
         data: result_data,
     }
+}
+
+/// GROUPBY … REDUCE over raw samples with AGGREGATION: aggregate each series on its own,
+/// k-way merge the per-series buckets, then reduce across series — as the single-node path
+/// (`get_grouped_samples`) does.
+///
+/// Routing this through `process_series_list` merged the raw samples of every series and
+/// bucketed the merged stream, so the reducer saw one value per bucket rather than one per
+/// series: `AGGREGATION max 10` + `REDUCE sum` over A={1,1} and B={2,2} gave 2, not 3.
+///
+/// Each series runs ascending with COUNT withheld; COUNT and the requested order apply to
+/// the reduced stream.
+fn reduce_aggregated_group(
+    series: &[MRangeSeriesResult],
+    options: &MRangeOptions,
+    group_options: &RangeGroupingOptions,
+) -> Vec<Sample> {
+    let mut range = options.range.clone();
+    let count = range.count.take();
+    let per_series = series
+        .iter()
+        .map(|s| {
+            create_sample_iterator_adapter(
+                s.data.sample_iter(),
+                &range,
+                &None,
+                false,
+                EmptyFillBounds::default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let merged = MultiSeriesSampleIter::new(per_series);
+    let reducer = SampleReducer::new(merged, group_options.aggregation.create_aggregator());
+    collect_samples(reducer, options.is_reverse, count)
 }
 
 fn process_series_samples(
@@ -699,6 +803,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     } else if series.len() == 1 {
@@ -707,6 +812,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     } else {
@@ -719,6 +825,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     }
@@ -759,6 +866,7 @@ mod tests {
             key: key.into(),
             group_label_value: group.map(String::from),
             labels: Vec::new(),
+            sources: Vec::new(),
             data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
                 UncompressedChunk::from_vec(data),
             )),
@@ -767,6 +875,36 @@ mod tests {
 
     fn to_response(result: MRangeSeriesResult) -> SeriesRangeResponse {
         result.try_into().expect("serialize series result")
+    }
+
+    fn series_result_with_labels(
+        key: &str,
+        data: Vec<Sample>,
+        labels: &[(&str, &str)],
+    ) -> MRangeSeriesResult {
+        MRangeSeriesResult {
+            key: key.into(),
+            group_label_value: None,
+            labels: labels
+                .iter()
+                .map(|&(name, value)| crate::labels::Label {
+                    name: name.into(),
+                    value: value.into(),
+                })
+                .collect(),
+            sources: Vec::new(),
+            data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+                UncompressedChunk::from_vec(data),
+            )),
+        }
+    }
+
+    fn label_pairs(series: &SeriesRangeResponse) -> Vec<(String, String)> {
+        series
+            .labels
+            .iter()
+            .map(|l| (l.name.clone(), l.value.clone()))
+            .collect()
     }
 
     fn avg_aggregation(bucket_duration: u64) -> AggregationOptions {
@@ -795,7 +933,14 @@ mod tests {
     /// Simulate what a push-down shard returns: the per-series aggregation
     /// pipeline applied to the raw samples.
     fn shard_aggregate(raw: Vec<Sample>, options: &MRangeOptions) -> Vec<Sample> {
-        create_sample_iterator_adapter(raw.into_iter(), &options.range, &None, false).collect()
+        create_sample_iterator_adapter(
+            raw.into_iter(),
+            &options.range,
+            &None,
+            false,
+            EmptyFillBounds::default(),
+        )
+        .collect()
     }
 
     /// Push-down equivalence: shard-side bucketing + coordinator post-processing
@@ -881,7 +1026,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let group = &results[0];
-        assert_eq!(group.key, "region=us");
+        assert_eq!(group.key, "region=us".as_bytes());
         assert_eq!(group.group_label_value.as_deref(), Some("us"));
         assert_eq!(
             result_samples(group),
@@ -901,7 +1046,72 @@ mod tests {
         let results = handle_grouping(make_responses(), &options).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].labels.is_empty());
-        assert_eq!(results[0].key, "region=us");
+        assert_eq!(results[0].key, "region=us".as_bytes());
+    }
+
+    /// GROUPBY + REDUCE with AGGREGATION when the shards did not aggregate (push-down off):
+    /// the coordinator must bucket each series before reducing across series, and so agree
+    /// with the push-down result. It used to bucket the merged stream of the whole group.
+    #[test]
+    fn test_grouped_aggregation_without_pushdown_reduces_per_series_buckets() {
+        let raw_a = samples(&[(0, 1.0), (1, 1.0), (10, 4.0), (25, 1.0)]);
+        let raw_b = samples(&[(0, 2.0), (1, 2.0), (12, 3.0), (27, 6.0)]);
+        let responses = |a: Vec<Sample>, b: Vec<Sample>| {
+            vec![
+                to_response(series_result("a", Some("us"), a)),
+                to_response(series_result("b", Some("us"), b)),
+            ]
+        };
+
+        for (is_reverse, count) in [
+            (false, None),
+            (true, None),
+            (false, Some(2)),
+            (true, Some(2)),
+        ] {
+            let mut options = mrange_options(0, 1000);
+            let mut aggregation = avg_aggregation(10);
+            aggregation.aggregations =
+                smallvec::smallvec![AggregatorConfig::new(AggregationType::Max, None).unwrap()];
+            options.range.aggregation = Some(aggregation);
+            options.range.count = count;
+            options.is_reverse = is_reverse;
+            options.grouping = Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+                group_label: "region".into(),
+            });
+
+            let raw = handle_grouping(responses(raw_a.clone(), raw_b.clone()), &options).unwrap();
+
+            // Push-down: each shard buckets its series ascending with COUNT stripped, and the
+            // coordinator runs with aggregation cleared.
+            let mut shard_options = options.clone();
+            shard_options.range.count = None;
+            shard_options.is_reverse = false;
+            let mut coord_options = options.clone();
+            coord_options.range.aggregation = None;
+            let pushed = handle_grouping(
+                responses(
+                    shard_aggregate(raw_a.clone(), &shard_options),
+                    shard_aggregate(raw_b.clone(), &shard_options),
+                ),
+                &coord_options,
+            )
+            .unwrap();
+
+            assert_eq!(
+                result_samples(&raw[0]),
+                result_samples(&pushed[0]),
+                "reverse={is_reverse} count={count:?}"
+            );
+            if !is_reverse && count.is_none() {
+                // max per series per 10ms bucket, summed across the two series.
+                assert_eq!(
+                    result_samples(&raw[0]),
+                    samples(&[(0, 3.0), (10, 7.0), (20, 7.0)])
+                );
+            }
+        }
     }
 
     /// The request flag mirrors the latched push-down decision.
@@ -987,7 +1197,7 @@ mod tests {
                 PartialSampleReducer::new(shard_samples.into_iter(), reducer.clone()).unzip();
             GroupPartialSeries {
                 group_label_value: "us".into(),
-                source_keys: keys.iter().map(|s| s.to_string()).collect(),
+                source_keys: keys.iter().map(|s| s.as_bytes().to_vec()).collect(),
                 bucket_timestamps,
                 states: states.into_iter().map(Into::into).collect(),
                 column_count: 1,
@@ -1003,7 +1213,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         let group = &results[0];
-        assert_eq!(group.key, "region=us");
+        assert_eq!(group.key, "region=us".as_bytes());
         assert_eq!(
             result_samples(group),
             samples(&[(0, 10.0), (100, 3.0), (200, 7.0)]),
@@ -1148,7 +1358,7 @@ mod tests {
                     };
                     GroupPartialSeries {
                         group_label_value: "us".into(),
-                        source_keys: keys.iter().map(|s| s.to_string()).collect(),
+                        source_keys: keys.iter().map(|s| s.as_bytes().to_vec()).collect(),
                         bucket_timestamps,
                         states: states.into_iter().map(Into::into).collect(),
                         column_count: 1,
@@ -1178,6 +1388,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// EXCLUDEEMPTY rides on the request so shards can drop empty series before
+    /// shipping, but the coordinator is the authority: a peer that ignores the
+    /// field (here, both shards) must not be able to put an empty series back
+    /// into the reply.
+    #[test]
+    fn test_exclude_empty_reapplied_at_coordinator() {
+        let mut options = mrange_options(0, 500);
+        options.exclude_empty = true;
+
+        let mut command = MRangeFanoutCommand::new(options);
+        let request = command.generate_request();
+        assert!(request.exclude_empty, "shards are told to pre-filter");
+        // The shard rebuilds its options from the request, so the flag has to
+        // survive both directions of the codec for the pre-filter to happen.
+        assert!(
+            MRangeOptions::try_from(&request).unwrap().exclude_empty
+                && MRangeOptions::try_from(request).unwrap().exclude_empty
+        );
+
+        let responses = vec![
+            (
+                to_response(series_result("s", None, samples(&[(100, 1.0), (400, 4.0)]))),
+                false,
+            ),
+            (to_response(series_result("u", None, Vec::new())), false),
+        ];
+        let results = command.process_responses(responses, Vec::new()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "s".as_bytes());
+
+        // Without the flag the empty series is reported, as before.
+        let mut options = mrange_options(0, 500);
+        options.exclude_empty = false;
+        let mut command = MRangeFanoutCommand::new(options);
+        assert!(!command.generate_request().exclude_empty);
+        let responses = vec![
+            (
+                to_response(series_result("s", None, samples(&[(100, 1.0), (400, 4.0)]))),
+                false,
+            ),
+            (to_response(series_result("u", None, Vec::new())), false),
+        ];
+        let mut results = command.process_responses(responses, Vec::new()).unwrap();
+        sort_mrange_results(&mut results, false);
+        assert_eq!(results.len(), 2);
+        assert!(results[1].data.is_empty());
     }
 
     /// COUNT push-down latch: flag mirrors config && COUNT presence.
@@ -1363,7 +1621,7 @@ mod tests {
         let results = handle_grouping(responses, &options).unwrap();
         assert_eq!(results.len(), 1);
         let group = &results[0];
-        assert_eq!(group.key, "region=us");
+        assert_eq!(group.key, "region=us".as_bytes());
         let rows = result_rows(group);
 
         // column-wise sum across series per bucket timestamp:
@@ -1425,6 +1683,7 @@ mod tests {
             key: key.into(),
             group_label_value: group.map(String::from),
             labels: Vec::new(),
+            sources: Vec::new(),
             data: SeriesResultData::Rows(rows),
         })
     }
@@ -1505,7 +1764,10 @@ mod tests {
 
         GroupPartialSeries {
             group_label_value: "us".into(),
-            source_keys: members.iter().map(|(key, _)| key.to_string()).collect(),
+            source_keys: members
+                .iter()
+                .map(|(key, _)| key.as_bytes().to_vec())
+                .collect(),
             bucket_timestamps,
             states: buckets.into_iter().flatten().map(Into::into).collect(),
             column_count: columns as u32,
@@ -1752,7 +2014,7 @@ mod tests {
     /// sources_preview stays bounded for large groups.
     #[test]
     fn test_sources_preview_bounded() {
-        let keys: Vec<String> = (0..10).map(|i| format!("k{i}")).collect();
+        let keys: Vec<Vec<u8>> = (0..10).map(|i| format!("k{i}").into_bytes()).collect();
         assert_eq!(sources_preview(&keys[..2]), "k0,k1");
         assert_eq!(sources_preview(&keys[..3]), "k0,k1,k2");
         assert_eq!(sources_preview(&keys), "k0,k1,k2,+7 more");
@@ -2024,5 +2286,146 @@ mod tests {
                 "reverse={is_reverse} count={count:?}"
             );
         }
+    }
+
+    /// End-to-end through `ingest_response`: a shard that interned its labels
+    /// (as `get_local_response` always does) must resolve back to exactly the
+    /// labels it started with, with the shared `region` value collapsed to one
+    /// dictionary entry.
+    #[test]
+    fn ingest_response_resolves_symbol_table_labels() {
+        let mut wire = vec![
+            to_response(series_result_with_labels(
+                "a",
+                samples(&[(0, 1.0)]),
+                &[("region", "us-east-1"), ("env", "prod")],
+            )),
+            to_response(series_result_with_labels(
+                "b",
+                samples(&[(0, 2.0)]),
+                &[("region", "us-east-1"), ("env", "staging")],
+            )),
+        ];
+        let expected: Vec<Vec<(String, String)>> = wire.iter().map(label_pairs).collect();
+
+        let (symbol_table_names, symbol_table_values) =
+            fanout_codec::symbol_table::intern_labels(&mut wire);
+        assert_eq!(symbol_table_names.len(), 2, "region, env");
+        assert_eq!(symbol_table_values.len(), 3, "us-east-1, prod, staging");
+        assert!(wire.iter().all(|s| s.labels.is_empty()), "interned away");
+
+        let resp = MultiRangeResponse {
+            series: wire,
+            group_partials: Vec::new(),
+            applied_aggregation: false,
+            applied_group_reduce: false,
+            applied_count: false,
+            symbol_table_names,
+            symbol_table_values,
+        };
+
+        let mut cmd = MRangeFanoutCommand::default();
+        cmd.ingest_response(resp).expect("ingest_response");
+
+        assert_eq!(cmd.series.len(), 2);
+        for ((series, _bucketed), want) in cmd.series.iter().zip(&expected) {
+            assert_eq!(
+                &label_pairs(series),
+                want,
+                "series '{}'",
+                key_for_display(&series.key)
+            );
+        }
+    }
+
+    /// Peer-controlled input: a symbol-table response whose ref arrays point
+    /// past the end of the dictionary must be rejected, not indexed.
+    #[test]
+    fn ingest_response_rejects_out_of_range_symbol_table_ref() {
+        let resp = MultiRangeResponse {
+            series: vec![SeriesRangeResponse {
+                key: "a".into(),
+                group_label_value: String::new(),
+                labels: Vec::new(),
+                columns: Vec::new(),
+                label_name_refs: vec![7],
+                label_value_refs: vec![0],
+            }],
+            group_partials: Vec::new(),
+            applied_aggregation: false,
+            applied_group_reduce: false,
+            applied_count: false,
+            symbol_table_names: Vec::new(),
+            symbol_table_values: vec!["us-east-1".into()],
+        };
+
+        let mut cmd = MRangeFanoutCommand::default();
+        let err = cmd
+            .ingest_response(resp)
+            .expect_err("out-of-range ref must be rejected");
+        assert!(err.to_string().contains("out of range"), "{err}");
+        assert!(
+            cmd.series.is_empty(),
+            "a rejected response must not be partially ingested"
+        );
+    }
+
+    /// `ingest_response` resolves unconditionally, with no flag to consult, so
+    /// a response carrying `labels` directly and no refs has to survive the
+    /// trip intact. Guards against the resolve step being made destructive.
+    #[test]
+    fn ingest_response_passes_through_uninterned_labels() {
+        let wire = to_response(series_result_with_labels(
+            "a",
+            samples(&[(0, 1.0)]),
+            &[("region", "us-east-1")],
+        ));
+        let expected = label_pairs(&wire);
+        assert!(!expected.is_empty(), "premise: the series has labels");
+
+        let resp = MultiRangeResponse {
+            series: vec![wire],
+            group_partials: Vec::new(),
+            applied_aggregation: false,
+            applied_group_reduce: false,
+            applied_count: false,
+            // No symbol table and no refs: labels carried directly.
+            symbol_table_names: Vec::new(),
+            symbol_table_values: Vec::new(),
+        };
+
+        let mut cmd = MRangeFanoutCommand::default();
+        cmd.ingest_response(resp).expect("ingest_response");
+
+        assert_eq!(cmd.series.len(), 1);
+        assert_eq!(label_pairs(&cmd.series[0].0), expected);
+    }
+
+    /// A label-less series survives the unconditional round trip: it interns to
+    /// empty refs, which is the same shape as an uninterned series, and must
+    /// come back as label-less rather than erroring.
+    #[test]
+    fn ingest_response_handles_label_less_series() {
+        let mut wire = vec![to_response(series_result("a", None, samples(&[(0, 1.0)])))];
+        let (symbol_table_names, symbol_table_values) =
+            fanout_codec::symbol_table::intern_labels(&mut wire);
+        assert!(symbol_table_names.is_empty());
+        assert!(symbol_table_values.is_empty());
+
+        let resp = MultiRangeResponse {
+            series: wire,
+            group_partials: Vec::new(),
+            applied_aggregation: false,
+            applied_group_reduce: false,
+            applied_count: false,
+            symbol_table_names,
+            symbol_table_values,
+        };
+
+        let mut cmd = MRangeFanoutCommand::default();
+        cmd.ingest_response(resp).expect("ingest_response");
+
+        assert_eq!(cmd.series.len(), 1);
+        assert!(cmd.series[0].0.labels.is_empty());
     }
 }

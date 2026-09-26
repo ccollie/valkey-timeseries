@@ -1,53 +1,3 @@
-/// Online mean/variance via Welford's method
-/// Tracks distribution of m_t so we can z-score it.
-#[derive(Debug, Clone)]
-pub struct RunningStats {
-    n: usize,
-    mean: f64,
-    mean_sq: f64, // sum of squares of deviations from the mean
-}
-
-impl RunningStats {
-    pub fn new() -> Self {
-        Self {
-            n: 0,
-            mean: 0.0,
-            mean_sq: 0.0,
-        }
-    }
-
-    pub fn update(&mut self, x: f64) {
-        if x.is_nan() {
-            return;
-        }
-        self.n += 1;
-        let delta = x - self.mean;
-        self.mean += delta / self.n as f64;
-        let delta2 = x - self.mean;
-        self.mean_sq += delta * delta2;
-    }
-
-    pub fn count(&self) -> usize {
-        self.n
-    }
-
-    pub fn mean(&self) -> f64 {
-        self.mean
-    }
-
-    pub fn variance(&self) -> f64 {
-        if self.n > 1 {
-            self.mean_sq / (self.n as f64 - 1.0)
-        } else {
-            0.0
-        }
-    }
-
-    pub fn std(&self) -> f64 {
-        self.variance().sqrt()
-    }
-}
-
 fn sum_and_count_finite(data: &[f64]) -> (f64, usize) {
     data.iter().fold((0.0f64, 0usize), |(s, c), &x| {
         if x.is_finite() {
@@ -96,15 +46,21 @@ pub fn calculate_variance(values: &[f64]) -> f64 {
     finite.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / ((n - 1) as f64)
 }
 
-pub fn calculate_median(data: &[f64]) -> f64 {
-    // Filter out NaN and infinities; keep existing sentinel behavior (0.0) for no valid data.
-    let mut finite: Vec<f64> = data.iter().copied().filter(|x| x.is_finite()).collect();
-    if finite.is_empty() {
-        return 0.0;
+/// Normal-consistent robust scale from absolute deviations about the median, sorted
+/// ascending: 1.4826 × MAD.
+///
+/// When more than half the points sit exactly on the median the MAD is 0 — a flat series
+/// with a single spike is the common case — and a detector dividing by it can never flag
+/// anything. There the mean absolute deviation stands in, scaled by 1.253314 to be
+/// normal-consistent (Iglewicz & Hoaglin's fallback for the modified z-score). Only a
+/// perfectly constant input still has a zero scale.
+pub fn robust_scale_from_sorted_abs_devs(sorted_abs_devs: &[f64]) -> f64 {
+    let mad = calculate_median_sorted(sorted_abs_devs);
+    if mad > 0.0 || sorted_abs_devs.is_empty() {
+        return mad * 1.4826;
     }
-    // Safe to unwrap partial_cmp because all values are finite
-    finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    calculate_median_sorted(&finite)
+    let mean_abs_dev = sorted_abs_devs.iter().sum::<f64>() / sorted_abs_devs.len() as f64;
+    mean_abs_dev * 1.253314
 }
 
 pub fn calculate_median_sorted(sorted: &[f64]) -> f64 {
@@ -166,18 +122,6 @@ pub fn quantile_sorted(sorted_data: &[f64], q: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn median_ignores_nan_and_inf() {
-        let v = vec![1.0, 2.0, f64::NAN, f64::INFINITY, -f64::INFINITY, 3.0];
-        assert_eq!(calculate_median(&v), 2.0);
-    }
-
-    #[test]
-    fn median_only_nan_returns_zero() {
-        let v = vec![f64::NAN, f64::NAN];
-        assert_eq!(calculate_median(&v), 0.0);
-    }
 
     #[test]
     fn quantile_basic_and_interpolate() {

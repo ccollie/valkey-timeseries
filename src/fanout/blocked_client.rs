@@ -1,15 +1,15 @@
-use crate::fanout::FanoutContext;
+use crate::common::replies::ReplyContext;
+use crate::fanout::fanout_error::TIMEOUT_ERROR;
 use crate::fanout::{FanoutClientCommand, FanoutResult};
 use std::ffi::c_void;
 use std::os::raw::c_int;
+use std::time::Duration;
 use valkey_module::{
     Context, Status, ValkeyError, ValkeyModule_BlockClient,
     ValkeyModule_BlockedClientMeasureTimeEnd, ValkeyModule_BlockedClientMeasureTimeStart,
     ValkeyModule_GetBlockedClientPrivateData, ValkeyModule_UnblockClient, ValkeyModuleCtx,
     ValkeyModuleString, raw,
 };
-
-const NO_TIMEOUT: i64 = 60000; // 60 seconds
 
 #[repr(C)]
 pub(super) struct BlockedClientPrivateData<OP>
@@ -30,7 +30,7 @@ where
             result,
         }
     }
-    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+    fn reply(&mut self, ctx: &ReplyContext) -> Status {
         match self.result.as_ref() {
             Ok(_) => self.op.reply(ctx),
             Err(err) => {
@@ -63,25 +63,38 @@ impl<T> FanoutBlockedClient<T>
 where
     T: FanoutClientCommand,
 {
-    pub fn new(ctx: &Context) -> Self {
+    /// Blocks the client for up to `timeout` — the fan-out's deadline. The RPC timer bounds the
+    /// remote shards, but nothing else bounds the local share, so this is the deadline for the
+    /// whole operation: when it passes the client gets the fan-out timeout error (see
+    /// [`timeout_callback`]) instead of being released with no reply, as it was under a fixed
+    /// 60 s block with no timeout callback.
+    ///
+    /// The server owns the private data from `UnblockClient` on: [`reply_callback`] only borrows
+    /// it and [`free_callback`] drops it. A client that timed out is detached before the
+    /// operation finishes, so its reply callback never runs; with the reply callback doing the
+    /// freeing, as it used to, that result (an MRANGE's samples, say) leaked.
+    pub fn new(ctx: &Context, timeout: Duration) -> Self {
+        // 0 means "never" to the server.
+        let timeout_ms = (timeout.as_millis() as i64).max(1);
         let bc_ptr = unsafe {
             ValkeyModule_BlockClient.unwrap()(
                 ctx.ctx as *mut ValkeyModuleCtx,
                 Some(reply_callback::<T>),
-                None,
-                // NOTE: We do not need a free callback because we handle freeing the data in the
-                // reply callback. if FanoutOperation is made to not require non 'static, we need to
-                // provide a free callback here to avoid memory leaks.
-                None, // Some(free_callback::<T>),
-                NO_TIMEOUT,
+                Some(timeout_callback),
+                Some(free_callback::<T>),
+                timeout_ms,
             )
         };
-        Self {
+
+        let mut res = Self {
             inner: bc_ptr,
             time_measurement_ongoing: false,
             data: None,
             is_blocked: true,
-        }
+        };
+
+        res.measure_time_start();
+        res
     }
 
     pub(super) fn set_private_data(&mut self, op: T, result: FanoutResult) {
@@ -137,43 +150,45 @@ where
     }
 }
 
-fn take_data<T>(data: *mut c_void) -> T {
-    // Cast the *mut c_void supplied by the Valkey API to a raw pointer of our custom type.
-    let data = data.cast::<T>();
-
-    // Take back ownership of the original boxed data, so we can unbox it safely.
-    // If we don't do this, the data's memory will be leaked.
-    let data = unsafe { Box::from_raw(data) };
-
-    *data
-}
-
 extern "C" fn reply_callback<T: FanoutClientCommand>(
     ctx: *mut ValkeyModuleCtx,
     _argv: *mut *mut ValkeyModuleString,
     _argc: c_int,
 ) -> c_int {
     let op_ptr = unsafe { ValkeyModule_GetBlockedClientPrivateData.unwrap()(ctx) };
-    let ctx = FanoutContext::new(ctx as *mut raw::RedisModuleCtx);
+    let ctx = ReplyContext::new(ctx as *mut raw::RedisModuleCtx);
     if op_ptr.is_null() {
         // this means that there was an error in setting up RPC, so we should reply with an error.
         ctx.reply_error_string("No reply data") as c_int
     } else {
-        // Cast to the correct type and then dereference once to get &mut ResponseContext<T>
-        let mut response_ctx: BlockedClientPrivateData<T> = take_data(op_ptr);
+        // Borrowed: `free_callback` drops the data once this returns.
+        // SAFETY: `unblock` stored a `Box<BlockedClientPrivateData<T>>` for this client, and the
+        // server hands it back unchanged, on the main thread, before calling `free_callback`.
+        let response_ctx = unsafe { &mut *op_ptr.cast::<BlockedClientPrivateData<T>>() };
         response_ctx.reply(&ctx) as c_int
     }
 }
 
+/// The fan-out deadline passed with the operation still running: reply with the same error
+/// the RPC timeout path sends. The operation's eventual result is discarded by `free_callback`.
+extern "C" fn timeout_callback(
+    ctx: *mut ValkeyModuleCtx,
+    _argv: *mut *mut ValkeyModuleString,
+    _argc: c_int,
+) -> c_int {
+    let ctx = ReplyContext::new(ctx as *mut raw::RedisModuleCtx);
+    ctx.reply_error_string(TIMEOUT_ERROR) as c_int
+}
+
+/// Drops the private data `unblock` handed to the server — after `reply_callback`, or in its
+/// place when the client has timed out or disconnected.
 extern "C" fn free_callback<T: FanoutClientCommand>(
     _ctx: *mut ValkeyModuleCtx,
-    private_data: *mut c_void,
+    privdata: *mut c_void,
 ) {
-    if !private_data.is_null() {
-        unsafe {
-            let boxed: Box<BlockedClientPrivateData<T>> =
-                Box::from_raw(private_data as *mut BlockedClientPrivateData<T>);
-            drop(boxed);
-        }
+    if privdata.is_null() {
+        return;
     }
+    // SAFETY: created by `Box::into_raw` in `unblock`, and freed only here.
+    drop(unsafe { Box::from_raw(privdata.cast::<BlockedClientPrivateData<T>>()) });
 }

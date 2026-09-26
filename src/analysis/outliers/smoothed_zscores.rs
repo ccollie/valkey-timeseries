@@ -4,6 +4,7 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
+use super::utils::normalize_evidence;
 use super::{Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
@@ -127,6 +128,24 @@ impl SmoothedZScoreAnomalyDetector {
                 "the length of the initial values is zero, the length is used as the lag for the algorithm".to_string()
             ));
         }
+        // `influence` is a mixing weight — `influence * value + (1 - influence)
+        // * prev_value` — so anything outside `[0, 1]` turns that blend into an
+        // extrapolation rather than an interpolation.
+        if !(0.0..=1.0).contains(&influence) {
+            return Err(TimeSeriesAnalysisError::InvalidInput(format!(
+                "influence must be between 0 and 1 inclusive, got {influence}"
+            )));
+        }
+        if !threshold.is_finite() {
+            return Err(TimeSeriesAnalysisError::InvalidInput(format!(
+                "threshold must be finite, got {threshold}"
+            )));
+        }
+        if threshold < 0.0 {
+            return Err(TimeSeriesAnalysisError::InvalidInput(format!(
+                "threshold must be non-negative, got {threshold}"
+            )));
+        }
 
         let mut res = Self {
             index: 0,
@@ -174,6 +193,7 @@ impl SmoothedZScoreAnomalyDetector {
         Ok(signal)
     }
 
+    #[cfg(test)]
     pub fn next_batch(&mut self, values: &[f64]) -> TimeSeriesAnalysisResult<Vec<AnomalySignal>> {
         values
             .iter()
@@ -183,29 +203,20 @@ impl SmoothedZScoreAnomalyDetector {
 
     /// Calculates a normalized anomaly score in [0, 1] for `value`.
     ///
-    /// The score is based on the current moving mean and standard deviation:
-    /// `z = |value - prev_mean| / prev_std_dev`.
-    /// It is then mapped to [0, 1) via `z / (threshold + z)` so that:
+    /// Evidence is the departure from the moving mean; the boundary is the
+    /// `threshold * prev_std_dev` that [`Self::next`] tests it against. So:
     /// - `0.0` when `value == prev_mean`
-    /// - `0.5` when `z == threshold`
-    /// - approaches `1.0` as `z` grows
+    /// - `0.5` when the deviation sits exactly on the threshold
+    /// - approaches `1.0` as the deviation grows
+    ///
+    /// This algorithm already satisfied the 0.5 contract — `z / (threshold + z)`
+    /// is `normalize_evidence(deviation, threshold * std_dev)` rearranged — so
+    /// routing it through the shared helper changes no value. It is written this
+    /// way so the arithmetic lives in one place rather than being re-derived,
+    /// and so the degenerate cases cannot drift from the rest of the module.
     pub fn get_anomaly_score(&self, value: f64) -> f64 {
         let deviation = (value - self.prev_mean).abs();
-
-        // Guard against degenerate or invalid std dev.
-        if !self.prev_std_dev.is_finite() || self.prev_std_dev <= 0.0 {
-            return if deviation <= f64::EPSILON { 0.0 } else { 1.0 };
-        }
-
-        // Guard against nonsensical thresholds.
-        if !self.threshold.is_finite() || self.threshold <= 0.0 {
-            return 0.0;
-        }
-
-        let z = deviation / self.prev_std_dev;
-        let score = z / (self.threshold + z);
-
-        score.clamp(0.0, 1.0)
+        normalize_evidence(deviation, self.threshold * self.prev_std_dev)
     }
 
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
@@ -370,34 +381,34 @@ impl Default for SmoothedZScoreOptions {
     }
 }
 
-/// Detects anomalies in a time series using the Smoothed Z-Score algorithm.
-pub(super) fn detect_anomalies_smoothed_zscore(
-    ts: &[f64],
-    options: SmoothedZScoreOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let SmoothedZScoreOptions {
-        lag,
-        influence,
-        threshold,
-    } = options;
-
-    let n = ts.len();
-    if n < lag {
-        return Err(TimeSeriesAnalysisError::InsufficientData {
-            message: "TSDB: insufficient samples for smoothed z-score lag".to_string(),
-            required: lag,
-            actual: n,
-        });
-    }
-
-    let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, lag)?;
-    detector.train(ts)?;
-    detector.detect(ts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Detects anomalies in a time series using the Smoothed Z-Score algorithm.
+    fn detect_anomalies_smoothed_zscore(
+        ts: &[f64],
+        options: SmoothedZScoreOptions,
+    ) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let SmoothedZScoreOptions {
+            lag,
+            influence,
+            threshold,
+        } = options;
+
+        let n = ts.len();
+        if n < lag {
+            return Err(TimeSeriesAnalysisError::InsufficientData {
+                message: "TSDB: insufficient samples for smoothed z-score lag".to_string(),
+                required: lag,
+                actual: n,
+            });
+        }
+
+        let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, lag)?;
+        detector.train(ts)?;
+        detector.detect(ts)
+    }
 
     #[test]
     fn test_peak_detector_initialization() {
@@ -556,6 +567,68 @@ mod tests {
             }
             _ => panic!("Expected InvalidInput error"),
         }
+    }
+
+    #[test]
+    fn test_new_rejects_negative_threshold() {
+        // A negative threshold flips the sign of `threshold * std_dev`, which
+        // breaks the 0.5 contract: `classify` (a plain `score > boundary`) would
+        // flag almost every point, while `normalize_evidence` treats the
+        // negative boundary as unusable and reports 0.0 for the same point.
+        let result = SmoothedZScoreAnomalyDetector::new(0.5, -1.0, 5);
+
+        match result {
+            Err(TimeSeriesAnalysisError::InvalidInput(msg)) => {
+                assert!(msg.contains("non-negative"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    /// `NaN < 0.0` is `false`, so the non-negative check alone lets a NaN
+    /// threshold through; `f64::INFINITY < 0.0` is also `false`. Either one
+    /// reaching `threshold * prev_std_dev` makes every comparison in `next`
+    /// false, so the detector goes permanently inert without ever reporting an
+    /// error. Finiteness must be checked first.
+    #[test]
+    fn test_new_rejects_non_finite_threshold() {
+        for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let result = SmoothedZScoreAnomalyDetector::new(0.5, threshold, 5);
+
+            match result {
+                Err(TimeSeriesAnalysisError::InvalidInput(msg)) => {
+                    assert!(
+                        msg.contains("finite"),
+                        "expected a finiteness error for threshold {threshold}, got: {msg}"
+                    );
+                }
+                _ => panic!("Expected InvalidInput error for threshold {threshold}"),
+            }
+        }
+    }
+
+    /// `influence` blends `value` and `prev_value`: outside `[0, 1]` that blend
+    /// becomes an extrapolation rather than an interpolation, which the
+    /// algorithm was never designed to handle.
+    #[test]
+    fn test_new_rejects_influence_outside_unit_interval() {
+        for influence in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let result = SmoothedZScoreAnomalyDetector::new(influence, 3.0, 5);
+
+            match result {
+                Err(TimeSeriesAnalysisError::InvalidInput(msg)) => {
+                    assert!(
+                        msg.contains("influence"),
+                        "expected an influence error for {influence}, got: {msg}"
+                    );
+                }
+                _ => panic!("Expected InvalidInput error for influence {influence}"),
+            }
+        }
+
+        // The documented endpoints must still be accepted.
+        assert!(SmoothedZScoreAnomalyDetector::new(0.0, 3.0, 5).is_ok());
+        assert!(SmoothedZScoreAnomalyDetector::new(1.0, 3.0, 5).is_ok());
     }
 
     #[test]

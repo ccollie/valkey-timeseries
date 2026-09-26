@@ -183,7 +183,14 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command(
                 "TS.ADD", "ts_dup_block", timestamp, 20.0
             )
-        assert "duplicate" in str(exception_info.value)
+        assert "DUPLICATE_POLICY is set to BLOCK" in str(exception_info.value)
+
+    def test_add_on_wrong_type_key(self):
+        """TS.ADD on a non-timeseries key replies RTS's TSDB error, not WRONGTYPE"""
+        self.client.execute_command('SET', 'ts_add_str', 'hello')
+
+        with pytest.raises(ResponseError, match='TSDB: the key is not a TSDB key'):
+            self.client.execute_command('TS.ADD', 'ts_add_str', 100, 1.0)
 
     def test_add_with_labels_creation(self):
         """Test TS.ADD with labels when creating a new timeseries"""

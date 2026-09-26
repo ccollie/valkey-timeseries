@@ -37,13 +37,13 @@ impl Default for ChimpChunk {
 impl ChimpChunk {
     pub fn with_max_size(max_size: usize) -> Self {
         Self {
-            encoder: ChimpCompressor::new(),
+            encoder: ChimpCompressor::with_soft_cap(max_size),
             max_size,
         }
     }
 
     fn compress(&mut self, samples: &[Sample]) -> TsdbResult {
-        let mut encoder = ChimpCompressor::new();
+        let mut encoder = ChimpCompressor::with_soft_cap(self.max_size);
         for sample in samples {
             push_sample(&mut encoder, sample)?;
         }
@@ -63,8 +63,19 @@ impl ChimpChunk {
         uncompressed_size as f64 / compressed_size as f64
     }
 
+    /// Bytes of encoded data. This is what `max_size` bounds, what `TS.INFO DEBUG` reports as a
+    /// chunk's `size`, and what `bytes_per_sample` amortizes.
+    ///
+    /// It deliberately excludes the writer's spare capacity and the encoder's own stack bytes.
+    /// The bit stream grows by doubling, so counting `Vec::capacity` reported up to ~2x the data
+    /// actually held: a chunk created with `CHUNK_SIZE 4096` reported 8288. `is_full` has always
+    /// measured the payload, and `UncompressedChunk::size` is likewise `len`-based, so the three
+    /// now agree. It also fed `utilization`, and so `should_split` -- which only governs an
+    /// upsert into an already-sealed chunk; the append path is gated by `is_full` and was
+    /// unaffected. The full allocation is still reported by `memory_usage`, which is what
+    /// `MEMORY USAGE` and `TS.INFO memoryUsage` read.
     pub fn data_size(&self) -> usize {
-        self.encoder.get_size()
+        self.encoder.bytes().len()
     }
 
     /// Estimate the remaining capacity based on the current data size and `max_size`.
@@ -79,9 +90,7 @@ impl ChimpChunk {
         if self.len() == 0 {
             return 0;
         }
-        // A flat series costs well under a byte per sample, at which point the
-        // integer ratio floors to zero.
-        self.remaining_capacity() / self.bytes_per_sample().max(1)
+        self.remaining_capacity() / self.bytes_per_sample()
     }
 
     pub fn memory_usage(&self) -> usize {
@@ -131,7 +140,7 @@ impl ChunkOps for ChimpChunk {
             return Ok(0);
         }
 
-        let mut new_encoder = ChimpCompressor::new();
+        let mut new_encoder = ChimpCompressor::with_soft_cap(self.max_size);
         let saved_count = self.len();
 
         for value in self.encoder.iter() {
@@ -166,7 +175,7 @@ impl ChunkOps for ChimpChunk {
             return Ok(1);
         }
 
-        let mut encoder = ChimpCompressor::new();
+        let mut encoder = ChimpCompressor::with_soft_cap(self.max_size);
         let mut iter = self.encoder.iter();
 
         if ts < self.first_timestamp() {
@@ -222,7 +231,7 @@ impl ChunkOps for ChimpChunk {
             return append_samples(self, samples);
         }
 
-        let mut encoder = ChimpCompressor::new();
+        let mut encoder = ChimpCompressor::with_soft_cap(self.max_size);
         let result = merge_chunk_samples(self.iter(), samples, dp_policy, |sample| {
             push_sample(&mut encoder, &sample)
         })?;
@@ -246,7 +255,10 @@ impl ChunkOps for ChimpChunk {
         if count < MIN_SAMPLES_FOR_BPS_ESTIMATE {
             return size_of::<Sample>() / 2;
         }
-        self.data_size() / count
+        // At least one byte: a flat series compresses to well under a byte per sample, and a
+        // ratio floored to zero made every capacity estimate zero — so each MADD/ADDBULK batch
+        // on such a series opened a chunk of its own.
+        (self.data_size() / count).max(1)
     }
 
     fn clear(&mut self) {
@@ -265,7 +277,7 @@ impl Chunk for ChimpChunk {
             return Ok(self.clone());
         }
 
-        let mut left = ChimpCompressor::new();
+        let mut left = ChimpCompressor::with_soft_cap(self.max_size);
         let mut right = ChimpChunk::with_max_size(self.max_size);
 
         let mid = self.len() / 2;
@@ -289,7 +301,8 @@ impl Chunk for ChimpChunk {
 
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         let max_size = rdb_load_usize(rdb)?;
-        let encoder = ChimpCompressor::rdb_load(rdb)?;
+        let mut encoder = ChimpCompressor::rdb_load(rdb)?;
+        encoder.set_soft_cap(max_size);
         Ok(ChimpChunk { encoder, max_size })
     }
 
@@ -301,7 +314,8 @@ impl Chunk for ChimpChunk {
     fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
         let mut buf = buf;
         let max_size = try_read_uvarint(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
-        let encoder = ChimpCompressor::deserialize(buf)?;
+        let mut encoder = ChimpCompressor::deserialize(buf)?;
+        encoder.set_soft_cap(max_size as usize);
         Ok(ChimpChunk {
             encoder,
             max_size: max_size as usize,

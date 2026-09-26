@@ -1,3 +1,4 @@
+use crate::common::hash::DeterministicHasher;
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::calculate_hash_slot;
@@ -10,34 +11,73 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
-    CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
+    CallOptionsBuilder, CallReply, CallResult, Context, DetachedContext, VALKEYMODULE_NODE_ID_LEN,
     ValkeyModule_GetMyClusterID,
 };
+
+/// Where [`ClusterMap::create`] gets its `CLUSTER NODES` reply from.
+///
+/// The call needs the GIL; parsing the reply does not. A [`DetachedContext`]
+/// takes the lock for the call alone, so a worker thread rebuilding the map
+/// holds the GIL only for as long as the server needs to render the reply. A
+/// [`Context`] is already locked (a command handler or callback on the main
+/// thread) and issues the call directly.
+pub trait ClusterNodesSource {
+    /// The raw `CLUSTER NODES` reply, or `None` when the call did not produce a
+    /// usable string.
+    fn cluster_nodes(&self) -> Option<String>;
+}
+
+impl ClusterNodesSource for Context {
+    fn cluster_nodes(&self) -> Option<String> {
+        let call_options = CallOptionsBuilder::new().errors_as_replies().build();
+        let res: CallResult = self.call_ext::<_, CallResult>("CLUSTER", &call_options, &["NODES"]);
+        // The reply is freed here, while the lock is still held.
+        reply_as_string(res)
+    }
+}
+
+impl ClusterNodesSource for DetachedContext {
+    fn cluster_nodes(&self) -> Option<String> {
+        let ctx = self.lock();
+        ctx.cluster_nodes()
+    }
+}
 
 // Constants
 pub const NUM_SLOTS: u16 = 16384;
 
 /// Enumeration for fanout target modes
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum FanoutTargetMode {
+// The full targeting vocabulary is matched in target selection; not every mode has a caller yet.
+#[allow(dead_code)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum FanoutTarget {
+    /// Select only the local node
+    Local,
     /// Default: randomly select one node per shard
     #[default]
     Random,
     /// Select only replicas, one per shard
     ReplicasOnly,
     /// Select one replica per shard (if available), otherwise primary
-    OneReplicaPerShard,
+    ReplicaPerShard,
     /// Select all primary (master) nodes
     Primary,
     /// Select all nodes (both primary and replica)
     All,
+    /// Randomly select one node per slot
+    Slots(SmallVec<[u16; 4]>),
+    /// Select a random node from each of the slots corresponding to the hash tags provided
+    HashTags(Vec<String>),
+    /// Select the primary node for each slot corresponding to the hash tags provided
+    HashTagsPrimary(Vec<String>),
 }
 
 /// Node role enumeration
@@ -105,35 +145,19 @@ pub struct SlotRangeSet {
 }
 
 impl SlotRangeSet {
-    pub fn new() -> Self {
-        Self {
-            ranges: RangeSetBlaze::new(),
-        }
-    }
-
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.ranges.len() as usize
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
-    }
-
+    #[cfg(test)]
     pub fn contains(&self, slot: u16) -> bool {
         self.ranges.contains(slot)
-    }
-
-    pub fn insert(&mut self, slot: u16) {
-        self.ranges.insert(slot);
     }
 
     pub fn insert_range(&mut self, start: u16, end: u16) {
         debug_assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
         self.ranges.ranges_insert(start..=end);
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
-        self.ranges.iter()
     }
 
     pub fn range_iter(&self) -> RangesIter<'_, u16> {
@@ -146,17 +170,9 @@ impl SlotRangeSet {
         }
     }
 
-    pub fn first(&self) -> Option<u16> {
-        self.ranges.first()
-    }
-
-    pub fn last(&self) -> Option<u16> {
-        self.ranges.last()
-    }
-
     /// Helper method to calculate slot fingerprint
     fn calculate_fingerprint(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = DeterministicHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
     }
@@ -270,14 +286,6 @@ impl NodeId {
     pub fn is_empty(&self) -> bool {
         self.0[0] == 0
     }
-
-    pub fn len(&self) -> usize {
-        if self.is_empty() {
-            0
-        } else {
-            VALKEYMODULE_NODE_ID_LEN as usize
-        }
-    }
 }
 
 impl AsRef<str> for NodeId {
@@ -357,10 +365,6 @@ impl NodeInfo {
 
     pub fn is_local(&self) -> bool {
         self.location == NodeLocation::Local
-    }
-
-    pub fn is_primary(&self) -> bool {
-        self.role == NodeRole::Primary
     }
 }
 
@@ -461,22 +465,8 @@ impl ShardInfo {
         }
     }
 
-    pub fn get_random_replica(&self) -> NodeInfo {
-        let mut rng_ = rng();
-        self.pick_target(&mut rng_, true, false)
-    }
-
     pub fn is_empty(&self) -> bool {
         self.primary.is_none() && self.replicas.is_empty()
-    }
-
-    pub fn i_own_slot(&self, slot: u16) -> bool {
-        self.owned_slots.contains(slot)
-    }
-
-    pub fn owns_key(&self, key: &[u8]) -> bool {
-        let slot = calculate_hash_slot(key);
-        self.i_own_slot(slot)
     }
 }
 
@@ -536,27 +526,23 @@ pub struct ClusterMap {
     expiration_ts: AtomicI64,
     /// is the current map consistent (no collisions/inconsistencies found while building)
     pub is_consistent: bool,
-    /// Whether the cluster map covers all slots consecutively
-    pub is_cluster_map_full: bool,
 }
 
 impl ClusterMap {
     /// Slot ownership checks
+    #[cfg(test)]
     pub fn i_own_slot(&self, slot: u16) -> bool {
         self.owned_slots.contains(slot)
     }
 
-    pub fn is_owned_key(&self, key: &[u8]) -> bool {
-        let slot = calculate_hash_slot(key);
-        self.i_own_slot(slot)
-    }
-
     /// Get the count of owned slots
+    #[cfg(test)]
     pub fn owned_slot_count(&self) -> usize {
         self.owned_slots.len()
     }
 
     /// Look up a shard by id. Will return None if shard does not exist
+    #[cfg(test)]
     pub fn get_shard_by_id(&self, shard_id: &str) -> Option<&ShardInfo> {
         self.shards.get(shard_id)
     }
@@ -567,6 +553,7 @@ impl ClusterMap {
     }
 
     /// Get all shards
+    #[cfg(test)]
     pub fn all_shards(&self) -> &BTreeSet<ShardInfo> {
         &self.shards
     }
@@ -581,14 +568,53 @@ impl ClusterMap {
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
-    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<HashSet<NodeInfo>> {
+    pub fn get_targets(&self, target_mode: FanoutTarget) -> Arc<HashSet<NodeInfo>> {
         match target_mode {
-            FanoutTargetMode::Primary => self.primary_targets(),
-            FanoutTargetMode::ReplicasOnly => self.replica_targets(),
-            FanoutTargetMode::All => self.all_targets(),
-            FanoutTargetMode::OneReplicaPerShard => self.random_one_replica_per_shard(),
-            FanoutTargetMode::Random => self.random_one_per_shard(),
+            FanoutTarget::Local => self.random_one_from_local(),
+            FanoutTarget::Primary => self.primary_targets(),
+            FanoutTarget::ReplicasOnly => self.replica_targets(),
+            FanoutTarget::All => self.all_targets(),
+            FanoutTarget::ReplicaPerShard => self.random_one_replica_per_shard(),
+            FanoutTarget::Random => self.random_one_per_shard(),
+            FanoutTarget::Slots(slots) => self.random_for_slots(&slots),
+            FanoutTarget::HashTags(hash_tags) => {
+                let mut slots = SmallVec::<[u16; 4]>::new();
+                for tag in hash_tags {
+                    let slot = calculate_hash_slot(tag.as_ref());
+                    if !slots.contains(&slot) {
+                        slots.push(slot);
+                    }
+                }
+                self.random_for_slots(&slots)
+            }
+            FanoutTarget::HashTagsPrimary(hash_tags) => {
+                let mut targets = HashSet::new();
+                for tag in hash_tags {
+                    let slot = calculate_hash_slot(tag.as_ref());
+                    if let Some(shard) = self.get_shard_by_slot(slot)
+                        && let Some(primary) = shard.primary
+                    {
+                        targets.insert(primary);
+                    }
+                }
+                Arc::new(targets)
+            }
         }
+    }
+
+    fn random_one_from_local(&self) -> Arc<HashSet<NodeInfo>> {
+        let mut targets = HashSet::new();
+        match self.get_local_shard() {
+            Some(local_shard) => {
+                let mut rng_ = rng();
+                let node = local_shard.pick_target(&mut rng_, false, false);
+                targets.insert(node);
+            }
+            None => {
+                log_warning("No local shard found in cluster map");
+            }
+        }
+        Arc::new(targets)
     }
 
     fn random_one_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
@@ -608,6 +634,22 @@ impl ClusterMap {
             targets.insert(shard.pick_target(&mut rng_, false, true));
         }
         Arc::new(targets)
+    }
+
+    fn random_for_slots(&self, slots: &[u16]) -> Arc<HashSet<NodeInfo>> {
+        let mut targets = HashSet::new();
+        for &slot in slots {
+            self.random_one_from_slot(slot, &mut targets);
+        }
+        Arc::new(targets)
+    }
+
+    fn random_one_from_slot(&self, slot: u16, targets: &mut HashSet<NodeInfo>) {
+        if let Some(shard) = self.get_shard_by_slot(slot) {
+            let mut rng_ = rng();
+            let node = shard.pick_target(&mut rng_, false, false);
+            targets.insert(node);
+        }
     }
 
     #[inline]
@@ -666,18 +708,18 @@ impl ClusterMap {
     /// preferred endpoint against the current client, which crashes the server
     /// when invoked without a real client context (e.g. from a background
     /// thread or the cluster-message callback). Parsing `CLUSTER NODES` lets us
-    /// refresh the map safely from any context that holds the module lock.
+    /// refresh the map safely from any context that can take the module lock.
+    ///
+    /// Only the call itself runs under the GIL (see [`ClusterNodesSource`]);
+    /// the reply is parsed after it is released, so a [`DetachedContext`]
+    /// caller holds the lock for the call alone.
     /// Returns `None` when the `CLUSTER NODES` call fails to produce a usable
     /// reply, so callers can distinguish a build failure from a successfully
     /// built (possibly inconsistent) map and avoid clobbering a good map.
-    pub fn create(ctx: &Context) -> Option<Self> {
-        let call_options = CallOptionsBuilder::new().errors_as_replies().build();
-
+    pub fn create(ctx: &impl ClusterNodesSource) -> Option<Self> {
         log_notice("Calling CLUSTER NODES...");
 
-        let res: CallResult = ctx.call_ext::<_, CallResult>("CLUSTER", &call_options, &["NODES"]);
-
-        let Some(text) = reply_as_string(res) else {
+        let Some(text) = ctx.cluster_nodes() else {
             log_warning("CLUSTER NODES did not return a usable string reply");
             return None;
         };
@@ -919,7 +961,7 @@ impl ClusterMap {
     }
 
     fn compute_cluster_fingerprint(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = DeterministicHasher::default();
         for shard in self.shards.iter() {
             hasher.write(shard.id.as_bytes());
             shard.slots_fingerprint.hash(&mut hasher);

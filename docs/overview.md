@@ -42,6 +42,9 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.MGET`: Retrieve the last sample from multiple series matching a filter.
 * `TS.RANGE`: Query a range of samples from a single series.
 * `TS.MRANGE`: Query ranges across multiple series based on filters.
+* `TS.READ`: Read samples at or after a timestamp, optionally filtered by a value condition and
+  optionally blocking until enough matching samples arrive. The streaming counterpart to
+  `TS.RANGE`, for tailing a series and for alerting on it.
 
 ### Compaction & Rules
 
@@ -53,6 +56,7 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 
 * `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
 * `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
+* `TS.QUERYLABELS`: Retrieve all label names, or all values of a given label, for series matching a filter.
 * `TS.CARD`: Get the cardinality of the index for a specific label filter.
 * `TS.LABELNAMES`: Get all label names used in the index.
 * `TS.METRICNAMES`: Search metric names with substring and optional fuzzy matching.
@@ -138,7 +142,7 @@ column-wise with the same `REDUCE` type.
 per group partial) — most valuable for `TS.MREVRANGE … COUNT n` ("last n points") queries. The coordinator always
 re-applies `COUNT` as the final authority.
 
-Mixed-version clusters are handled by a compatibility handshake (`docs/fanout-compatibility-handshake.md`): shards
+Mixed-version clusters are handled by a compatibility handshake (`fanout-compatibility-handshake.md`): shards
 echo which push-down flags they honored, and the coordinator compensates per response — data from a peer that did not
 apply push-down is aggregated and pre-reduced coordinator-side before merging. Rolling upgrades therefore need no
 special configuration; a lagging node only costs extra transfer and coordinator CPU for its own slice of each query.

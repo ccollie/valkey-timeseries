@@ -1,3 +1,4 @@
+import json
 import pytest
 
 from valkeytestframework.util.waiters import *
@@ -221,3 +222,46 @@ class TestTimeSeriesIngest(ValkeyTimeSeriesTestCaseBase):
         assert self.get_sample(l3, 0) == [0, b"100"]
         assert self.get_sample(l3, 800) == [800, b"100"]
         assert self.client.execute_command("TS.GET", l3, "LATEST") == [900, b"50"]
+
+    def test_creation_options_are_applied(self):
+        """Options after the payload used to be read from one argument too far along, so every
+        option but LABELS was rejected."""
+        payload = '{"values":[1,2],"timestamps":[1000,2000]}'
+        assert self.client.execute_command(
+            "TS.ADDBULK", "bulk:opts", payload,
+            "RETENTION", 100, "DUPLICATE_POLICY", "LAST", "LABELS", "a", "b",
+        ) == [2, 2]
+        info = self.ts_info("bulk:opts")
+        assert info["retentionTime"] == 100
+        assert info["duplicatePolicy"] == "last"
+        assert info["labels"] == {"a": "b"}
+
+    def test_applies_retention(self):
+        """TS.ADDBULK used to skip the write-path retention trim, so expired samples stayed
+        stored until the trim cron ran. Reads hid them, but the chunks were still held."""
+        timestamps = list(range(0, 10_000, 10))
+        payload = json.dumps({"timestamps": timestamps, "values": [1.0] * len(timestamps)})
+        for key, retention in (("bulk:ret", 1000), ("bulk:all", 0)):
+            self.client.execute_command(
+                "TS.CREATE", key, "RETENTION", retention, "ENCODING", "UNCOMPRESSED",
+                "CHUNK_SIZE", 128,
+            )
+            assert self.client.execute_command("TS.ADDBULK", key, payload) == [1000, 1000]
+
+        info = self.ts_info("bulk:ret")
+        assert info["totalSamples"] == 101
+        assert info["firstTimestamp"] == 8990
+        assert len(self.client.execute_command("TS.RANGE", "bulk:ret", "-", "+")) == 101
+        # Only the chunks backing the 101 live samples (8990..9990) survive. The count is
+        # compared against the untrimmed series rather than pinned, since it depends on
+        # how the post-insert split packs chunks.
+        all_chunks = self.ts_info("bulk:all")["chunkCount"]
+        assert info["chunkCount"] * 5 < all_chunks, (info["chunkCount"], all_chunks)
+
+    def test_on_duplicate_overrides_the_series_policy(self):
+        self.client.execute_command("TS.CREATE", "bulk:ondup", "DUPLICATE_POLICY", "BLOCK")
+        self.client.execute_command("TS.ADD", "bulk:ondup", 1000, 5)
+        assert self.client.execute_command(
+            "TS.ADDBULK", "bulk:ondup", '{"values":[3],"timestamps":[1000]}', "ON_DUPLICATE", "SUM",
+        ) == [1, 1]
+        assert float(self.client.execute_command("TS.GET", "bulk:ondup")[1]) == 8.0

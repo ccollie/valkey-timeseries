@@ -1,22 +1,41 @@
 use crate::common::Timestamp;
-use crate::common::context::{get_acl_user, is_acl_enforced};
+use crate::common::context::create_key_string;
 use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
+use crate::series::acl::KeyAccess;
 use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
-use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
-    CompactionOp, SeriesGuardMut, SeriesRef, TimeSeries, TimestampRange, apply_compaction,
+    CompactionOp, SeriesGuardMut, SeriesRef, TimestampRange, apply_compaction,
+    try_get_timeseries_mut,
 };
 use blart::AsBytes;
 use croaring::bitmap64::Bitmap64Iterator;
-use orx_parallel::ParIter;
-use orx_parallel::ParallelizableCollectionMut;
+use orx_parallel::Par;
+use orx_parallel::ParCollectionMut;
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
 
+/// Apply `TS.MDEL` on this node and propagate its *effects* to this node's replicas and AOF.
+///
+/// The command itself is deliberately not replicated verbatim by any caller:
+///
+/// * In cluster mode each shard runs its own slice inside a fanout RPC handler. That context has
+///   no client argv for `ReplicateVerbatim` to copy, and a replica replaying `TS.MDEL` would fan
+///   the command out across the cluster a second time. Before this, the clustered branch simply
+///   returned without replicating at all, so a cluster-mode `TS.MDEL` never reached any replica.
+/// * Even standalone, a verbatim replay re-resolves both the filter and the timestamp bounds on
+///   the replica. Wall-clock bounds (`TimestampValue::Now` and `Relative`) resolve through
+///   `as_timestamp` against whichever node is evaluating them, so a replica applying the replayed
+///   command can delete a different window than the primary did.
+///
+/// Propagating resolved effects avoids both: `DEL <key>` per key removed, and
+/// `TS.DEL <key> <start> <end>` with absolute millisecond bounds per series whose range changed.
+/// `TS.DEL` is the exact operation performed here (`remove_range` followed by
+/// `CompactionOp::RemoveRange`), so the replica re-derives the same downstream compaction the
+/// primary did, the same way it does for a client-issued `TS.DEL`.
 pub fn delete_series_by_selectors(
     ctx: &Context,
     selectors: &[SeriesSelector],
@@ -52,7 +71,12 @@ fn handle_delete_keys(ctx: &Context, filters: &[SeriesSelector]) -> ValkeyResult
     let keys = index.keys_for_selectors(ctx, filters, Some(AclPermissions::DELETE))?;
     let mut total_deleted = 0;
     for key in keys {
-        total_deleted += delete_key(ctx, &ctx.create_string(key.as_ref()))?;
+        let key = create_key_string(ctx, key.as_ref());
+        if delete_key(ctx, &key)? == 0 {
+            continue;
+        }
+        total_deleted += 1;
+        ctx.replicate("DEL", &[&key]);
     }
     Ok(total_deleted)
 }
@@ -98,6 +122,8 @@ fn delete_range_batch(
     end_ts: Timestamp,
 ) -> ValkeyResult<usize> {
     let mut total_deleted = 0;
+    let start_arg = ctx.create_string(start_ts.to_string());
+    let end_arg = ctx.create_string(end_ts.to_string());
     let mut series = series;
     let res = series
         .par_mut()
@@ -128,6 +154,8 @@ fn delete_range_batch(
                     end: end_ts,
                 },
             )?;
+            // Propagate the resolved effect; see `delete_series_by_selectors`.
+            ctx.replicate("TS.DEL", &[&keys[i], &start_arg, &end_arg]);
         }
     }
 
@@ -139,62 +167,62 @@ fn fetch_series_batch<'a>(
     cursor: &mut Bitmap64Iterator<'_>,
     batch_size: usize,
 ) -> (Vec<SeriesGuardMut<'a>>, Vec<ValkeyString>) {
-    let user = get_acl_user(ctx);
-    let is_user_client = is_acl_enforced(ctx);
-    let has_all_keys_permission = if !is_user_client {
-        true
-    } else {
-        ctx.acl_check_key_permission(&user, &ctx.create_string("*"), &AclPermissions::DELETE)
-            .is_ok()
-    };
+    // Resolves the caller's identity once (reusing a fan-out request's already-resolved
+    // handle, when there is one) and precomputes whether it can reach every key, instead
+    // of re-resolving the ACL user by name on every `acl_check_key_permission` call below.
+    let access = KeyAccess::new(ctx, AclPermissions::DELETE);
 
     let index = get_timeseries_index(ctx);
-    let postings_guard = index.get_postings();
 
     let mut stale_ids: SmallVec<[SeriesRef; 8]> = SmallVec::new();
     let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(batch_size);
     let mut keys: Vec<ValkeyString> = Vec::with_capacity(batch_size);
 
-    let postings = postings_guard.deref();
-    // Read ids in chunks until we gather `buf_size` valid series or cursor is exhausted.
-    for id in cursor.by_ref() {
-        let Some(k) = postings.get_key_by_id(id) else {
-            stale_ids.push(id);
-            continue;
-        };
+    // Two phases per round, and the split is important: opening a key runs the server's
+    // lazy-expiry check, which reaps an expired series through this module's `unlink` callback
+    // and takes the postings *write* lock on this same thread. Holding the read guard across
+    // `get_timeseries` therefore deadlocks. See `series::index::querier::resolve_series_keys`.
+    //
+    // Keep going until the batch is full or the cursor runs dry, so an all-stale round still
+    // reports progress rather than looking like the end of the postings.
+    while result.len() < batch_size {
+        let wanted = batch_size - result.len();
+        let mut resolved: Vec<(SeriesRef, ValkeyString)> = Vec::with_capacity(wanted);
 
-        let key = ctx.create_string(k.as_bytes());
-
-        if is_user_client
-            && !has_all_keys_permission
-            && ctx
-                .acl_check_key_permission(&user, &key, &AclPermissions::DELETE)
-                .is_err()
         {
-            continue;
-        }
-
-        match get_timeseries(ctx, &key) {
-            Err(_) => {
-                stale_ids.push(id);
-                continue;
-            }
-            Ok(None) => {
-                stale_ids.push(id);
-                continue;
-            }
-            Ok(Some(series)) => {
-                result.push(series);
-                keys.push(key);
+            let postings_guard = index.get_postings();
+            let postings = postings_guard.deref();
+            for id in cursor.by_ref() {
+                match postings.get_key_by_id(id) {
+                    Some(k) => resolved.push((id, create_key_string(ctx, k.as_bytes()))),
+                    None => stale_ids.push(id),
+                }
+                if resolved.len() == wanted {
+                    break;
+                }
             }
         }
 
-        if result.len() >= batch_size {
+        let exhausted = resolved.len() < wanted;
+
+        for (id, key) in resolved {
+            if !access.allows(&key) {
+                continue;
+            }
+
+            match try_get_timeseries_mut(ctx, &key, None) {
+                Err(_) | Ok(None) => stale_ids.push(id),
+                Ok(Some(series)) => {
+                    result.push(series);
+                    keys.push(key);
+                }
+            }
+        }
+
+        if exhausted {
             break;
         }
     }
-
-    drop(postings_guard);
 
     if !stale_ids.is_empty() {
         let mut postings_guard = index.get_postings_mut();
@@ -205,16 +233,4 @@ fn fetch_series_batch<'a>(
     }
 
     (result, keys)
-}
-
-fn get_timeseries<'a>(
-    ctx: &'a Context,
-    key: &ValkeyString,
-) -> ValkeyResult<Option<SeriesGuardMut<'a>>> {
-    let value_key = ctx.open_key_writable(key);
-    match value_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-        Ok(Some(series)) => Ok(Some(SeriesGuardMut { series })),
-        Ok(None) => Ok(None),
-        Err(_e) => Err(ValkeyError::WrongType),
-    }
 }

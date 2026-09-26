@@ -11,11 +11,10 @@ use core::mem::size_of;
 use get_size2::{GetSize, GetSizeTracker};
 use std::hash::Hash;
 use valkey_module::digest::Digest;
-use valkey_module::{RedisModuleIO, ValkeyResult, raw};
+use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
 
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
 const FLAG_SERIALIZE_UNCOMPRESSED: u8 = 0b00000001;
-const FLAG_SERIALIZE_GORILLA: u8 = 0b00000010;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UncompressedChunk {
@@ -131,11 +130,6 @@ impl UncompressedChunk {
         get_sample_index(&self.samples, ts)
     }
 
-    pub(crate) fn get_sample(&self, ts: Timestamp) -> Option<Sample> {
-        let (idx, found) = self.get_sample_index(ts);
-        if found { Some(self.samples[idx]) } else { None }
-    }
-
     fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {
         let Some(res) = self.get_range_as_ref(start_ts, end_ts) else {
             return Vec::new();
@@ -168,6 +162,14 @@ impl UncompressedChunk {
     ///
     /// Used to get an inclusive bound for series chunks (all chunks containing samples in the range [start_index...=end_index])
     fn get_index_bounds(&self, start: Timestamp, end: Timestamp) -> Option<(usize, usize)> {
+        // An inverted window selects no samples. This guard is required before
+        // independently locating both bounds: otherwise `start_idx` can be
+        // greater than `end_idx`, which is not a valid inclusive slice/drain
+        // range.
+        if start > end {
+            return None;
+        }
+
         let len = self.samples.len();
         if len == 0 {
             return None;
@@ -224,7 +226,14 @@ impl UncompressedChunk {
         let max_size = read_usize(&mut buf)?;
         let max_elements = read_usize(&mut buf)?;
         let len = read_usize(&mut buf)?;
-        let mut samples = Vec::with_capacity(len);
+        // `len` is untrusted (corrupt/malicious peer, truncated RDB, ...): every
+        // sample needs at least 1 byte (uvarint timestamp) + 8 bytes (f64 value),
+        // so capping the reservation to what the remaining buffer could possibly
+        // hold prevents an attacker-controlled `Vec::with_capacity` from
+        // requesting an unbounded allocation, which aborts the process rather
+        // than returning an `Err`.
+        let capacity = len.min(buf.len() / 9);
+        let mut samples = Vec::with_capacity(capacity);
         for _ in 0..len {
             let ts = try_read_uvarint(&mut buf).map_err(|_| TsdbError::ChunkDecoding)? as i64;
             let val = try_read_f64_le(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
@@ -232,6 +241,9 @@ impl UncompressedChunk {
                 timestamp: ts,
                 value: val,
             });
+        }
+        if !samples_are_strictly_increasing(&samples) {
+            return Err(TsdbError::ChunkDecoding);
         }
         Ok(UncompressedChunk {
             max_size,
@@ -256,6 +268,12 @@ fn binary_search_samples_by_timestamp(samples: &[Sample], ts: Timestamp) -> (usi
         Ok(pos) => (pos, true),
         Err(pos) => (pos, false),
     }
+}
+
+fn samples_are_strictly_increasing(samples: &[Sample]) -> bool {
+    samples
+        .windows(2)
+        .all(|pair| pair[0].timestamp < pair[1].timestamp)
 }
 
 fn get_sample_index(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
@@ -336,7 +354,13 @@ impl ChunkOps for UncompressedChunk {
             }
         }
 
-        Ok(self.len() - count)
+        // The chunk's *new* sample count, not the delta: callers derive the delta themselves by
+        // subtracting the length they observed beforehand (see `Chunk::upsert_sample`, and
+        // `TimeSeries::upsert_sample` which does `size - old_size`). Returning the delta here
+        // made that subtraction yield 0, so an out-of-order insert into an UNCOMPRESSED series
+        // never incremented `total_samples` — the series eventually reported itself empty while
+        // still holding samples, and TS.DEL then silently skipped them.
+        Ok(self.len())
     }
 
     fn merge_samples(
@@ -467,6 +491,11 @@ impl Chunk for UncompressedChunk {
                 timestamp: ts,
                 value: val,
             });
+        }
+        if !samples_are_strictly_increasing(&samples) {
+            return Err(ValkeyError::String(
+                "Invalid uncompressed chunk: samples are not strictly ordered".to_owned(),
+            ));
         }
         Ok(UncompressedChunk {
             max_size,
@@ -657,6 +686,36 @@ mod tests {
     }
 
     #[test]
+    fn test_inverted_range_returns_no_samples() {
+        let samples = vec![
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
+        ];
+        let chunk = UncompressedChunk::new(1000, &samples);
+
+        assert!(chunk.get_range_slice(40, 20).is_empty());
+        assert!(chunk.get_range_as_ref(40, 20).is_none());
+    }
+
+    #[test]
     fn test_remove_range() {
         let samples = vec![
             Sample {
@@ -778,6 +837,12 @@ mod tests {
         let removed = empty_chunk.remove_range(10, 20).unwrap();
         assert_eq!(removed, 0);
         assert!(empty_chunk.samples.is_empty());
+
+        // An inverted range is valid and selects nothing.
+        let mut chunk = UncompressedChunk::new(1000, &samples);
+        let removed = chunk.remove_range(40, 20).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(chunk.samples, samples);
     }
 
     #[test]
@@ -798,6 +863,8 @@ mod tests {
         ];
         let mut chunk = UncompressedChunk::new(1000, &samples);
 
+        // `upsert_sample` returns the chunk's sample count *after* the upsert (see the
+        // `Chunk` trait), so a duplicate leaves it unchanged rather than reporting 0.
         // Test 1: Upsert a new sample at the end
         let result = chunk
             .upsert_sample(
@@ -808,7 +875,7 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 1);
+        assert_eq!(result, 4);
         assert_eq!(
             chunk.samples,
             vec![
@@ -841,7 +908,7 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 1);
+        assert_eq!(result, 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -878,7 +945,7 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 0);
+        assert_eq!(result, 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -915,7 +982,7 @@ mod tests {
                 DuplicatePolicy::KeepFirst,
             )
             .unwrap();
-        assert_eq!(result, 0);
+        assert_eq!(result, 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -952,7 +1019,7 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 1);
+        assert_eq!(result, 6);
         assert_eq!(
             chunk.samples,
             vec![
@@ -1452,5 +1519,51 @@ mod tests {
         let new_chunk = empty_chunk.split().unwrap();
         assert!(empty_chunk.samples.is_empty());
         assert!(new_chunk.samples.is_empty());
+    }
+
+    /// A corrupt/malicious peer can declare an absurd sample count in the
+    /// `len` header while sending only a handful of bytes. `deserialize_raw`
+    /// must reject this via the normal EOF error path rather than reserving
+    /// `len` elements up front: a multi-terabyte `Vec::with_capacity` request
+    /// aborts the process (allocation failure is not a catchable panic), which
+    /// turns a malformed fan-out payload into a crash.
+    ///
+    /// Scope: this covers the in-memory fan-out wire path only. It says nothing
+    /// about the RDB path (`load_rdb`'s `rdb_load_len` cap), which reads through
+    /// `RedisModuleIO` and fails differently -- an in-memory buffer returns `Err`
+    /// on a short read whether or not the module declares `HANDLE_IO_ERRORS`,
+    /// so this test passed even while a truncated RDB aborted the server.
+    /// The RDB path is covered end-to-end by `tests/test_rdb_corrupt_load.py`.
+    #[test]
+    fn test_deserialize_raw_rejects_oversized_len_without_huge_allocation() {
+        use crate::common::encoding::write_uvarint;
+
+        let mut buf = Vec::new();
+        write_uvarint(&mut buf, 0); // max_size
+        write_uvarint(&mut buf, 0); // max_elements
+        write_uvarint(&mut buf, u64::MAX); // len: wildly larger than the buffer could hold
+        // No sample payload follows, so decoding must fail on the first read.
+
+        let result = super::UncompressedChunk::deserialize_raw(&buf);
+        assert!(
+            result.is_err(),
+            "oversized len must be rejected, not honored"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_raw_rejects_unsorted_samples() {
+        use crate::common::encoding::{write_f64_le, write_uvarint};
+
+        let mut buf = Vec::new();
+        write_uvarint(&mut buf, 256 * SAMPLE_SIZE as u64); // max_size
+        write_uvarint(&mut buf, 256); // max_elements
+        write_uvarint(&mut buf, 2); // len
+        write_uvarint(&mut buf, 20);
+        write_f64_le(&mut buf, 2.0);
+        write_uvarint(&mut buf, 10);
+        write_f64_le(&mut buf, 1.0);
+
+        assert!(super::UncompressedChunk::deserialize_raw(&buf).is_err());
     }
 }

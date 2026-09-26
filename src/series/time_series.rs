@@ -19,8 +19,8 @@ use crate::series::sample_merge::merge_samples;
 use crate::series::series_sample_iterator::SeriesSampleIterator;
 use crate::{config, error_consts};
 use get_size2::GetSize;
-use orx_parallel::ParIterResult;
-use orx_parallel::{IntoParIter, ParIter, Parallelizable, ParallelizableCollectionMut};
+use orx_parallel::ParResult;
+use orx_parallel::{IntoParIter, Par, ParCollectionMut, Parallelizable};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -33,6 +33,27 @@ use valkey_module::{ValkeyError, ValkeyResult};
 
 pub type TimeseriesId = u64;
 pub type SeriesRef = u64;
+
+/// Hand a sealed chunk's unused buffer back to the allocator.
+///
+/// A compressed chunk's bit stream is a `Vec` grown by doubling, so a chunk that has just
+/// reached `chunk_size_bytes` holds up to twice that in allocation. Measured over a 20,000
+/// sample series at `CHUNK_SIZE 4096`: 208,069 bytes of `MEMORY USAGE` against 109,537 bytes of
+/// encoded data, a 1.90x overhang that lives as long as the series does. On an append-only
+/// workload that is every chunk but the last.
+///
+/// Only call this where a chunk provably stops being the append target -- it is the definition
+/// of "sealed" here, not a general-purpose compaction. It costs nothing on the other side:
+/// `upsert_sample` and the out-of-order path of `merge_samples` discard the buffer and re-encode
+/// into a fresh one regardless, so a later back-fill into a sealed chunk neither benefits from
+/// nor pays for the shrink. An in-order `merge_samples` into a sealed chunk does append in place
+/// and will regrow, but from a smaller base and still by doubling, so the cost stays amortized
+/// O(1) per byte.
+pub(crate) fn seal_chunk(chunk: &mut TimeSeriesChunk) {
+    if let Err(e) = chunk.optimize() {
+        logging::log_warning(format!("TSDB: Error compacting a sealed chunk: {e:?}"));
+    }
+}
 
 /// Represents a time series consisting of chunks of samples, each with a timestamp and value.
 #[derive(Clone, Debug, Hash, PartialEq, GetSize)]
@@ -66,6 +87,20 @@ pub struct TimeSeries {
     /// This is not part of the time series data itself, nor is it stored to rdb.
     /// `None` means the series is currently unassigned to a local db.
     pub(crate) _db: Option<i32>,
+    /// Strict-mode emulation state for DIV-0023, on a compaction *destination*: the
+    /// sample published by the most recent bucket close driven by forward progress.
+    ///
+    /// Back-filling a bucket older than the open one materializes a downstream sample
+    /// without refreshing this, which is exactly what RedisTimeSeries reports from
+    /// `TS.GET`/`TS.MGET` — a cached destination last-sample that back-fill does not
+    /// advance, so its reply disagrees with its own `TS.RANGE`. Only read when
+    /// `ts-compatibility-mode` is `strict`; `extended` always reports the true last
+    /// sample.
+    ///
+    /// Like `_db`, this is runtime-only and never stored to rdb: after a reload it is
+    /// `None` and the gate falls back to the true last sample (documented in
+    /// tests/compat/divergences.yml, DIV-0023).
+    pub(crate) last_forward_close: Option<Sample>,
 }
 
 impl TimeSeries {
@@ -84,7 +119,12 @@ impl TimeSeries {
         res.chunk_encoding = options.chunk_encoding;
         res.retention = options.retention.unwrap_or_else(config::retention_period);
         res.rounding = options.rounding;
-        res.sample_duplicates = options.sample_duplicate_policy.unwrap_or_default();
+        let (max_time_delta, max_value_delta) = options.ignore.unwrap_or_default();
+        res.sample_duplicates = SampleDuplicatePolicy {
+            policy: options.duplicate_policy,
+            max_time_delta,
+            max_value_delta,
+        };
 
         // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
         //     return Err(TsdbError::InvalidMetric(
@@ -187,7 +227,54 @@ impl TimeSeries {
         value: f64,
         dp_override: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
+        self.add_reporting_insert(ts, value, dp_override).0
+    }
+
+    /// [`Self::add`], also reporting whether a sample was *inserted* — as opposed to ignored,
+    /// rejected, or merged into one already stored under the duplicate policy. That is what
+    /// decides whether blocked `TS.READ` readers have anything new. It is measured before the
+    /// retention trim, which can drop more samples than the add inserted, so comparing
+    /// `total_samples` around the whole call would miss inserts on a series with retention.
+    pub fn add_reporting_insert(
+        &mut self,
+        ts: Timestamp,
+        value: f64,
+        dp_override: Option<DuplicatePolicy>,
+    ) -> (SampleAddResult, bool) {
+        let samples_before = self.total_samples;
+        let result = self.add_deferring_retention(ts, value, dp_override);
+        let inserted = self.total_samples > samples_before;
+        if result.is_ok() {
+            self.apply_retention();
+        }
+        (result, inserted)
+    }
+
+    /// [`Self::add`] without the eager retention trim.
+    ///
+    /// Batch writers use this so that compaction can observe the series as it was
+    /// *before* this batch's trim — see [`Self::apply_retention`].
+    pub(super) fn add_deferring_retention(
+        &mut self,
+        ts: Timestamp,
+        value: f64,
+        dp_override: Option<DuplicatePolicy>,
+    ) -> SampleAddResult {
         let sample = self.make_sample(ts, value);
+
+        // Retention is decided before the duplicate policy, matching RedisTimeSeries: an item
+        // below the window is `TooOld` even when a sample already sits at its timestamp.
+        //
+        // `upsert_sample` also tests this, but only on the `ts <= first_timestamp` branch —
+        // a proxy that holds solely once the trim has run. Callers that defer the trim (the
+        // TS.MADD fallback for in-batch duplicates) still hold the pre-trim samples, so
+        // `first_timestamp` is stale, the branch is skipped, and the stale sample answers as a
+        // DUPLICATE_POLICY violation instead. `is_older_than_retention` reads the floor from
+        // the last timestamp rather than the first, so it is correct either way. For an
+        // append (`ts > last_ts`) it can never fire.
+        if self.is_older_than_retention(ts) {
+            return SampleAddResult::TooOld;
+        }
 
         if let Some(last) = self.last_sample {
             let last_ts = last.timestamp;
@@ -199,11 +286,34 @@ impl TimeSeries {
                 return SampleAddResult::Ignored(last_ts);
             }
             if ts <= last_ts {
-                return self.upsert_sample(sample, dp_override);
+                self.upsert_sample(sample, dp_override)
+            } else {
+                self.add_sample_internal(sample)
             }
+        } else {
+            self.add_sample_internal(sample)
         }
+    }
 
-        self.add_sample_internal(sample)
+    /// Apply the retention window now.
+    ///
+    /// Retention is applied eagerly, matching RedisTimeSeries: a new max sample
+    /// advances the window, so samples that just fell outside it are dropped now
+    /// rather than waiting for the background trim task. This keeps
+    /// total_samples / first_timestamp (TS.INFO) consistent with what a range
+    /// query returns. `trim()` is a cheap no-op when nothing expired.
+    ///
+    /// Callers that write a batch and then compact must defer this until after
+    /// compaction: RedisTimeSeries folds a sample into its downstream bucket at
+    /// write time, so trimming the source first would drop that contribution from
+    /// a bucket recalculation and diverge (see `sample_merge`).
+    pub(crate) fn apply_retention(&mut self) {
+        if self.retention.is_zero() {
+            return;
+        }
+        if let Err(e) = self.trim_lazily() {
+            logging::log_warning(format!("TSDB: Error trimming time series: {e:?}"));
+        }
     }
 
     pub(crate) fn validate_sample(
@@ -239,6 +349,11 @@ impl TimeSeries {
 
     /// (Possibly) add a new chunk and append the given sample.
     fn add_chunk_with_sample(&mut self, sample: Sample) -> TsdbResult<()> {
+        // Reached only when the tail chunk is full, so the chunk we are leaving behind will
+        // never be the append target again: seal it before the new one takes over.
+        if let Some(sealed) = self.chunks.last_mut() {
+            seal_chunk(sealed);
+        }
         let mut chunk = self.create_chunk();
         chunk.add_sample(&sample)?;
         self.chunks.push(chunk);
@@ -293,8 +408,23 @@ impl TimeSeries {
             }
             0
         } else {
-            let (pos, _found) = get_chunk_index(&self.chunks, sample.timestamp);
-            pos
+            let (pos, found) = get_chunk_index(&self.chunks, sample.timestamp);
+            if found {
+                pos
+            } else {
+                // The timestamp falls in a *gap* between chunks — chunks need not be
+                // contiguous (a split leaves one). `get_chunk_index` reports a miss as
+                // `chunks.len()`, which is not a usable index, so resolve it here: route the
+                // sample into the chunk starting after the gap, the same rule the bulk path
+                // uses (`group_samples_by_chunk`), which keeps chunks non-overlapping.
+                // `upsert_sample` is only reached for `timestamp <= last_timestamp`, so a
+                // chunk starting after the gap always exists; the last chunk is a defensive
+                // fallback.
+                self.chunks
+                    .iter()
+                    .position(|c| c.first_timestamp() > sample.timestamp)
+                    .unwrap_or(chunks_len - 1)
+            }
         };
 
         let is_last = target_idx + 1 == chunks_len;
@@ -321,30 +451,50 @@ impl TimeSeries {
             return res;
         }
 
-        // otherwise split the chunk and upsert into the new chunk
+        // Otherwise split the chunk and upsert into whichever half now owns the sample's
+        // timestamp. `split()` keeps the lower half in `chunk` and hands back the upper half,
+        // so upserting blindly into the new chunk would miss an existing sample left behind in
+        // the lower half: the duplicate policy would not fire and the timestamp would end up
+        // stored in both chunks, breaking the ascending-timestamp invariant.
         match chunk.split() {
             Ok(mut new_chunk) => {
-                let (size, res) = new_chunk.upsert(sample, duplicate_policy);
+                // An empty upper half (splitting a single-sample chunk) owns nothing.
+                let into_new =
+                    new_chunk.len() > 0 && sample.timestamp >= new_chunk.first_timestamp();
+                let (added, res) = if into_new {
+                    let old_size = new_chunk.len();
+                    let (size, res) = new_chunk.upsert(sample, duplicate_policy);
+                    (size.saturating_sub(old_size), res)
+                } else {
+                    let old_size = chunk.len();
+                    let (size, res) = chunk.upsert(sample, duplicate_policy);
+                    (size.saturating_sub(old_size), res)
+                };
+                // `chunk`'s borrow ends here; `self` is usable again below.
+
+                // Re-insert the upper half even when the upsert failed: `split()` already moved
+                // those samples out of `chunk`, so dropping it here would lose them. The split
+                // itself only redistributes samples, so it leaves `total_samples` unchanged.
+                if new_chunk.len() > 0 {
+                    let insert_at = self
+                        .chunks
+                        .partition_point(|c| c.first_timestamp() <= new_chunk.first_timestamp());
+                    self.chunks.insert(insert_at, new_chunk);
+                }
+
                 if !res.is_ok() {
                     return res;
                 }
 
-                // best-effort trim; don't block ingestion on failure
-                if let Err(e) = self.trim() {
-                    logging::log_warning(format!("TSDB: Error trimming time series: {e:?}"));
-                }
-
-                // insert the new chunk in order
-                let insert_at = self
-                    .chunks
-                    .partition_point(|c| c.first_timestamp() <= new_chunk.first_timestamp());
-                self.chunks.insert(insert_at, new_chunk);
-
-                self.total_samples += size;
-                if is_last {
-                    self.update_last_sample();
-                }
-                self.first_timestamp = sample.timestamp.min(self.first_timestamp);
+                // No retention trim here: every caller applies it after the add (see
+                // `add_deferring_retention`). Splitting halves the head chunk's span, which can
+                // make its expired prefix due, so a trim here could drop more samples than this
+                // insert adds — hiding the insert from the count comparisons that wake
+                // `TS.READ` readers, and trimming ahead of batch compaction.
+                self.total_samples += added;
+                // The insert above shifts chunk positions, so recompute both ends rather than
+                // relying on the pre-split `is_last`.
+                self.update_first_last_timestamps();
 
                 SampleAddResult::Ok(sample)
             }
@@ -361,7 +511,11 @@ impl TimeSeries {
                 .par_mut()
                 .filter(|c| c.is_full())
                 .flat_map(|chunks| {
-                    if let Ok(split_chunk) = chunks.split() {
+                    if let Ok(mut split_chunk) = chunks.split() {
+                        // `split` re-encodes both halves from scratch, so both arrive with a
+                        // doubling-grown buffer around half a chunk of data.
+                        seal_chunk(chunks);
+                        seal_chunk(&mut split_chunk);
                         Some(split_chunk)
                     } else {
                         errored.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -372,7 +526,9 @@ impl TimeSeries {
         } else {
             let mut new_chunks = Vec::with_capacity(std::cmp::max(2, self.chunks.len() / 6));
             for c in self.chunks.iter_mut().filter(|c| c.is_full()) {
-                if let Ok(split_chunk) = c.split() {
+                if let Ok(mut split_chunk) = c.split() {
+                    seal_chunk(c);
+                    seal_chunk(&mut split_chunk);
                     new_chunks.push(split_chunk);
                 } else {
                     errored.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -449,6 +605,20 @@ impl TimeSeries {
         samples: &[Sample],
         policy_override: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
+        let results = self.merge_samples_deferring_retention(samples, policy_override)?;
+        // Eager retention trim, as in `add` — a batch can advance the window too.
+        self.apply_retention();
+        Ok(results)
+    }
+
+    /// [`Self::merge_samples`] without the eager retention trim, for callers that
+    /// compact afterwards and must do so against the pre-trim series (see
+    /// [`Self::apply_retention`]).
+    pub(super) fn merge_samples_deferring_retention(
+        &mut self,
+        samples: &[Sample],
+        policy_override: Option<DuplicatePolicy>,
+    ) -> TsdbResult<Vec<SampleAddResult>> {
         if samples.is_empty() {
             return Ok(Vec::new());
         }
@@ -457,6 +627,10 @@ impl TimeSeries {
 
     /// Get the time series between given start and end time (both inclusive).
     pub fn get_range(&self, start_time: Timestamp, end_time: Timestamp) -> Vec<Sample> {
+        let start_time = start_time.max(self.get_min_timestamp());
+        if start_time > end_time {
+            return Vec::new();
+        }
         if !self.overlaps(start_time, end_time) {
             return Vec::new();
         }
@@ -480,7 +654,10 @@ impl TimeSeries {
         timestamp_filter: Option<&[Timestamp]>,
         value_filter: Option<ValueFilter>,
     ) -> Vec<Sample> {
-        debug_assert!(start_timestamp <= end_timestamp);
+        let start_timestamp = start_timestamp.max(self.get_min_timestamp());
+        if start_timestamp > end_timestamp {
+            return Vec::new();
+        }
 
         // TODO: propagate errors
         let mut samples = if let Some(ts_filter) = timestamp_filter {
@@ -548,7 +725,7 @@ impl TimeSeries {
                 _ => slice
                     .par()
                     .map(|meta| meta_fetch(meta))
-                    .into_fallible_result()
+                    .into_fallible()
                     .flat_map(|r| r)
                     .collect(),
             }
@@ -569,11 +746,66 @@ impl TimeSeries {
     }
 
     pub fn iter(&self) -> SeriesSampleIterator<'_> {
-        SeriesSampleIterator::new(self, self.first_timestamp, self.last_timestamp(), false)
+        self.range_iter(self.first_timestamp, self.last_timestamp())
+    }
+
+    /// Timestamp of the earliest sample inside the retention window.
+    ///
+    /// `first_timestamp` is the earliest *stored* sample, which with retention can be an
+    /// expired one the write path has not trimmed yet (see [`Self::trim_lazily`]).
+    pub fn visible_first_timestamp(&self) -> Timestamp {
+        let min_timestamp = self.get_min_timestamp();
+        if self.first_timestamp >= min_timestamp {
+            return self.first_timestamp;
+        }
+        self.range_iter(min_timestamp, self.last_timestamp())
+            .next()
+            .map_or(self.first_timestamp, |sample| sample.timestamp)
+    }
+
+    /// Number of samples inside the retention window; `total_samples` also counts expired
+    /// samples the write path has not trimmed yet (see [`Self::trim_lazily`]).
+    pub fn visible_total_samples(&self) -> usize {
+        let min_timestamp = self.get_min_timestamp();
+        if self.first_timestamp >= min_timestamp {
+            return self.total_samples;
+        }
+        let expired: usize = self
+            .chunks
+            .iter()
+            .take_while(|chunk| chunk.first_timestamp() < min_timestamp)
+            .map(|chunk| {
+                if chunk.last_timestamp() < min_timestamp {
+                    chunk.len()
+                } else {
+                    chunk
+                        .range_iter(chunk.first_timestamp(), min_timestamp - 1)
+                        .count()
+                }
+            })
+            .sum();
+        self.total_samples.saturating_sub(expired)
     }
 
     pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SeriesSampleIterator<'_> {
         let start = start.max(self.get_min_timestamp());
+        SeriesSampleIterator::new(self, start, end, false)
+    }
+
+    /// Iterate the samples physically stored in `[start, end]`, **without** clamping `start`
+    /// to the current retention window the way [`Self::range_iter`] does.
+    ///
+    /// Compaction recalculation needs the clamp to be explicit rather than implicit. Both batch
+    /// ingest paths run the retention trim only after compaction, and a batch is applied as one
+    /// sorted run, so this series' *current* window is not the one that was in force when a
+    /// given item would have been applied sequentially. `handle_batch_compaction` therefore
+    /// reconstructs the floor per back-filled item and clamps `start` itself. Query paths keep
+    /// [`Self::range_iter`] — an untrimmed but expired sample must stay invisible to reads.
+    pub(super) fn stored_range_iter(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> SeriesSampleIterator<'_> {
         SeriesSampleIterator::new(self, start, end, false)
     }
 
@@ -589,33 +821,68 @@ impl TimeSeries {
         timestamp < min_ts
     }
 
+    /// Remove chunks that lie *entirely* outside the retention window, i.e. whose
+    /// newest sample is older than `min_timestamp`. The boundary is strict: a
+    /// sample at exactly `min_timestamp` is retained (a series with retention R
+    /// keeps `timestamp >= lastTimestamp - R`), so a chunk whose last sample is
+    /// `min_timestamp` is kept and trimmed partially by the caller.
     pub(super) fn remove_expired_chunks(&mut self, min_timestamp: Timestamp) -> usize {
-        let mut deleted_count = 0;
-        self.chunks.retain(|chunk| {
-            let last_ts = chunk.last_timestamp();
-            if last_ts <= min_timestamp {
-                deleted_count += chunk.len();
-                false
-            } else {
-                true
-            }
-        });
+        // Chunks are ordered and disjoint, so the expired ones are a prefix. The lazy write
+        // path lands here on every append while the head chunk holds an untrimmed expired
+        // prefix, so this must not walk the whole chunk list.
+        let expired = self
+            .chunks
+            .iter()
+            .take_while(|chunk| chunk.last_timestamp() < min_timestamp)
+            .count();
+        if expired == 0 {
+            return 0;
+        }
+        let deleted_count = self.chunks.drain(..expired).map(|chunk| chunk.len()).sum();
+        self.chunks.shrink_to_fit();
         deleted_count
     }
 
+    /// Physically removes every sample older than the retention window.
+    ///
+    /// Exact, and for a compressed head chunk expensive: dropping a prefix re-encodes the
+    /// whole chunk. The write path uses [`Self::trim_lazily`]; this is for the places that
+    /// need the prefix gone — defrag, the trim cron, and deletes (see [`Self::remove_range`]).
     pub(super) fn trim(&mut self) -> TsdbResult<usize> {
+        self.trim_expired(true)
+    }
+
+    /// Removes expired samples on the write path.
+    ///
+    /// Whole expired chunks go at once. A compressed head chunk that is only partly expired
+    /// is re-encoded only once a quarter of its time span has expired: re-encoding it on
+    /// every append (in steady state one sample expires per append) cost the whole chunk per
+    /// TS.ADD — ~37 µs for Chimp against ~80 ns without retention. Deferring it amortizes the
+    /// re-encode over many appends, at the price of keeping some expired samples in the head
+    /// chunk. Those are invisible: reads clamp to [`Self::get_min_timestamp`], and TS.INFO
+    /// reports [`Self::visible_first_timestamp`] and [`Self::visible_total_samples`]. So with
+    /// retention, `first_timestamp` and `total_samples` describe what is *stored*, not what is
+    /// live.
+    pub(super) fn trim_lazily(&mut self) -> TsdbResult<usize> {
+        self.trim_expired(false)
+    }
+
+    fn trim_expired(&mut self, force: bool) -> TsdbResult<usize> {
         let min_timestamp = self.get_min_timestamp();
-        if self.first_timestamp == min_timestamp {
+        if self.first_timestamp >= min_timestamp {
             return Ok(0);
         }
 
         let mut deleted_count = self.remove_expired_chunks(min_timestamp);
 
-        // Handle partial chunk
+        // Handle the boundary chunk: drop only samples strictly older than the
+        // retention window. `remove_range` is inclusive, so the upper bound is
+        // `min_timestamp - 1` — the sample at `min_timestamp` itself is retained.
         if let Some(chunk) = self.chunks.first_mut()
             && chunk.first_timestamp() < min_timestamp
+            && (force || head_trim_due(chunk, min_timestamp))
         {
-            if let Ok(count) = chunk.remove_range(0, min_timestamp) {
+            if let Ok(count) = chunk.remove_range(0, min_timestamp - 1) {
                 deleted_count += count;
             } else {
                 return Err(TsdbError::RemoveRangeError);
@@ -629,13 +896,27 @@ impl TimeSeries {
             self.update_first_last_timestamps();
         }
 
-        self.chunks.shrink_to_fit();
-
         Ok(deleted_count)
     }
 
     pub fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
-        debug_assert!(start_ts <= end_ts);
+        if start_ts > end_ts {
+            return Ok(0);
+        }
+
+        // With retention, drop the untrimmed expired prefix first (see `trim_lazily`). The
+        // retention floor follows the last sample, so a delete that removes the live tail
+        // would otherwise pull the floor back and resurrect it. Expired samples are not part
+        // of the series, so they are neither deleted nor counted here.
+        let start_ts = if self.retention.is_zero() {
+            start_ts
+        } else {
+            self.trim()?;
+            start_ts.max(self.get_min_timestamp())
+        };
+        if start_ts > end_ts {
+            return Ok(0);
+        }
 
         let mut deleted_samples = 0;
 
@@ -676,7 +957,7 @@ impl TimeSeries {
             (true, many) => many
                 .into_par()
                 .map(|chunk| remove_internal(chunk, start_ts, end_ts))
-                .into_fallible_result()
+                .into_fallible()
                 .sum()?,
         };
 
@@ -729,7 +1010,7 @@ impl TimeSeries {
         // impact is minimal for a single series's chunks.
         chunks
             .iter()
-            .any(|c| c.has_samples_in_range(start_time, end_time))
+            .any(|c| c.has_samples_in_range(min_timestamp, end_time))
     }
 
     pub fn increment_sample_value(
@@ -738,9 +1019,7 @@ impl TimeSeries {
         delta: f64,
     ) -> ValkeyResult<SampleAddResult> {
         if delta.is_nan() {
-            return Err(ValkeyError::Str(
-                error_consts::CANNOT_INCREMENT_DECREMENT_NAN,
-            ));
+            return Err(ValkeyError::Str(error_consts::INVALID_INCREMENT_VALUE));
         }
         // if we have at least one sample, increment the last one
         let (timestamp, last_ts, value) = if let Some(sample) = self.last_sample {
@@ -788,6 +1067,29 @@ impl TimeSeries {
 
     pub fn memory_usage(&self) -> usize {
         size_of::<Self>() + self.get_heap_size()
+    }
+
+    /// The number of heap allocations dropping this series will release.
+    ///
+    /// This is the `free_effort` the server compares against its `LAZYFREE_THRESHOLD` (64) to
+    /// decide between freeing the value inline and handing it to a background thread. Leaving
+    /// the callback unregistered means the server assumes 1, so a series of any size was always
+    /// freed synchronously on the main thread -- `UNLINK` and every `lazyfree-lazy-*` setting
+    /// were inert for this type. The same figure also decides whether active defrag handles the
+    /// value inline or defers it to the incremental `defragLater` queue.
+    ///
+    /// Counting allocations, not bytes, is what the server's own estimators do (a quicklist
+    /// reports its node count, a stream its macro nodes): the cost being modelled is the number
+    /// of `free` calls, not the volume.
+    pub(crate) fn free_effort(&self) -> usize {
+        // The chunk vector, plus one buffer per chunk -- a bit stream for the compressed
+        // encodings, a sample vector for the uncompressed one.
+        let chunks = 1 + self.chunks.len();
+        // The label vector, plus one interned string per label. Shared pairs survive the drop,
+        // so this is an upper bound; labels are a rounding error next to chunks either way.
+        let labels = 1 + self.labels.len();
+        let rules = 1 + self.rules.len();
+        chunks + labels + rules
     }
 
     /// Returns the minimum timestamp of the time series, considering the retention period.
@@ -844,7 +1146,7 @@ impl TimeSeries {
         start: Timestamp,
         end: Timestamp,
     ) -> Option<(usize, usize)> {
-        if self.is_empty() {
+        if self.is_empty() || start > end {
             return None;
         }
 
@@ -857,7 +1159,12 @@ impl TimeSeries {
 
         let right = &self.chunks[start_idx..];
         let (idx, _found) = find_last_ge_index(right, end);
-        let end_idx = start_idx + idx;
+        // Clamped because every caller slices `chunks[start_idx..=end_idx]`. Past
+        // `LINEAR_SCAN_MAX` chunks `find_last_ge_index` binary-searches, and a binary search
+        // for a timestamp beyond the last chunk returns the insertion point - one past the
+        // end - where the linear scan it replaces returns the last chunk. `TS.RANGE ... +`
+        // over a series with more than 16 chunks is exactly that query.
+        let end_idx = (start_idx + idx).min(len - 1);
 
         // imagine this scenario:
         // chunk start timestamps = [10, 20, 30, 40]
@@ -890,6 +1197,44 @@ impl TimeSeries {
         self.src_series.is_some()
     }
 
+    /// The sample `TS.GET` / `TS.MGET` report when `LATEST` is not given.
+    ///
+    /// In `extended` mode (the default) that is simply the series' last sample. In
+    /// `ts-compatibility-mode strict` a compaction destination instead reports the
+    /// last bucket published by forward progress, matching RedisTimeSeries: it caches
+    /// a destination last-sample that back-filling an older bucket does not refresh,
+    /// so its reply disagrees with its own `TS.RANGE` (DIV-0023). `LATEST` is
+    /// unaffected — both engines already agree there.
+    ///
+    /// Falls back to the true last sample when no forward close has been recorded:
+    /// nothing published yet, or after a reload, since the marker is runtime-only.
+    ///
+    /// The marker is also only honored while the destination still holds that bucket.
+    /// `TS.DEL` on the source (or retention) can drop it, and RedisTimeSeries then
+    /// reports the destination as empty rather than naming a sample that is gone —
+    /// so the stored sample is re-read and the marker ignored when it has vanished.
+    pub fn reported_last_sample(&self) -> Option<Sample> {
+        if crate::config::is_strict_rts_compat()
+            && self.is_compaction()
+            && !self.is_empty()
+            && let Some(current) = self.live_forward_close()
+        {
+            return Some(current);
+        }
+        self.last_sample
+    }
+
+    /// The stored sample at the forward-close marker, if it is still inside the retention
+    /// window. `get_sample` alone is not enough: the head chunk can still hold samples below
+    /// the floor that the write path has not trimmed yet (see [`Self::trim_lazily`]).
+    pub(super) fn live_forward_close(&self) -> Option<Sample> {
+        let published = self.last_forward_close?;
+        if self.is_older_than_retention(published.timestamp) {
+            return None;
+        }
+        self.get_sample(published.timestamp).ok().flatten()
+    }
+
     pub(crate) fn debug_digest(&self, digest: &mut Digest) {
         // hash labels
         calc_metric_name_digest(&self.labels, digest);
@@ -908,13 +1253,24 @@ impl TimeSeries {
         }
         digest.add_long_long(self.chunk_size_bytes as i64);
 
-        digest.add_long_long(self.chunks.len() as i64);
-        for chunk in self.chunks.iter() {
-            chunk.debug_digest(digest);
+        // Hash the samples inside the retention window, not the chunks. How many expired
+        // samples the head chunk still holds depends on when a trim last ran (see
+        // `trim_lazily`), and the trim cron runs independently on a primary and its replicas,
+        // so the stored layout is not a function of the data set.
+        if self.retention.is_zero() {
+            digest.add_long_long(self.chunks.len() as i64);
+            for chunk in self.chunks.iter() {
+                chunk.debug_digest(digest);
+            }
+        } else {
+            for sample in self.iter() {
+                digest.add_long_long(sample.timestamp);
+                digest.add_string_buffer(sample.value.to_le_bytes().as_ref());
+            }
         }
 
-        digest.add_long_long(self.total_samples as i64);
-        digest.add_long_long(self.first_timestamp);
+        digest.add_long_long(self.visible_total_samples() as i64);
+        digest.add_long_long(self.visible_first_timestamp());
         if let Some(sample) = &self.last_sample {
             digest.add_long_long(sample.timestamp);
             digest.add_string_buffer(sample.value.to_le_bytes().as_ref());
@@ -955,6 +1311,7 @@ impl Default for TimeSeries {
             src_series: None,
             rules: vec![],
             _db: None,
+            last_forward_close: None,
         }
     }
 }
@@ -974,6 +1331,19 @@ fn binary_search_chunks_by_timestamp(chunks: &[TimeSeriesChunk], ts: Timestamp) 
     }
 }
 
+/// Whether a partly expired head chunk is due for a physical trim on the write path (see
+/// [`TimeSeries::trim_lazily`]): always for an uncompressed chunk, whose prefix removal is a
+/// cheap move, and for a compressed one once a quarter of its time span has expired.
+fn head_trim_due(chunk: &TimeSeriesChunk, min_timestamp: Timestamp) -> bool {
+    if !chunk.is_compressed() {
+        return true;
+    }
+    let first = chunk.first_timestamp() as i128;
+    let expired = min_timestamp as i128 - first;
+    let span = chunk.last_timestamp() as i128 - first;
+    expired * 4 >= span
+}
+
 const LINEAR_SCAN_MAX: usize = 16;
 
 /// Find the index of the first chunk in which the timestamp belongs. Assumes !chunks.is_empty()
@@ -981,9 +1351,13 @@ pub(super) fn find_start_chunk_index(arr: &[TimeSeriesChunk], ts: Timestamp) -> 
     match arr {
         [] => 0,
         [first, ..] if ts <= first.first_timestamp() => 0,
+        // The first chunk whose range reaches `ts`, as the binary search below finds it.
+        // Testing `ts >= first_timestamp` instead matched chunk 0 every time (the arm above
+        // has already established `ts > chunks[0].first_timestamp()`), so ranged reads of a
+        // short series decoded every chunk from the start.
         _ if arr.len() <= LINEAR_SCAN_MAX => arr
             .iter()
-            .position(|x| ts >= x.first_timestamp())
+            .position(|x| x.last_timestamp() >= ts)
             .unwrap_or(arr.len()),
         _ => {
             let (pos, _) = binary_search_chunks_by_timestamp(arr, ts);
@@ -1039,7 +1413,7 @@ fn get_range_parallel(
         _ => chunks
             .into_par()
             .map(|chunk| chunk.get_range(start, end))
-            .into_fallible_result()
+            .into_fallible()
             .flat_map(|x| x)
             .collect(),
     }
@@ -1064,5 +1438,58 @@ mod tests {
         assert_eq!(ts.total_samples, 1);
         assert_eq!(ts.first_timestamp, 100);
         assert_eq!(ts.last_timestamp(), 100);
+    }
+
+    #[test]
+    fn test_get_chunk_index_bounds_rejects_inverted_range() {
+        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
+
+        fn s(timestamp: Timestamp, value: f64) -> Sample {
+            Sample { timestamp, value }
+        }
+
+        let c1 = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+            s(10, 1.0),
+            s(20, 2.0),
+        ]));
+        let c2 = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+            s(30, 3.0),
+            s(40, 4.0),
+        ]));
+        let ts = TimeSeries::from_chunks(vec![c1, c2]).unwrap();
+
+        assert!(ts.get_chunk_index_bounds(40, 20).is_none());
+        assert!(!ts.has_samples_in_range(40, 20));
+    }
+
+    #[test]
+    fn test_find_start_chunk_index_linear_scan_agrees_with_binary_search() {
+        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
+
+        // Chunks covering [0,9], [20,29], [40,49], [60,69].
+        let chunks: Vec<TimeSeriesChunk> = (0..4)
+            .map(|c| {
+                let samples: Vec<Sample> = (0..10)
+                    .map(|i| Sample {
+                        timestamp: c * 20 + i,
+                        value: i as f64,
+                    })
+                    .collect();
+                TimeSeriesChunk::Uncompressed(UncompressedChunk::new(1024, &samples))
+            })
+            .collect();
+        assert!(chunks.len() <= LINEAR_SCAN_MAX);
+
+        for ts in -5..80 {
+            let expected = if ts <= chunks[0].first_timestamp() {
+                0
+            } else {
+                binary_search_chunks_by_timestamp(&chunks, ts).0
+            };
+            assert_eq!(find_start_chunk_index(&chunks, ts), expected, "ts={ts}");
+        }
+        assert_eq!(find_start_chunk_index(&chunks, 45), 2);
+        assert_eq!(find_start_chunk_index(&chunks, 35), 2);
+        assert_eq!(find_start_chunk_index(&chunks, 70), 4);
     }
 }

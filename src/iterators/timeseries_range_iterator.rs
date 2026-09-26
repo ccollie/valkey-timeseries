@@ -5,8 +5,9 @@ use crate::series::{TimeSeries, get_latest_compaction_sample};
 use valkey_module::Context;
 
 /// Determines and retrieves the latest compaction sample if needed
-/// (aggregation-agnostic; shared by the sample and row range iterators).
-fn get_range_latest_sample(
+/// (aggregation-agnostic; shared by the sample and row range iterators, and by the
+/// multi-key path in `series::mrange` — see the note there).
+pub(crate) fn get_range_latest_sample(
     ctx: Option<&Context>,
     series: &TimeSeries,
     options: &RangeOptions,
@@ -84,17 +85,14 @@ impl<'a> TimeSeriesRangeIterator<'a> {
     }
 }
 
-impl<'a> TimeSeriesRangeIterator<'a> {
-    fn len_hint(&self) -> (usize, Option<usize>) {
-        self.size_hint
-    }
-}
-
 impl<'a> Iterator for TimeSeriesRangeIterator<'a> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.size_hint
     }
 }
 
@@ -122,37 +120,6 @@ impl<'a> Iterator for TimeSeriesRangeRowIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
-    }
-}
-
-/// An iterator that yields the latest sample from a compaction series if it exists.
-/// This is used specifically for the "LATEST" option in range queries. This simplifies the logic by
-/// isolating the latest sample retrieval so that the base sample iterator does not need to handle
-/// this special case. We simply `chain` this iterator with others as needed.
-pub(crate) struct CompactionLatestSampleIterator<'a> {
-    context: &'a Context,
-    series: &'a TimeSeries,
-    done: bool,
-}
-
-impl<'a> CompactionLatestSampleIterator<'a> {
-    pub fn new(context: &'a Context, series: &'a TimeSeries) -> Self {
-        Self {
-            context,
-            series,
-            done: false,
-        }
-    }
-}
-impl<'a> Iterator for CompactionLatestSampleIterator<'a> {
-    type Item = Sample;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.done {
-            self.done = true;
-            return get_latest_compaction_sample(self.context, self.series);
-        }
-        None
     }
 }
 
@@ -481,7 +448,10 @@ mod tests {
         let samples: Vec<Sample> =
             TimeSeriesRangeIterator::new(None, &series, &options, true).collect();
 
-        // Reverse order: bucket [2000, 4000) first, then [0, 2000)
+        // RedisTimeSeries defines first/last chronologically — the bucket's latest non-NaN
+        // sample by timestamp — independent of query direction. Buckets come back newest
+        // first under TS.REVRANGE, so [2000, 4000) yields 7.0 (at t=3000, the bucket's latest)
+        // and [0, 2000) yields 3.0 (at t=1000). Reference-checked against RedisTimeSeries 8.10.
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].timestamp, 2000);
         assert_eq!(samples[0].value, 7.0);
@@ -519,13 +489,12 @@ mod tests {
         let samples: Vec<Sample> =
             TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
 
-        // Bucket [0, 2000) has only NaNs — result should be NaN
-        // Bucket [2000, 4000) last non-NaN is 7.0
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0].timestamp, 0);
-        assert!(samples[0].value.is_nan());
-        assert_eq!(samples[1].timestamp, 2000);
-        assert_eq!(samples[1].value, 7.0);
+        // Bucket [0, 2000) holds only NaNs, so it is empty and — without EMPTY — omitted
+        // entirely rather than reported as NaN (reference-checked).
+        // Bucket [2000, 4000) last non-NaN is 7.0.
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].timestamp, 2000);
+        assert_eq!(samples[0].value, 7.0);
     }
 
     #[test]
@@ -618,7 +587,7 @@ mod tests {
         };
 
         let iter = TimeSeriesRangeIterator::new(None, &series, &options, false);
-        let hint = iter.len_hint();
+        let hint = iter.size_hint;
 
         assert_eq!(hint.0, 0);
         assert_eq!(hint.1, Some(5));
@@ -637,7 +606,7 @@ mod tests {
         };
 
         let iter = TimeSeriesRangeIterator::new(None, &series, &options, false);
-        let hint = iter.len_hint();
+        let hint = iter.size_hint();
 
         assert_eq!(hint.0, 0);
         assert_eq!(hint.1, None);

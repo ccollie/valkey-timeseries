@@ -1,14 +1,12 @@
-#![allow(dead_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 extern crate enum_dispatch;
 extern crate get_size2;
 #[cfg(test)]
 extern crate serial_test;
-extern crate strum;
-extern crate strum_macros;
 extern crate valkey_module_macros;
 
 use crate::commands::register_fanout_operations;
+use crate::common::module_options::{HANDLE_IO_ERRORS, declare_module_options};
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
@@ -19,7 +17,7 @@ use valkey_module_macros::shutdown_event_handler;
 
 pub mod aggregators;
 mod analysis;
-pub(crate) mod commands;
+mod commands;
 pub mod common;
 pub mod config;
 mod error;
@@ -31,13 +29,14 @@ mod labels;
 mod parser;
 pub mod series;
 
-pub use labels::Label;
+pub use labels::{Label, MetricName};
 
 /// Data generators and chunk helpers shared by unit tests, benchmarks and the
 /// `compression_report` tool. Not part of the module's runtime surface.
 #[cfg(any(test, feature = "test-utils"))]
 pub mod tests;
 
+use crate::common::block_on_keys::check_blocking_module_apis;
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
 use crate::series::index::persistence::check_required_module_apis;
@@ -107,66 +106,61 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
+    // TS.READ's block-on-keys path dereferences these directly; fail the load rather than the
+    // first blocking read.
+    if let Err(symbol) = check_blocking_module_apis() {
+        ctx.log_warning(&format!(
+            "Required module API {symbol} is unavailable on this server; refusing to load"
+        ));
+        return Status::Err;
+    }
+
     Status::Ok
 }
 
-/// ACL categories for the commands registered through the `#[valkey_module_macros::command]`
-/// command-info path, keyed by command name. That path (via `register_commands`) does not
-/// assign ACL categories the way the positional command table does, so we (re-)apply them at
-/// load time in [`assign_command_acl_categories`]. Keep this in sync with the `#[command]`
-/// annotations in `src/commands/*`.
+/// Apply the ACL categories each `#[command]`-annotated handler declares with
+/// `acl_categories!` (see [`commands::COMMAND_ACL_CATEGORIES`]). The command-info
+/// registration path sets none, and the server derives none from the command flags, so this
+/// is the only place the built-in `read`/`write`/`fast` categories and the module's own
+/// `@timeseries` category get attached to those commands.
+///
+/// Any failure aborts the load rather than logging: a command left without categories is
+/// invisible to `@timeseries` ACL rules and, if it writes, runnable by a `-@write` user. The
+/// server rejects both an unknown command name and an unknown category, so a typo in either
+/// half of a declaration surfaces here.
 #[cfg(feature = "min-valkey-compatibility-version-8-0")]
-const COMMAND_ACL_CATEGORIES: &[(&str, &str)] = &[
-    ("TS.CREATE", "write fast timeseries"),
-    ("TS.ALTER", "write timeseries"),
-    ("TS.ADD", "write timeseries"),
-    ("TS.ADDBULK", "write timeseries"),
-    ("TS.GET", "fast read timeseries"),
-    ("TS.MGET", "fast read timeseries"),
-    ("TS.MADD", "fast write timeseries"),
-    ("TS.DEL", "write timeseries"),
-    ("TS.DECRBY", "write timeseries"),
-    ("TS.INCRBY", "write timeseries"),
-    ("TS.JOIN", "read timeseries"),
-    ("TS.MDEL", "write timeseries"),
-    ("TS.MRANGE", "read timeseries"),
-    ("TS.MREVRANGE", "read timeseries"),
-    ("TS.RANGE", "read timeseries"),
-    ("TS.REVRANGE", "read timeseries"),
-    ("TS.INFO", "read fast timeseries"),
-    ("TS.QUERYINDEX", "read timeseries"),
-    ("TS.CARD", "read timeseries"),
-    ("TS.LABELNAMES", "read timeseries"),
-    ("TS.LABELVALUES", "read timeseries"),
-    ("TS.METRICNAMES", "read timeseries"),
-    ("TS.LABELSTATS", "read timeseries"),
-    ("TS.CREATERULE", "write timeseries"),
-    ("TS.DELETERULE", "write timeseries"),
-    ("TS.OUTLIERS", "fast read timeseries"),
-];
-
-/// Assign ACL categories to the commands registered via the command-info path. The
-/// `#[command]`-based registration performed by `register_commands` does not set ACL
-/// categories, so we apply them here to keep the custom `@timeseries` category (and the
-/// built-in read/write/fast categories) associated with each command.
-#[cfg(feature = "min-valkey-compatibility-version-8-0")]
-fn assign_command_acl_categories(ctx: &Context) {
+fn assign_command_acl_categories(ctx: &Context) -> Result<(), String> {
     use std::ffi::CString;
-    for (name, categories) in COMMAND_ACL_CATEGORIES {
-        if let (Ok(command), Ok(acl)) = (CString::new(*name), CString::new(*categories))
-            && Status::Err == ctx.set_acl_category(command.as_ptr(), acl.as_ptr())
-        {
-            // Handle the result if necessary, e.g., log errors or assert success
-            ctx.log_warning(&format!("Failed to set ACL category for command {name}"));
+    for (name, categories) in commands::COMMAND_ACL_CATEGORIES {
+        let command = CString::new(*name).map_err(|e| format!("command name {name:?}: {e}"))?;
+        let acl = CString::new(*categories)
+            .map_err(|e| format!("categories {categories:?} for {name}: {e}"))?;
+        if ctx.set_acl_category(command.as_ptr(), acl.as_ptr()) == Status::Err {
+            return Err(format!(
+                "could not set ACL categories {categories:?} on command {name:?} \
+                 (unknown command or category?)"
+            ));
         }
     }
+    Ok(())
 }
 
+// Without this feature the ACL-category API is unavailable, and a module built without it
+// used to load with a no-op here: every TS.* command without `@timeseries`/`@write`, so a
+// `-@write` user could run the write commands. Refuse to build that instead.
 #[cfg(not(feature = "min-valkey-compatibility-version-8-0"))]
-fn assign_command_acl_categories(_ctx: &Context) {}
+compile_error!(
+    "the `min-valkey-compatibility-version-8-0` feature is required: without it TS.* commands \
+     would load with no ACL categories (see `assign_command_acl_categories`)"
+);
 
 fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
+
+    // Declare this first: until the server knows the module handles IO errors, any short
+    // read while loading a TSDB-TYPE payload panics the server from inside `rdb_load`
+    // rather than returning an error we can report.
+    declare_module_options(ctx, HANDLE_IO_ERRORS);
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
@@ -174,7 +168,10 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
-    assign_command_acl_categories(ctx);
+    if let Err(e) = assign_command_acl_categories(ctx) {
+        ctx.log_warning(&format!("Failed to assign command ACL categories: {e}"));
+        return Status::Err;
+    }
 
     if let Err(e) = register_server_event_handlers(ctx) {
         let msg = format!("Failed to register server event handlers: {e}");
@@ -208,7 +205,7 @@ fn deinitialize(ctx: &Context) -> Status {
 }
 
 #[shutdown_event_handler]
-fn shutdown_event_handler(ctx: &Context, _event: u64) {
+fn __shutdown_event_handler(ctx: &Context, _event: u64) {
     ctx.log_notice("Server shutdown callback event ...");
     IS_SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
@@ -240,15 +237,20 @@ valkey_module! {
     acl_categories: [
         "timeseries",
     ]
+    // Command names are registered in lowercase to match RedisTimeSeries, both here and in
+    // the `#[command]` annotations in `src/commands/*`. The registered name is what Valkey
+    // echoes back in COMMAND INFO/DOCS and in the "wrong number of arguments for '<name>'
+    // command" arity error; RedisTimeSeries uses lowercase there. Command dispatch is
+    // case-insensitive, so clients may still invoke `TS.CREATE`, `ts.create`, etc.
     commands: [
         // User-facing commands are registered with full command info (summary, complexity,
         // arity, and key specs) through the `#[valkey_module_macros::command]` attribute on
         // each handler in `src/commands/*`; the `valkey_module!` macro registers them via
         // `register_commands`. Only internal/admin commands remain in this positional table.
-        // ACL categories for the annotated commands are (re-)applied by
-        // `assign_command_acl_categories`, since the command-info path does not set them.
-        ["TS._DEBUG", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
-        ["TS._RESTORE", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
+        // ACL categories for the annotated commands come from the `acl_categories!`
+        // declaration beside each handler, applied by `assign_command_acl_categories`.
+        ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
+        ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]

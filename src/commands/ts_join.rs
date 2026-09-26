@@ -3,11 +3,12 @@ use crate::common::replies::{reply_with_array, reply_with_null, reply_with_sampl
 use crate::error_consts;
 use crate::join::{JoinOptions, JoinResultType, process_join};
 use crate::series::get_timeseries;
-use joinkit::EitherOrBoth;
+use itertools::EitherOrBoth;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+acl_categories!(TS_JOIN, "ts.join", "read timeseries");
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [INNER | FULL | LEFT | RIGHT | ANTI | SEMI | ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]
 ///   [FILTER_BY_TS ts...]
@@ -16,7 +17,7 @@ use valkey_module::{
 ///   [REDUCE op]
 ///   [AGGREGATION aggregator bucket_duration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 #[valkey_module_macros::command({
-    name: "TS.JOIN",
+    name: "ts.join",
     flags: [ReadOnly],
     summary: "Join the samples of two time series over a timestamp range.",
     complexity: "O(N+M) where N and M are the number of samples in each series within the range.",
@@ -46,11 +47,9 @@ pub fn ts_join_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEYS));
     }
 
-    // In both cases we pass true for must_exist, meaning that if the series does not exist, we will
-    // propagate an error. Because of this, unwrap is safe to use here.
-    let left_series = get_timeseries(ctx, &left_key, Some(AclPermissions::ACCESS), true)?.unwrap();
-    let right_series =
-        get_timeseries(ctx, &right_key, Some(AclPermissions::ACCESS), true)?.unwrap();
+    // A missing key is an error here, not an empty join.
+    let left_series = get_timeseries(ctx, &left_key, Some(AclPermissions::ACCESS))?;
+    let right_series = get_timeseries(ctx, &right_key, Some(AclPermissions::ACCESS))?;
 
     let result = process_join(&left_series, &right_series, &options)?;
     match result {

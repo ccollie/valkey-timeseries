@@ -1,12 +1,18 @@
-use super::fanout::generated::{LabelResultsSortOrder, LabelSearchRequest, LabelSearchResponse};
-use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::commands::fanout::{
+use super::fanout_codec::generated::{
+    LabelResultsSortOrder, LabelSearchRequest, LabelSearchResponse,
+};
+use crate::commands::fanout_codec::filters::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout_codec::{
     FuzzySearchAlgorithm, LabelSearchResult as FanoutLabelSearchResult, LabelSearchType,
 };
 use crate::commands::label_search_utils::{
-    LabelNameSearchArgs, process_label_search_request, reply_with_label_search_result,
+    LabelNameSearchArgs, label_search_targets, process_label_search_request,
+    reply_with_label_search_result,
 };
-use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
+use crate::common::replies::ReplyContext;
+use crate::fanout::{
+    FanoutClientCommand, FanoutCommandResult, FanoutContext, FanoutTarget, NodeInfo,
+};
 use crate::series::index::{
     FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SEARCH_RESULT_LIMIT_MAX,
     SearchHints, SearchResultOrdering, apply_search_hints,
@@ -44,7 +50,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
     }
 
     fn get_local_response(
-        ctx: &Context,
+        ctx: &FanoutContext,
         req: LabelSearchRequest,
     ) -> ValkeyResult<LabelSearchResponse> {
         if req.fuzz_threshold > 1.0 {
@@ -68,6 +74,14 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             FuzzySearchAlgorithm::JaroWinkler => FuzzyAlgorithm::JaroWinkler,
             FuzzySearchAlgorithm::Subsequence => FuzzyAlgorithm::Subsequence,
             FuzzySearchAlgorithm::Noop => FuzzyAlgorithm::NoOp,
+            // `try_from` above rejects only *unknown* discriminants; zero is a
+            // defined variant, and proto3 omits a zero-valued field, so an
+            // unset `fuzz_algorithm` lands here.
+            FuzzySearchAlgorithm::Unspecified => {
+                return Err(ValkeyError::Str(
+                    "TSDB: invalid FUZZY_ALGORITHM value; expected jarowinkler, subsequence, or noop",
+                ));
+            }
         };
 
         let label = if req.label.is_empty() {
@@ -87,6 +101,11 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             LabelResultsSortOrder::ScoreDesc => SearchResultOrdering::ScoreDesc,
             LabelResultsSortOrder::CardinalityAsc => SearchResultOrdering::CardinalityAsc,
             LabelResultsSortOrder::CardinalityDesc => SearchResultOrdering::CardinalityDesc,
+            LabelResultsSortOrder::Unspecified => {
+                return Err(ValkeyError::Str(
+                    "TSDB: invalid sort order for label search results",
+                ));
+            }
         };
 
         let parsed = LabelNameSearchArgs {
@@ -104,9 +123,17 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
                 date_range: req.range.map(Into::into),
                 limit: Some(req.limit as usize),
             },
+            // Tags select target nodes at the coordinator and are not part of
+            // the shard-local query.
+            tags: Vec::new(),
         };
 
-        process_label_search_request(ctx, &parsed).map(|results| LabelSearchResponse {
+        let results = {
+            let ctx = ctx.lock()?;
+            process_label_search_request(&ctx, &parsed)?
+        };
+
+        Ok(LabelSearchResponse {
             has_more: results.has_more,
             results: results
                 .into_iter()
@@ -163,6 +190,10 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         }
     }
 
+    fn get_targets(&self, ctx: &Context) -> FanoutTarget {
+        label_search_targets(ctx, &self.args.tags)
+    }
+
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         for r in resp.results.iter() {
             if let Some(current) = self.result_map.get_mut(&r.value) {
@@ -184,7 +215,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         Ok(())
     }
 
-    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+    fn reply(&mut self, ctx: &ReplyContext) -> Status {
         let map = std::mem::take(&mut self.result_map);
         let values = map.into_values().collect::<Vec<_>>();
 

@@ -26,7 +26,7 @@ mod tests {
         assert_eq!(agg.current(), None); // Should reset after finalize
     }
 
-    // #[test]
+    #[test]
     fn test_last_aggregator() {
         let mut agg = LastAggregator::default();
         assert_eq!(agg.current(), None);
@@ -283,6 +283,23 @@ mod tests {
         // Total increase: 25 over 10-second window = 2.5/sec
         let result = agg.current().unwrap();
         assert_eq!(result, 2.5);
+    }
+
+    #[test]
+    fn test_rate_aggregator_sub_second_windows() {
+        // The window used to be kept in whole seconds: 1500 ms divided by 1 s, and anything
+        // under a second by zero (no value at all).
+        let mut agg = RateAggregator::default();
+        agg.set_window_ms(1500);
+        agg.update(0, 0.0);
+        agg.update(1000, 15.0);
+        assert_eq!(agg.current(), Some(10.0));
+
+        let mut agg = RateAggregator::default();
+        agg.set_window_ms(500);
+        agg.update(0, 0.0);
+        agg.update(400, 5.0);
+        assert_eq!(agg.current(), Some(10.0));
     }
 
     #[test]

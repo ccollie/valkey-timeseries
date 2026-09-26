@@ -129,12 +129,34 @@ Each `BucketStats` entry is a flat array of 12 alternating key/value fields:
 
 #### MemorySavings fields
 
-A flat array of 4 alternating key/value fields:
+A flat array of 12 alternating key/value fields:
 
-| Field              | Type    | Description                                                                  |
-|--------------------|---------|------------------------------------------------------------------------------|
-| `memorySavedBytes` | integer | Estimated bytes saved by sharing interned strings across multiple references |
-| `memorySavedPct`   | float   | Percentage saved relative to the hypothetical cost without interning         |
+| Field               | Type    | Description                                                                    |
+|---------------------|---------|--------------------------------------------------------------------------------|
+| `memorySavedBytes`  | integer | Bytes saved by sharing interned strings across multiple references             |
+| `memorySavedPct`    | float   | `memorySavedBytes` as a share of the pool's cost without interning             |
+| `holders`           | integer | Live references to interned strings, one per outstanding slot                  |
+| `holderSlotBytes`   | integer | Bytes those references spend on slots (8 bytes each), with or without interning |
+| `totalStorageBytes` | integer | What interned strings cost in total: pool `allocated` plus `holderSlotBytes`   |
+| `storageSavedPct`   | float   | `memorySavedBytes` as a share of `totalStorageBytes` without interning         |
+
+The two percentages answer different questions and the gap between them is often wide.
+
+`memorySavedPct` counts only heap allocations on both sides of the ratio, so it reports how
+well the pool is deduplicating. On a label set worth interning it reads near 100% and stays
+there no matter what the labels cost the server.
+
+`storageSavedPct` adds the slot that every reference occupies to both sides. That slot exists
+whether or not the bytes behind it are shared, so it cancels out of the saving but belongs in
+the total — which makes this the figure to quote for how much memory interning saves overall.
+It is the lower of the two, by a margin that grows as the pool deduplicates better. Measured on
+a 121k-series Kubernetes-shaped label set, `memorySavedPct` reads 99.2% and `storageSavedPct`
+82.1%.
+
+For capacity planning, `storageSavedPct` is still a slight over-statement of what a series
+saves: the pool cannot see the per-series container holding those slots, and it counts
+short-lived references alongside stored ones. `TS.INFO`'s `memoryUsage` already amortizes the
+pool across the series that share it.
 
 #### TopKEntry fields
 
@@ -212,15 +234,16 @@ TS._DEBUG LIST_CONFIGS [VERBOSE]
 
 | Parameter                      | Type     | Default         | Description                                                                             |
 |--------------------------------|----------|-----------------|-----------------------------------------------------------------------------------------|
-| `ts-chunk-size`                | integer  | 4096            | Maximum memory per time series chunk, in bytes                                          |
-| `ts-encoding`                  | enum     | `CHIMP`         | Default chunk encoding: `CHIMP`, `GORILLA` or `UNCOMPRESSED`                            |
+| `ts-chunk-size-bytes`          | integer  | 4096            | Maximum memory per time series chunk, in bytes                                          |
+| `ts-encoding`                  | enum     | `COMPRESSED`    | Default chunk encoding: `CHIMP`, `GORILLA` or `UNCOMPRESSED`                            |
 | `ts-duplicate-policy`          | enum     | `BLOCK`         | Policy for handling duplicate timestamps: `BLOCK`, `FIRST`, `LAST`, `MIN`, `MAX`, `SUM` |
 | `ts-retention-policy`          | duration | `0` (no expiry) | Default retention period (milliseconds)                                                 |
 | `ts-compaction-policy`         | string   | `None`          | Default compaction rules applied to all new time series                                 |
+| `ts-compatibility-mode`        | enum     | `EXTENDED`      | Which side of a value divergence from RedisTimeSeries to take: `EXTENDED` or `STRICT`   |
 | `ts-decimal-digits`            | integer  | `none`          | Round sample values to N decimal places; `none` disables rounding                       |
 | `ts-significant-digits`        | integer  | `none`          | Round sample values to N significant digits; `none` disables rounding                   |
 | `ts-ignore-max-time-diff`      | duration | `0ms`           | Max time delta (ms) for which a duplicate sample is silently ignored                    |
-| `ts-ignore-max-value-diff`     | float    | 0.0             | Max value delta for which a duplicate sample is silently ignored                        |
+| `ts-ignore-max-val-diff`     | float    | 0.0             | Max value delta for which a duplicate sample is silently ignored                        |
 | `ts-num-threads`               | integer  | 8               | Number of worker threads for parallel query processing                                  |
 | `ts-fanout-command-timeout`    | duration | —               | Timeout (ms) for fanout (cluster scatter/gather) commands                               |
 | `ts-cluster-map-expiration-ms` | duration | —               | How long (ms) cluster slot-map entries are cached; `0` disables caching                 |
@@ -235,7 +258,7 @@ TS._DEBUG LIST_CONFIGS
 ```
 
 ```valkey-cli
-1) "ts-chunk-size"
+1) "ts-chunk-size-bytes"
 2) "ts-encoding"
 3) "ts-duplicate-policy" ...
 ```

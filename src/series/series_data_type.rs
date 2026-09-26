@@ -19,7 +19,13 @@ use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 
 /// TimeSeries Module data type RDB encoding version.
-const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
+///
+/// We register the same module type name as RedisTimeSeries (`TSDB-TYPE`)
+/// with an incompatible payload format; RTS 8.6 uses encver 9. The loaders
+/// reject any encver other than this one (see `rdb_load_series`) so a
+/// foreign payload fails cleanly instead of being misparsed — RTS→valkey
+/// RDB/DUMP migration is explicitly not supported (compat plan §7.4).
+pub(crate) const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
 
 pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
     "TSDB-TYPE",
@@ -35,13 +41,14 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         aux_load: Some(aux_load),
         aux_save: None,
         aux_save_triggers: REDISMODULE_AUX_BEFORE_RDB as i32,
-        free_effort: None,
-        unlink: Some(unlink),
+        free_effort: Some(free_effort),
+        // Superseded by `unlink2`, which the server prefers when both are set.
+        unlink: None,
         copy: Some(copy),
         defrag: Some(defrag),
         mem_usage2: None,
         free_effort2: None,
-        unlink2: None,
+        unlink2: Some(unlink2),
         copy2: None,
         aux_save2: Some(aux_save),
     },
@@ -68,23 +75,6 @@ pub fn is_flushing_in_process() -> bool {
     IS_FLUSHING.load(Ordering::Relaxed)
 }
 
-fn remove_series_from_index(ts: &TimeSeries) {
-    // if we are in the middle of a flush, we don't want to remove the series from the index
-    // since the entire index will be cleared by the flush operation.
-    if is_flushing_in_process() {
-        return;
-    }
-    let Some(db) = ts._db else {
-        log_debug(format!(
-            "Skipping index removal for series id {} because _db is unassigned",
-            ts.id
-        ));
-        return;
-    };
-    let index = get_db_index(db);
-    index.remove_timeseries(ts);
-}
-
 unsafe extern "C" fn rdb_save(rdb: *mut RedisModuleIO, value: *mut c_void) {
     let series = unsafe { &*value.cast::<TimeSeries>() };
     rdb_save_series(series, rdb);
@@ -94,7 +84,10 @@ unsafe extern "C" fn rdb_load(rdb: *mut RedisModuleIO, enc_ver: c_int) -> *mut c
     match rdb_load_series(rdb, enc_ver) {
         Ok(series) => Box::into_raw(Box::new(series)) as *mut std::ffi::c_void,
         Err(e) => {
-            logging::log_notice(format!("Failed to load series from RDB. {e:?}"));
+            // Warning level: this aborts the RESTORE / RDB load, and the
+            // message is the operator's only clue (e.g. a RedisTimeSeries
+            // payload rejected by the encoding-version guard).
+            logging::log_warning(format!("Failed to load series from RDB. {e:?}"));
             std::ptr::null_mut()
         }
     }
@@ -113,9 +106,19 @@ unsafe extern "C" fn aux_save(rdb: *mut RedisModuleIO, when: c_int) {
 
 /// Preloads the postings index from the RDB aux field. With `AUX_BEFORE_RDB` this runs before any
 /// key loads; the per-key `loaded` path then reduces to a `has_id` check per series.
-unsafe extern "C" fn aux_load(rdb: *mut RedisModuleIO, _encver: c_int, when: c_int) -> c_int {
+unsafe extern "C" fn aux_load(rdb: *mut RedisModuleIO, encver: c_int, when: c_int) -> c_int {
     if when != REDISMODULE_AUX_BEFORE_RDB as c_int {
         return raw::Status::Ok as c_int;
+    }
+    // Same guard as `rdb_load`: an aux field written by a foreign TSDB-TYPE
+    // (or a future encoding) cannot be consumed positionally — fail the load
+    // cleanly rather than misparse the stream.
+    if encver != TIMESERIES_TYPE_ENCODING_VERSION {
+        logging::log_warning(format!(
+            "Refusing TSDB-TYPE aux RDB payload with encoding version {encver} \
+             (this module writes version {TIMESERIES_TYPE_ENCODING_VERSION})"
+        ));
+        return raw::Status::Err as c_int;
     }
     load_index_from_rdb(rdb)
 }
@@ -125,13 +128,47 @@ unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
     series.memory_usage()
 }
 
+/// How much work freeing this value is, in allocations.
+///
+/// Without this callback the server assumes 1, which is below its `LAZYFREE_THRESHOLD` of 64, so
+/// every series -- a multi-million-sample one included -- was freed synchronously on the main
+/// thread and `UNLINK`, `lazyfree-lazy-expire` and friends did nothing for this type.
+///
+/// Registering it means `free` can now run on a lazyfree thread for any sizeable series, which
+/// is why that callback no longer touches the index at all -- see the comment there.
+unsafe extern "C" fn free_effort(_key: *mut RedisModuleString, value: *const c_void) -> usize {
+    if value.is_null() {
+        return 1;
+    }
+    let series = unsafe { &*value.cast::<TimeSeries>() };
+    series.free_effort()
+}
+
+/// Drop the value. Deliberately nothing else -- in particular, no index work.
+///
+/// The server reaches this through exactly one call site (`freeModuleObject`, from
+/// `decrRefCount`), and only from three places above it: `dbGenericDelete` and `dbOverwrite`,
+/// both of which fire `unlink` first, and `emptyDbStructure`, where a flush retires whole
+/// indexes at once. So `unlink` is the sole owner of index retirement and this callback has
+/// nothing left to do.
+///
+/// It used to call `remove_series_from_index` here as well, which was not merely redundant:
+///
+///   * on every `DEL`/`UNLINK` it took the index write lock to remove an id that `unlink` had
+///     removed moments earlier, logging "Tried to remove non-existing series id" each time --
+///     one spurious warning per deleted series, reproduced at 8 for 8 deletes; and
+///   * on a `FLUSHALL ASYNC` it did the same per key. `IS_FLUSHING` does not cover that: the
+///     flush-end event fires as soon as `emptyData` returns, while the bio thread is still
+///     draining the queue, so most of those frees see the flag already cleared and go on to
+///     search an index that has just been emptied wholesale.
+///
+/// That second case is the reason this matters more now than it did. `free_effort` routinely
+/// puts this callback on a lazyfree thread, so the redundant write lock would be taken from a
+/// background thread, contending with main-thread queries for no result.
 #[allow(unused)]
 unsafe extern "C" fn free(value: *mut c_void) {
     let sm = value.cast::<TimeSeries>();
-    let series = unsafe { Box::from_raw(sm) };
-    // todo: it may be helpful to push index deletion to a background thread
-    remove_series_from_index(&series);
-    drop(series);
+    drop(unsafe { Box::from_raw(sm) });
 }
 
 #[allow(non_snake_case, unused)]
@@ -156,12 +193,43 @@ unsafe extern "C" fn copy(
     Box::into_raw(Box::new(new_series)).cast::<c_void>()
 }
 
-unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) {
+/// Retire the series from the index. This is the *only* place that happens for a single key --
+/// see `free` for why, and for the paths the server guarantees reach here first.
+///
+/// Registered as `unlink2` rather than `unlink` for the key context: the db and key name come
+/// from the server, not from the series. The cached `series._db` goes stale on `SWAPDB` (the
+/// indexes are swapped, the series are not touched), which sent the removal to the wrong db's
+/// index and left a phantom entry behind; and removing by id alone, without the key, let
+/// deleting a `RESTORE`d copy strip the original from the index.
+unsafe extern "C" fn unlink2(ctx: *mut raw::RedisModuleKeyOptCtx, value: *const c_void) {
     if value.is_null() {
         return;
     }
+    // In the middle of a flush the whole index is cleared at once by the flush handler.
+    if is_flushing_in_process() {
+        return;
+    }
     let series = unsafe { &*value.cast::<TimeSeries>() };
-    remove_series_from_index(series);
+    // Presence of both accessors is a load-time invariant (`check_required_module_apis`).
+    // SAFETY: `ctx` is the live key context the server passes to this callback; the key name
+    // it returns is owned by the server and valid for the duration of the call.
+    let (db, key) = unsafe {
+        let db = raw::RedisModule_GetDbIdFromOptCtx.unwrap()(ctx);
+        let key = raw::RedisModule_GetKeyNameFromOptCtx.unwrap()(ctx);
+        let mut len = 0usize;
+        let ptr = raw::string_ptr_len(key.cast_mut(), &mut len);
+        if ptr.is_null() {
+            return;
+        }
+        (db, std::slice::from_raw_parts(ptr.cast::<u8>(), len))
+    };
+    let index = get_db_index(db);
+    if !index.remove_timeseries_for_key(series, key) {
+        log_debug(format!(
+            "unlink: series id {} was not indexed under its key in db {db}",
+            series.id
+        ));
+    }
 }
 
 unsafe extern "C" fn defrag(
@@ -174,10 +242,15 @@ unsafe extern "C" fn defrag(
     }
     // Convert the pointer to a TimeSeries so we can operate on it.
     let series: &mut TimeSeries = unsafe { &mut *(*value).cast::<TimeSeries>() };
-    match defrag_series(series) {
-        Ok(_) => 0,
-        Err(_) => 1,
+    if let Err(e) = defrag_series(series) {
+        logging::log_warning(format!("TSDB: Error defragmenting series: {e:?}"));
     }
+    // Always "done". A non-zero return asks the server to call us again with the cursor it
+    // passed, and `defrag_series` is not incremental -- it compacts the whole series in one
+    // call. Returning 1 on failure, as this did, would have spun `moduleLateDefrag` on a series
+    // that fails every time. That path was unreachable while `free_effort` was unregistered
+    // (effort 1 always defragged inline); registering it makes a large series take it.
+    0
 }
 
 /// # Safety
@@ -198,7 +271,7 @@ unsafe extern "C" fn aof_rewrite(
     // rewrites and for atomic slot migration). In the child the module GIL mutex is inherited in a
     // locked state, so we must NOT lock a context or invoke commands (e.g. `DUMP`). Instead we
     // serialize the value directly through the type's own `rdb_save` callback, which needs no lock,
-    // and emit `TS._RESTORE key <payload>` — reconstructed by `ts_asm_restore_cmd` on replay.
+    // and emit `TS._RESTORE key <payload>` — reconstructed by `ts_restore_cmd` on replay.
     let raw_type = *VK_TIME_SERIES_TYPE.raw_type.borrow();
     let payload = unsafe {
         raw::RedisModule_SaveDataTypeToString.unwrap()(std::ptr::null_mut(), value, raw_type)

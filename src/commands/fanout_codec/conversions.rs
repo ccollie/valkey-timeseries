@@ -1,0 +1,1187 @@
+use super::filters::{deserialize_matchers_list, serialize_matchers_list};
+use super::generated::{
+    AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
+    AggregatorConfig as FanoutAggregatorConfig, BucketAlignmentType, BucketTimestampType,
+    ComparisonOperator as FanoutComparisonOperator, CompressionType as FanoutChunkEncoding,
+    DateRange, GroupPartialSeries, GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel,
+    MetaDateRangeFilter as FanoutMetaDateRangeFilter, MultiRangeRequest,
+    PostingStat as FanoutPostingStat, RangeRequest, ReducePartialState, Sample as FanoutSample,
+    SeriesSelector as FanoutSeriesSelector, StatsResponse,
+    ValueComparisonFilter as FanoutValueComparisonFilter, ValueRange as FanoutValueFilter,
+};
+use crate::aggregators::PartialState;
+use crate::commands::fanout_codec::MGetValue;
+use crate::common::Sample;
+use crate::common::binop::ComparisonOperator;
+use crate::labels::Label;
+use crate::labels::filters::SeriesSelector;
+use crate::series::chunks::ChunkEncoding;
+use crate::series::mrange::GroupPartialsResult;
+use crate::series::request_types::{
+    AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MAX_AGGREGATIONS,
+    MGetSeriesData, MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions,
+    RangeOptions, ValueComparisonFilter,
+};
+use crate::series::{TimestampRange, ValueFilter};
+use crate::{
+    aggregators::BucketTimestamp,
+    error_consts,
+    series::index::{PostingStat, PostingsStats},
+};
+use smallvec::SmallVec;
+use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
+
+/// Generates the paired conversions between a local enum and its protobuf twin
+/// from a single variant table.
+///
+/// The two directions are deliberately asymmetric. Local -> wire is total: a
+/// local value always has a wire spelling. Wire -> local is fallible, because
+/// the wire enum carries an `_UNSPECIFIED = 0` variant that a peer produces
+/// whenever it omits the field, and these conversions run inside the fanout
+/// handlers, which are invoked from the module's C entry points. A panic there
+/// unwinds into `extern "C"` and aborts the process, so an ill-formed message
+/// has to come back as an error.
+///
+/// Both generated matches are exhaustive over their own enum, so adding a
+/// variant on either side is a compile error here — in one place — rather than a
+/// silently mismapped arm.
+// The type parameters are `ident` rather than `ty` so that `<=>` can be used as
+// the separator: Rust only permits a small set of tokens to follow a `ty`
+// fragment, and `<=` is not among them.
+macro_rules! map_enum {
+    (
+        $local:ident <=> $wire:ident,
+        unspecified => $err:expr,
+        { $($local_variant:ident <=> $wire_variant:ident),+ $(,)? }
+    ) => {
+        impl From<$local> for $wire {
+            fn from(value: $local) -> Self {
+                match value {
+                    $($local::$local_variant => $wire::$wire_variant,)+
+                }
+            }
+        }
+
+        impl TryFrom<$wire> for $local {
+            type Error = ValkeyError;
+
+            fn try_from(value: $wire) -> Result<Self, Self::Error> {
+                Ok(match value {
+                    $($wire::$wire_variant => $local::$local_variant,)+
+                    $wire::Unspecified => return Err(ValkeyError::Str($err)),
+                })
+            }
+        }
+    };
+}
+
+map_enum! {
+    ComparisonOperator <=> FanoutComparisonOperator,
+    unspecified => error_consts::INVALID_COMPARISON_OPERATOR,
+    {
+        Equal <=> Eq,
+        NotEqual <=> Neq,
+        GreaterThan <=> Gt,
+        GreaterThanOrEqual <=> Gte,
+        LessThan <=> Lt,
+        LessThanOrEqual <=> Lte,
+    }
+}
+
+map_enum! {
+    ChunkEncoding <=> FanoutChunkEncoding,
+    unspecified => error_consts::CHUNK_DECOMPRESSION,
+    {
+        Uncompressed <=> Uncompressed,
+        Gorilla <=> Gorilla,
+        Chimp <=> Chimp,
+    }
+}
+
+impl From<TimestampRange> for DateRange {
+    fn from(value: TimestampRange) -> Self {
+        let (start, end) = value.get_timestamps(None);
+        DateRange { start, end }
+    }
+}
+
+impl TryFrom<DateRange> for TimestampRange {
+    type Error = ValkeyError;
+
+    /// `start > end` is rejected rather than asserted: the bounds arrive from a
+    /// peer, so an inverted range is a message to refuse, not an invariant.
+    fn try_from(value: DateRange) -> Result<Self, Self::Error> {
+        TimestampRange::from_timestamps(value.start, value.end)
+    }
+}
+
+impl From<FanoutPostingStat> for PostingStat {
+    fn from(value: FanoutPostingStat) -> Self {
+        PostingStat {
+            name: value.name,
+            count: value.count,
+        }
+    }
+}
+
+impl From<PostingStat> for FanoutPostingStat {
+    fn from(value: PostingStat) -> Self {
+        FanoutPostingStat {
+            name: value.name,
+            count: value.count,
+        }
+    }
+}
+
+impl From<PostingsStats> for StatsResponse {
+    fn from(value: PostingsStats) -> Self {
+        StatsResponse {
+            series_count_by_metric_name: value
+                .series_count_by_metric_name
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_label_name: value
+                .series_count_by_label_name
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_label_value_pairs: value
+                .series_count_by_label_value_pairs
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_focus_label_value: value
+                .series_count_by_focus_label_value
+                .map(|v| v.into_iter().map(|s| s.into()).collect())
+                .unwrap_or_default(),
+            series_count: value.series_count,
+            // Left empty here on purpose: `PostingsStats` does not carry the
+            // bitmaps. `LabelStatsFanoutCommand::get_local_response` fills both
+            // in from `index.get_label_bitmaps()` right after this conversion,
+            // and the coordinator unions them across shards to avoid
+            // double-counting. They are live wire fields, not vestigial ones.
+            labels_bitmap: vec![],
+            label_value_pairs_bitmap: vec![],
+        }
+    }
+}
+
+impl From<StatsResponse> for PostingsStats {
+    fn from(value: StatsResponse) -> Self {
+        let focused = if value.series_count_by_focus_label_value.is_empty() {
+            None
+        } else {
+            Some(
+                value
+                    .series_count_by_focus_label_value
+                    .into_iter()
+                    .map(|s| s.into())
+                    .collect(),
+            )
+        };
+        PostingsStats {
+            series_count_by_metric_name: value
+                .series_count_by_metric_name
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_label_name: value
+                .series_count_by_label_name
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_label_value_pairs: value
+                .series_count_by_label_value_pairs
+                .into_iter()
+                .map(|s| s.into())
+                .collect(),
+            series_count_by_focus_label_value: focused,
+            total_label_value_pairs: 0,
+            label_count: 0,
+            series_count: value.series_count,
+        }
+    }
+}
+
+map_enum! {
+    BucketTimestamp <=> BucketTimestampType,
+    unspecified => error_consts::INVALID_BUCKET_TIMESTAMP_TYPE,
+    {
+        Start <=> Start,
+        End <=> End,
+        Mid <=> Mid,
+    }
+}
+
+// `BucketAlignment` stays hand-written: its `Timestamp(i64)` variant carries a
+// payload that lives in a separate `alignment_timestamp` field on the wire, so
+// the pair is not a plain one-to-one variant table. The encode side is folded
+// into `From<&AggregationOptions>`, which has both fields in hand.
+impl TryFrom<BucketAlignmentType> for BucketAlignment {
+    type Error = ValkeyError;
+
+    fn try_from(value: BucketAlignmentType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            BucketAlignmentType::Default => BucketAlignment::Default,
+            BucketAlignmentType::AlignStart => BucketAlignment::Start,
+            BucketAlignmentType::AlignEnd => BucketAlignment::End,
+            BucketAlignmentType::Timestamp => BucketAlignment::Timestamp(0),
+            BucketAlignmentType::Unspecified => {
+                return Err(ValkeyError::Str(error_consts::INVALID_BUCKET_ALIGNMENT));
+            }
+        })
+    }
+}
+
+// The `IRate <=> Irate` and `Share <=> ShareIf` rows are the reason this is a
+// table: as one visible line each, a mismatch is legible, where the same
+// asymmetry buried in a 23-arm match is not.
+map_enum! {
+    AggregationType <=> FanoutAggregationType,
+    unspecified => error_consts::UNKNOWN_AGGREGATION_TYPE,
+    {
+        All <=> All,
+        Any <=> Any,
+        Avg <=> Avg,
+        Count <=> Count,
+        CountAll <=> CountAll,
+        CountIf <=> CountIf,
+        CountNan <=> CountNan,
+        First <=> First,
+        Increase <=> Increase,
+        IRate <=> Irate,
+        Last <=> Last,
+        Max <=> Max,
+        Min <=> Min,
+        None <=> None,
+        Range <=> Range,
+        Rate <=> Rate,
+        Share <=> ShareIf,
+        StdP <=> StdP,
+        StdS <=> StdS,
+        Sum <=> Sum,
+        SumIf <=> SumIf,
+        VarP <=> VarP,
+        VarS <=> VarS,
+    }
+}
+
+impl From<AggregatorConfig> for FanoutAggregationType {
+    fn from(value: AggregatorConfig) -> Self {
+        value.aggregation_type().into()
+    }
+}
+
+impl From<FanoutAggregationType> for FanoutAggregatorConfig {
+    fn from(value: FanoutAggregationType) -> Self {
+        FanoutAggregatorConfig {
+            aggregator_type: value as i32,
+            value_filter: None,
+        }
+    }
+}
+
+impl TryFrom<FanoutAggregatorConfig> for AggregatorConfig {
+    type Error = ValkeyError;
+
+    fn try_from(value: FanoutAggregatorConfig) -> Result<Self, Self::Error> {
+        let aggr_type: FanoutAggregationType = value
+            .aggregator_type
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
+        let aggregation_type: AggregationType = aggr_type.try_into()?;
+
+        let filter = value
+            .value_filter
+            .map(ValueComparisonFilter::try_from)
+            .transpose()?;
+
+        AggregatorConfig::new(aggregation_type, filter)
+    }
+}
+
+impl TryFrom<&FanoutGroupingOptions> for RangeGroupingOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: &FanoutGroupingOptions) -> Result<RangeGroupingOptions, ValkeyError> {
+        let aggregation: AggregatorConfig = value
+            .aggregation
+            .unwrap_or_default()
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?; // todo: serialization error
+
+        Ok(RangeGroupingOptions {
+            aggregation,
+            group_label: value.group_label.clone(),
+        })
+    }
+}
+
+impl TryFrom<FanoutGroupingOptions> for RangeGroupingOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: FanoutGroupingOptions) -> Result<RangeGroupingOptions, ValkeyError> {
+        let aggregation_input = value.aggregation.unwrap_or_default();
+        let aggregation = aggregation_input.try_into()?;
+
+        Ok(RangeGroupingOptions {
+            aggregation,
+            group_label: value.group_label,
+        })
+    }
+}
+
+impl From<&RangeGroupingOptions> for FanoutGroupingOptions {
+    fn from(value: &RangeGroupingOptions) -> Self {
+        let aggregation: FanoutAggregatorConfig = value.aggregation.into();
+        FanoutGroupingOptions {
+            aggregation: Some(aggregation),
+            group_label: value.group_label.clone(),
+        }
+    }
+}
+
+impl From<RangeGroupingOptions> for FanoutGroupingOptions {
+    fn from(value: RangeGroupingOptions) -> Self {
+        let aggregation: FanoutAggregatorConfig = value.aggregation.into();
+        FanoutGroupingOptions {
+            aggregation: Some(aggregation),
+            group_label: value.group_label,
+        }
+    }
+}
+
+impl From<MGetSeriesData> for MGetValue {
+    fn from(value: MGetSeriesData) -> Self {
+        let labels = value
+            .labels
+            .into_iter()
+            .map(|l| l.map_or_else(FanoutLabel::default, |l| l.into()))
+            .collect();
+
+        let sample = value.sample.map(Into::into);
+
+        MGetValue {
+            key: value.series_key.as_slice().to_vec(),
+            labels,
+            sample,
+        }
+    }
+}
+
+pub fn deserialize_match_filter_options(
+    range: Option<FanoutMetaDateRangeFilter>,
+    filters: Option<Vec<FanoutSeriesSelector>>,
+) -> ValkeyResult<MatchFilterOptions> {
+    let date_range: Option<MetaDateRangeFilter> = range.map(|r| r.into());
+    let matchers: Vec<SeriesSelector> = deserialize_matchers_list(filters)?;
+    Ok(MatchFilterOptions {
+        date_range,
+        matchers,
+        limit: None,
+    })
+}
+
+/// Serialize local [`MatchFilterOptions`] into the protobuf-compatible fields
+/// needed by fanout request messages.  Returns `(range, filters)` suitable for
+/// direct assignment into the generated protobuf request struct.
+pub fn serialize_match_filter_options(
+    options: &MatchFilterOptions,
+) -> (Option<FanoutMetaDateRangeFilter>, Vec<FanoutSeriesSelector>) {
+    let filters = serialize_matchers_list(&options.matchers).expect("serialize matchers list");
+    let range = options.date_range.map(|r| r.into());
+    (range, filters)
+}
+
+impl From<FanoutLabel> for Label {
+    fn from(value: FanoutLabel) -> Self {
+        let name = value.name.to_string();
+        let value = value.value.to_string();
+        Label { name, value }
+    }
+}
+
+impl From<&Label> for FanoutLabel {
+    fn from(value: &Label) -> Self {
+        FanoutLabel {
+            name: value.name.clone(),
+            value: value.value.clone(),
+        }
+    }
+}
+
+impl From<Label> for FanoutLabel {
+    fn from(value: Label) -> Self {
+        FanoutLabel {
+            name: value.name,
+            value: value.value,
+        }
+    }
+}
+
+impl From<Sample> for FanoutSample {
+    fn from(value: Sample) -> Self {
+        FanoutSample {
+            timestamp: value.timestamp,
+            value: value.value,
+        }
+    }
+}
+
+impl From<FanoutSample> for Sample {
+    fn from(value: FanoutSample) -> Self {
+        Sample {
+            timestamp: value.timestamp,
+            value: value.value,
+        }
+    }
+}
+
+impl From<FanoutSample> for ValkeyValue {
+    fn from(value: FanoutSample) -> Self {
+        let row = vec![
+            ValkeyValue::from(value.timestamp),
+            ValkeyValue::from(value.value),
+        ];
+        ValkeyValue::from(row)
+    }
+}
+
+impl From<ValueComparisonFilter> for FanoutValueComparisonFilter {
+    fn from(value: ValueComparisonFilter) -> Self {
+        let fanout_operator: FanoutComparisonOperator = value.operator.into();
+        FanoutValueComparisonFilter {
+            operator: fanout_operator.into(),
+            value: value.value,
+        }
+    }
+}
+
+impl TryFrom<FanoutValueComparisonFilter> for ValueComparisonFilter {
+    type Error = ValkeyError;
+
+    fn try_from(value: FanoutValueComparisonFilter) -> Result<Self, Self::Error> {
+        // `operator` is a raw i32 off the wire: an unknown discriminant fails
+        // the enum conversion, and a known-but-unspecified one fails the
+        // semantic conversion below.
+        let fanout_operator: FanoutComparisonOperator = value
+            .operator
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_COMPARISON_OPERATOR))?;
+        let operator: ComparisonOperator = fanout_operator.try_into()?;
+        Ok(ValueComparisonFilter {
+            operator,
+            value: value.value,
+        })
+    }
+}
+
+impl From<AggregatorConfig> for FanoutAggregatorConfig {
+    fn from(value: AggregatorConfig) -> Self {
+        let aggr_type: FanoutAggregationType = value.aggregation_type().into();
+        FanoutAggregatorConfig {
+            aggregator_type: aggr_type.into(),
+            value_filter: value.filter().map(|filter| filter.into()),
+        }
+    }
+}
+
+impl From<&AggregationOptions> for FanoutAggregationOptions {
+    fn from(value: &AggregationOptions) -> Self {
+        // A single-aggregator query is simply a one-element list.
+        let aggregators: Vec<FanoutAggregatorConfig> = value
+            .aggregations
+            .iter()
+            .map(|config| (*config).into())
+            .collect();
+        let bucket_timestamp_type: BucketTimestampType = value.timestamp_output.into();
+
+        let (bucket_alignment, alignment_timestamp) = match value.alignment {
+            BucketAlignment::Default => (BucketAlignmentType::Default, 0),
+            BucketAlignment::Start => (BucketAlignmentType::AlignStart, 0),
+            BucketAlignment::End => (BucketAlignmentType::AlignEnd, 0),
+            BucketAlignment::Timestamp(ts) => (BucketAlignmentType::Timestamp, ts),
+        };
+
+        FanoutAggregationOptions {
+            aggregators,
+            bucket_duration: value.bucket_duration as u32,
+            bucket_timestamp_type: bucket_timestamp_type.into(),
+            bucket_alignment: bucket_alignment.into(),
+            alignment_timestamp,
+            report_empty: value.report_empty,
+        }
+    }
+}
+
+impl From<AggregationOptions> for FanoutAggregationOptions {
+    fn from(value: AggregationOptions) -> Self {
+        (&value).into()
+    }
+}
+
+impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: FanoutAggregationOptions) -> Result<Self, Self::Error> {
+        // Re-validate the list bounds and duplicates as a defense against
+        // corrupt/malicious peers.
+        if value.aggregators.is_empty() {
+            return Err(ValkeyError::Str("TSDB: aggregation config is required"));
+        }
+        if value.aggregators.len() > MAX_AGGREGATIONS {
+            return Err(ValkeyError::Str(error_consts::TOO_MANY_AGGREGATIONS));
+        }
+        let aggregations = value
+            .aggregators
+            .into_iter()
+            .map(AggregatorConfig::try_from)
+            .collect::<Result<SmallVec<[AggregatorConfig; 2]>, _>>()?;
+        let mut seen: SmallVec<[AggregationType; 2]> = SmallVec::new();
+        for config in aggregations.iter() {
+            if seen.contains(&config.aggregation_type()) {
+                return Err(ValkeyError::Str(error_consts::DUPLICATE_AGGREGATION));
+            }
+            seen.push(config.aggregation_type());
+        }
+        let bucket_duration = value.bucket_duration as u64;
+        if bucket_duration == 0 {
+            return Err(ValkeyError::Str("TSDB: bucket duration must be positive"));
+        }
+        let timestamp_output: BucketTimestampType = value
+            .bucket_timestamp_type
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_TIMESTAMP_TYPE))?;
+        let fanout_alignment: BucketAlignmentType = value
+            .bucket_alignment
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_ALIGNMENT))?;
+
+        let mut alignment: BucketAlignment = fanout_alignment.try_into()?;
+        if matches!(alignment, BucketAlignment::Timestamp(_)) {
+            let timestamp = value.alignment_timestamp;
+            alignment = BucketAlignment::Timestamp(timestamp);
+        }
+
+        let report_empty = value.report_empty;
+
+        Ok(AggregationOptions {
+            aggregations,
+            bucket_duration,
+            timestamp_output: timestamp_output.try_into()?,
+            alignment,
+            report_empty,
+        })
+    }
+}
+
+impl TryFrom<RangeRequest> for RangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: RangeRequest) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<&RangeRequest> for RangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: &RangeRequest) -> Result<Self, Self::Error> {
+        let date_range: TimestampRange = match value.range {
+            Some(r) => r.try_into()?,
+            None => {
+                return Err(ValkeyError::Str("TSDB: date range is required"));
+            }
+        };
+
+        let count = if value.count == 0 {
+            None
+        } else {
+            Some(value.count as usize)
+        };
+
+        let aggregation = if let Some(aggregation) = value.aggregation.clone() {
+            let options = aggregation.try_into()?;
+            Some(options)
+        } else {
+            None
+        };
+
+        let timestamp_filter = if value.timestamp_filter.is_empty() {
+            None
+        } else {
+            Some(value.timestamp_filter.clone())
+        };
+
+        let value_filter: Option<ValueFilter> = value.value_filter.map(|filter| ValueFilter {
+            min: filter.min,
+            max: filter.max,
+        });
+
+        let latest = value.latest;
+
+        Ok(RangeOptions {
+            date_range,
+            count,
+            aggregation,
+            timestamp_filter,
+            value_filter,
+            latest,
+        })
+    }
+}
+
+impl From<&RangeOptions> for RangeRequest {
+    fn from(value: &RangeOptions) -> Self {
+        let range: DateRange = value.date_range.into();
+
+        let count = match value.count {
+            Some(c) => c as u32,
+            None => 0,
+        };
+
+        let aggregation = value
+            .aggregation
+            .as_ref()
+            .map(FanoutAggregationOptions::from);
+
+        let timestamp_filter = match value.timestamp_filter {
+            Some(ref ts) => ts.clone(),
+            None => vec![],
+        };
+
+        let value_filter: Option<FanoutValueFilter> =
+            value.value_filter.map(|filter| FanoutValueFilter {
+                min: filter.min,
+                max: filter.max,
+            });
+
+        RangeRequest {
+            range: Some(range),
+            count,
+            aggregation,
+            timestamp_filter,
+            value_filter,
+            latest: value.latest,
+        }
+    }
+}
+
+impl TryFrom<&MultiRangeRequest> for MRangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: &MultiRangeRequest) -> Result<Self, Self::Error> {
+        let range: RangeOptions = if let Some(r) = &value.range {
+            r.try_into()?
+        } else {
+            return Err(ValkeyError::Str("TSDB: range is required"));
+        };
+
+        let mut filters: Vec<SeriesSelector> = Vec::with_capacity(value.filters.len());
+        for filter in value.filters.iter() {
+            filters.push(filter.try_into()?);
+        }
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels.clone();
+
+        let grouping: Option<RangeGroupingOptions> = match &value.grouping {
+            Some(group) => Some(group.try_into()?),
+            None => None,
+        };
+
+        let is_reverse = value.is_reverse;
+
+        Ok(MRangeOptions {
+            range,
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse,
+            exclude_empty: value.exclude_empty,
+            tags: vec![],
+        })
+    }
+}
+
+impl TryFrom<MultiRangeRequest> for MRangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: MultiRangeRequest) -> Result<Self, Self::Error> {
+        let range: RangeOptions = if let Some(r) = value.range {
+            r.try_into()?
+        } else {
+            return Err(ValkeyError::Str("TSDB: range is required"));
+        };
+        let filters = deserialize_matchers_list(Some(value.filters))?;
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels;
+
+        let grouping: Option<RangeGroupingOptions> = match value.grouping {
+            Some(group) => Some(group.try_into()?),
+            None => None,
+        };
+
+        let is_reverse = value.is_reverse;
+
+        Ok(MRangeOptions {
+            range,
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse,
+            exclude_empty: value.exclude_empty,
+            tags: vec![],
+        })
+    }
+}
+
+impl TryFrom<&MRangeOptions> for MultiRangeRequest {
+    type Error = ValkeyError;
+    fn try_from(value: &MRangeOptions) -> Result<Self, Self::Error> {
+        let range: RangeRequest = (&value.range).into();
+        let filters: Vec<FanoutSeriesSelector> = serialize_matchers_list(&value.filters)?;
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels.clone();
+
+        let grouping: Option<FanoutGroupingOptions> =
+            value.grouping.as_ref().map(|group| group.into());
+
+        Ok(MultiRangeRequest {
+            range: Some(range),
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse: value.is_reverse,
+            apply_aggregation: false,
+            apply_group_reduce: false,
+            apply_count: false,
+            exclude_empty: value.exclude_empty,
+        })
+    }
+}
+
+impl TryFrom<MRangeOptions> for MultiRangeRequest {
+    type Error = ValkeyError;
+    fn try_from(value: MRangeOptions) -> Result<Self, Self::Error> {
+        let range: RangeRequest = (&value.range).into();
+        let filters: Vec<FanoutSeriesSelector> = serialize_matchers_list(&value.filters)?;
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels;
+
+        let grouping: Option<FanoutGroupingOptions> = value.grouping.map(|group| group.into());
+
+        Ok(MultiRangeRequest {
+            range: Some(range),
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse: value.is_reverse,
+            apply_aggregation: false,
+            apply_group_reduce: false,
+            apply_count: false,
+            exclude_empty: value.exclude_empty,
+        })
+    }
+}
+
+impl From<&ReducePartialState> for PartialState {
+    fn from(value: &ReducePartialState) -> Self {
+        Self {
+            count: value.count,
+            acc1: value.acc1,
+            acc2: value.acc2,
+            acc1_c: value.acc1_compensation,
+            ts: value.ts,
+        }
+    }
+}
+
+impl From<PartialState> for ReducePartialState {
+    fn from(value: PartialState) -> Self {
+        Self {
+            count: value.count,
+            acc1: value.acc1,
+            acc2: value.acc2,
+            acc1_compensation: value.acc1_c,
+            ts: value.ts,
+        }
+    }
+}
+
+impl From<GroupPartialsResult> for GroupPartialSeries {
+    fn from(value: GroupPartialsResult) -> Self {
+        Self {
+            group_label_value: value.group_label_value,
+            source_keys: value.source_keys,
+            bucket_timestamps: value.timestamps,
+            states: value.states.into_iter().map(Into::into).collect(),
+            column_count: value.column_count as u32,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aggregators::BucketAlignment;
+    use crate::aggregators::BucketTimestamp;
+    use crate::series::request_types::AggregationType;
+
+    #[test]
+    fn test_aggregation_options_to_fanout_full() {
+        let options = AggregationOptions {
+            aggregations: smallvec::smallvec![
+                AggregatorConfig::new(
+                    AggregationType::CountIf,
+                    Some(ValueComparisonFilter {
+                        operator: ComparisonOperator::GreaterThan,
+                        value: 10.0,
+                    }),
+                )
+                .unwrap()
+            ],
+            bucket_duration: 1000,
+            timestamp_output: BucketTimestamp::Start,
+            alignment: BucketAlignment::Timestamp(555),
+            report_empty: true,
+        };
+
+        let fanout: FanoutAggregationOptions = options.into();
+
+        assert_eq!(fanout.aggregators.len(), 1);
+        let f_aggr = fanout.aggregators.into_iter().next().unwrap();
+        assert_eq!(
+            f_aggr.aggregator_type,
+            FanoutAggregationType::CountIf as i32
+        );
+        let filter = f_aggr.value_filter.unwrap();
+        assert_eq!(filter.operator, FanoutComparisonOperator::Gt as i32);
+        assert_eq!(filter.value, 10.0);
+        assert_eq!(fanout.bucket_duration, 1000);
+        assert_eq!(
+            fanout.bucket_timestamp_type,
+            BucketTimestampType::Start as i32
+        );
+        assert_eq!(
+            fanout.bucket_alignment,
+            BucketAlignmentType::Timestamp as i32
+        );
+        assert_eq!(fanout.alignment_timestamp, 555);
+        assert!(fanout.report_empty);
+        assert_eq!(filter.operator, FanoutComparisonOperator::Gt as i32);
+        assert_eq!(filter.value, 10.0);
+    }
+
+    #[test]
+    fn test_aggregation_options_multi_round_trip() {
+        // multi list survives the round trip in column order
+        let options = AggregationOptions {
+            aggregations: smallvec::smallvec![
+                AggregationType::Avg.into(),
+                AggregationType::Max.into(),
+                AggregationType::Count.into(),
+            ],
+            bucket_duration: 500,
+            timestamp_output: BucketTimestamp::Start,
+            alignment: BucketAlignment::Default,
+            report_empty: false,
+        };
+
+        let fanout: FanoutAggregationOptions = (&options).into();
+        assert_eq!(fanout.aggregators.len(), 3);
+        assert_eq!(
+            fanout.aggregators[0].aggregator_type,
+            FanoutAggregationType::Avg as i32
+        );
+
+        let back: AggregationOptions = fanout.try_into().unwrap();
+        assert_eq!(back, options);
+    }
+
+    #[test]
+    fn test_aggregation_options_single_decode() {
+        // a single-aggregator query is a one-element list
+        let fanout = FanoutAggregationOptions {
+            aggregators: vec![FanoutAggregationType::Sum.into()],
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+        let options: AggregationOptions = fanout.try_into().unwrap();
+        assert!(!options.is_multi());
+        assert_eq!(options.primary().aggregation_type(), AggregationType::Sum);
+
+        // empty list => error
+        let fanout = FanoutAggregationOptions {
+            aggregators: vec![],
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+        let result: Result<AggregationOptions, _> = fanout.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregation_options_wire_validation() {
+        let make = |aggregators: Vec<FanoutAggregatorConfig>| FanoutAggregationOptions {
+            aggregators,
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+
+        // duplicates from the wire are rejected
+        let dup = make(vec![
+            FanoutAggregationType::Avg.into(),
+            FanoutAggregationType::Avg.into(),
+        ]);
+        let result: Result<AggregationOptions, _> = dup.try_into();
+        assert!(result.is_err());
+
+        // > MAX_AGGREGATIONS rejected
+        let too_many = make(vec![
+            FanoutAggregationType::Avg.into();
+            MAX_AGGREGATIONS + 1
+        ]);
+        let result: Result<AggregationOptions, _> = too_many.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fanout_to_aggregation_options_alignments() {
+        let alignments = vec![
+            (BucketAlignmentType::Default, BucketAlignment::Default),
+            (BucketAlignmentType::AlignStart, BucketAlignment::Start),
+            (BucketAlignmentType::AlignEnd, BucketAlignment::End),
+        ];
+
+        for (fanout_type, expected) in alignments {
+            let aggregator = FanoutAggregatorConfig {
+                aggregator_type: FanoutAggregationType::Max as i32,
+                value_filter: None,
+            };
+            let fanout = FanoutAggregationOptions {
+                aggregators: vec![aggregator],
+                bucket_duration: 10,
+                bucket_timestamp_type: BucketTimestampType::End as i32,
+                bucket_alignment: fanout_type as i32,
+                alignment_timestamp: 0,
+                report_empty: false,
+            };
+
+            let options: AggregationOptions = fanout.try_into().unwrap();
+            assert_eq!(options.alignment, expected);
+        }
+    }
+
+    #[test]
+    fn test_fanout_to_aggregation_options_invalid_duration() {
+        let aggregator = FanoutAggregatorConfig {
+            aggregator_type: FanoutAggregationType::Count as i32,
+            value_filter: None,
+        };
+        let fanout = FanoutAggregationOptions {
+            aggregators: vec![aggregator],
+            bucket_duration: 0, // Invalid duration
+            bucket_timestamp_type: BucketTimestampType::Mid as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+
+        let result: Result<AggregationOptions, ValkeyError> = fanout.try_into();
+        assert!(result.is_err());
+        if let Err(ValkeyError::Str(s)) = result {
+            assert!(s.contains("bucket duration must be positive"));
+        }
+    }
+
+    #[test]
+    fn test_range_request_to_range_options_full() {
+        let request = RangeRequest {
+            range: Some(DateRange {
+                start: 1000,
+                end: 2000,
+            }),
+            count: 10,
+            aggregation: Some(FanoutAggregationOptions {
+                aggregators: vec![FanoutAggregationType::Avg.into()],
+                bucket_duration: 60,
+                bucket_timestamp_type: BucketTimestampType::Mid.into(),
+                bucket_alignment: BucketAlignmentType::AlignStart.into(),
+                alignment_timestamp: 0,
+                report_empty: true,
+            }),
+            timestamp_filter: vec![1050, 1100],
+            value_filter: Some(FanoutValueFilter {
+                min: 10.5,
+                max: 20.5,
+            }),
+            latest: true,
+        };
+
+        let options: RangeOptions = (&request)
+            .try_into()
+            .expect("Should convert to RangeOptions");
+
+        assert_eq!(options.date_range.get_timestamps(None), (1000, 2000));
+        assert_eq!(options.count, Some(10));
+
+        let agg = options.aggregation.unwrap();
+        assert_eq!(agg.primary().aggregation_type(), AggregationType::Avg);
+        assert_eq!(agg.bucket_duration, 60);
+        assert_eq!(agg.timestamp_output, BucketTimestamp::Mid);
+        assert_eq!(agg.alignment, BucketAlignment::Start);
+        assert!(agg.report_empty);
+
+        assert_eq!(options.timestamp_filter, Some(vec![1050, 1100]));
+        let val_filter = options.value_filter.unwrap();
+        assert_eq!(val_filter.min, 10.5);
+        assert_eq!(val_filter.max, 20.5);
+        assert!(options.latest);
+    }
+
+    #[test]
+    fn test_range_options_to_range_request_minimal() {
+        let options = RangeOptions {
+            date_range: TimestampRange::from_timestamps(500, 1500).unwrap(),
+            count: None,
+            aggregation: None,
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let request: RangeRequest = (&options).into();
+
+        assert_eq!(request.range.unwrap().start, 500);
+        assert_eq!(request.range.unwrap().end, 1500);
+        assert_eq!(request.count, 0);
+        assert!(request.aggregation.is_none());
+        assert!(request.timestamp_filter.is_empty());
+        assert!(request.value_filter.is_none());
+        assert!(!request.latest);
+    }
+
+    #[test]
+    fn test_range_request_missing_range_fails() {
+        let request = RangeRequest {
+            range: None,
+            ..Default::default()
+        };
+
+        let result: Result<RangeOptions, ValkeyError> = (&request).try_into();
+        assert!(result.is_err());
+        if let Err(ValkeyError::Str(s)) = result {
+            assert!(s.contains("date range is required"));
+        }
+    }
+
+    #[test]
+    fn test_round_trip_conversion() {
+        let aggregation = AggregatorConfig::new(
+            AggregationType::CountIf,
+            Some(ValueComparisonFilter {
+                operator: ComparisonOperator::LessThan,
+                value: 50.0,
+            }),
+        )
+        .unwrap();
+        let original_options = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            count: Some(5),
+            aggregation: Some(AggregationOptions {
+                aggregations: smallvec::smallvec![aggregation],
+                bucket_duration: 10,
+                timestamp_output: BucketTimestamp::End,
+                alignment: BucketAlignment::Timestamp(123),
+                report_empty: false,
+            }),
+            timestamp_filter: None,
+            value_filter: Some(ValueFilter { min: 1.0, max: 2.0 }),
+            latest: false,
+        };
+
+        let request: RangeRequest = (&original_options).into();
+        let back_to_options: RangeOptions = (&request).try_into().expect("Round trip failed");
+
+        assert_eq!(
+            back_to_options.date_range.get_timestamps(None),
+            original_options.date_range.get_timestamps(None)
+        );
+        assert_eq!(back_to_options.count, original_options.count);
+        assert_eq!(
+            back_to_options.aggregation.unwrap().alignment,
+            BucketAlignment::Timestamp(123)
+        );
+        assert_eq!(back_to_options.value_filter.unwrap().min, 1.0);
+        assert_eq!(back_to_options.value_filter.unwrap().max, 2.0);
+    }
+
+    // A peer that omits an enum field sends nothing, and proto3 decodes the
+    // absent field as 0 — the `_UNSPECIFIED` variant. These conversions run in
+    // the fanout handlers, which are called from the module's C entry points,
+    // so each of these cases must yield an error: a panic there would unwind
+    // into `extern "C"` and abort the whole process.
+    #[test]
+    fn test_unspecified_aggregation_type_is_rejected() {
+        let err = AggregatorConfig::try_from(FanoutAggregatorConfig::default());
+        assert!(err.is_err(), "unspecified aggregator_type must be rejected");
+    }
+
+    #[test]
+    fn test_unspecified_comparison_operator_is_rejected() {
+        let err = ValueComparisonFilter::try_from(FanoutValueComparisonFilter::default());
+        assert!(err.is_err(), "unspecified operator must be rejected");
+    }
+
+    #[test]
+    fn test_unknown_comparison_operator_discriminant_is_rejected() {
+        // Not a defined variant at all, so the i32 -> enum step fails first.
+        let filter = FanoutValueComparisonFilter {
+            operator: 9999,
+            value: 1.0,
+        };
+        assert!(ValueComparisonFilter::try_from(filter).is_err());
+    }
+
+    #[test]
+    fn test_unspecified_bucket_timestamp_and_alignment_are_rejected() {
+        assert!(BucketTimestamp::try_from(BucketTimestampType::Unspecified).is_err());
+        assert!(BucketAlignment::try_from(BucketAlignmentType::Unspecified).is_err());
+    }
+
+    #[test]
+    fn test_unspecified_compression_type_is_rejected() {
+        assert!(ChunkEncoding::try_from(FanoutChunkEncoding::Unspecified).is_err());
+    }
+
+    #[test]
+    fn test_inverted_date_range_selects_no_samples() {
+        let inverted = DateRange {
+            start: 5_000,
+            end: 1_000,
+        };
+        let range = TimestampRange::try_from(inverted).expect("start > end is not an error");
+        assert!(
+            range.is_inverted(),
+            "start > end must be tagged inverted, matching RedisTimeSeries' empty-result semantics"
+        );
+    }
+}

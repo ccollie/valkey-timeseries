@@ -1,10 +1,11 @@
-use crate::commands::fanout::LabelSearchType;
+use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::label_search_utils::run_label_search;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
 // see https://github.com/tcp13equals2/proposals/blob/c56fb4b25f1151de148f58f0a51799c339185922/proposals/0074-new-labels-values-api.md
 
+acl_categories!(TS_LABELVALUES, "ts.labelvalues", "read timeseries");
 /// TS.LABELVALUES label
 /// [SEARCH term [term...]]
 /// [FUZZY_THRESHOLD 0.0..1.0]
@@ -14,9 +15,10 @@ use valkey_module::{Context, ValkeyResult, ValkeyString};
 /// [SORTBY <value|score|cardinality> [ASC|DESC]]
 /// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
 /// [LIMIT limit]
+/// [HASHTAG hash_tag,...]
 /// [FILTER seriesMatcher...]
 #[valkey_module_macros::command({
-    name: "TS.LABELVALUES",
+    name: "ts.labelvalues",
     flags: [ReadOnly],
     summary: "Return the values of a label across time series, optionally filtered.",
     complexity: "O(N) where N is the number of values for the label.",

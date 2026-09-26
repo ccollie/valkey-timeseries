@@ -1,7 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, ESDOutlierOptions, EWMA_DEFAULT_ALPHA, MADAnomalyOptions, MethodInfo,
-    RCF_DEFAULT_NUM_TREES, RCF_DEFAULT_SAMPLE_SIZE, RCFOptions, RCFThreshold,
+    AnomalyResult, ESDOutlierOptions, EWMA_DEFAULT_ALPHA, EsdEstimator, MADAnomalyOptions,
+    MethodInfo, RCF_DEFAULT_NUM_TREES, RCF_DEFAULT_SAMPLE_SIZE, RCFOptions, RCFThreshold,
     SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::analysis::seasonality::Seasonality;
@@ -14,13 +14,25 @@ use crate::common::replies::{
     ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
 };
 use crate::common::threads::spawn;
-use crate::error_consts;
 use crate::series::{TimestampRange, get_timeseries};
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
+
+// Keep the RCF resource requirements bounded before they reach krcf. In
+// particular, krcf allocates storage proportional to sample_size * num_trees
+// and shingle_size increases the dimensionality of every point.
+const MAX_RCF_NUM_TREES: usize = 512;
+const MAX_RCF_SAMPLE_SIZE: usize = 4096;
+const MAX_RCF_SHINGLE_SIZE: usize = 128;
+
+// krcf's storage is proportional to num_trees * sample_size * shingle_size
+// (point store plus per-tree node stores). Each individual option is bounded
+// above, but the maximum combination (512 * 4096 * 128 ~= 268M points) still
+// drives multi-gigabyte allocations, so also cap the product directly.
+const MAX_RCF_COMBINED_BUDGET: u128 = 16 * 1024 * 1024;
 
 static COMMAND_OPTIONS: [CommandArgToken; 4] = [
     CommandArgToken::Direction,
@@ -35,21 +47,22 @@ enum OutputFormat {
     Cleaned,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ZScoreType {
     Standard,
     Modified,
     Smoothed,
 }
 
+acl_categories!(TS_OUTLIERS, "ts.outliers", "read timeseries");
 /// TS.OUTLIERS key fromTimestamp toTimestamp
 ///     METHOD <method> [method-specific-options]
 ///     [OUTPUT <full|simple|cleaned>]
 ///     [DIRECTION <positive|negative|both>]
 ///     [SEASONALITY <period1> [period2] ...]
 #[valkey_module_macros::command({
-    name: "TS.OUTLIERS",
-    flags: [ReadOnly, DenyOOM],
+    name: "ts.outliers",
+    flags: [ReadOnly],
     summary: "Detect outlier samples in a time series over a timestamp range.",
     complexity: "O(N) where N is the number of samples in the requested range.",
     since: "1.0.0",
@@ -127,16 +140,13 @@ fn process_request(
     anomaly_direction: AnomalyDirection,
     output_format: OutputFormat,
 ) -> ValkeyResult {
-    let key = ctx.create_string(key);
-
-    let samples = match get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false) {
-        Ok(Some(series)) => {
-            let (start, end) = date_range.get_series_range(&series, None, false);
-            series.get_range(start, end)
-        }
-        Ok(None) => return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
-        Err(e) => return Err(e),
+    let samples = {
+        let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
+        let (start, end) = date_range.get_series_range(&series, None, false);
+        series.get_range(start, end)
     };
+
+    validate_rcf_options(&options, samples.len())?;
 
     if !should_run_in_background(samples.len(), options.method()) {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
@@ -319,11 +329,14 @@ fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOp
     let mut zscore_type: Option<ZScoreType> = None;
 
     if let Some(arg) = args.peek() {
-        zscore_type = hashify::tiny_map_ignore_case!(arg.as_slice(),
+        zscore_type = hashify::map_ignore_case!(
+            arg.as_slice(),
+            ZScoreType,
             "STANDARD" => ZScoreType::Standard,
             "MODIFIED" => ZScoreType::Modified,
             "SMOOTHED" => ZScoreType::Smoothed
-        );
+        )
+        .copied();
         if zscore_type.is_some() {
             args.next();
         }
@@ -337,13 +350,13 @@ fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOp
         let arg_slice = arg.as_slice();
         hashify::fnc_map_ignore_case!(arg_slice,
             "THRESHOLD" => {
-                threshold = Some(parse_single_value(args, "THRESHOLD")?);
+                threshold = Some(parse_positive_value(args, "THRESHOLD")?);
             },
             "INFLUENCE" => {
-                influence = Some(parse_single_value(args, "INFLUENCE")?);
+                influence = Some(parse_unit_interval_value(args, "INFLUENCE")?);
             },
             "LAG" => {
-                lag = Some(parse_single_value(args, "LAG")? as usize);
+                lag = Some(parse_positive_value(args, "LAG")? as usize);
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown zscore option {arg}")));
@@ -397,13 +410,13 @@ fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
         let arg_slice = arg.as_slice();
         hashify::fnc_map_ignore_case!(arg_slice,
             "THRESHOLD" => {
-                smoothed_options.threshold = parse_single_value(args, "THRESHOLD")?;
+                smoothed_options.threshold = parse_positive_value(args, "THRESHOLD")?;
             },
             "INFLUENCE" => {
-                smoothed_options.influence = parse_single_value(args, "INFLUENCE")?;
+                smoothed_options.influence = parse_unit_interval_value(args, "INFLUENCE")?;
             },
             "LAG" => {
-                smoothed_options.lag = parse_single_value(args, "LAG")? as usize;
+                smoothed_options.lag = parse_positive_value(args, "LAG")? as usize;
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown smoothed zscore option {arg}")));
@@ -434,7 +447,7 @@ fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
                  mad_options.estimator = estimator_arg.parse()?;
             },
             "THRESHOLD" => {
-                 mad_options.k = parse_single_value(args, "THRESHOLD")?;
+                 mad_options.k = parse_positive_value(args, "THRESHOLD")?;
             },
             _ => {
                  return Err(ValkeyError::String(format!("TSDB: unknown Mad option {arg}")));
@@ -467,7 +480,7 @@ fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<Anoma
                 double_mad_options.estimator = estimator_arg.parse()?;
             },
             "THRESHOLD" => {
-                double_mad_options.k = parse_single_value(args, "THRESHOLD")?;
+                double_mad_options.k = parse_positive_value(args, "THRESHOLD")?;
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown Double Mad option {arg}")));
@@ -501,20 +514,37 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
         let arg_slice = arg.as_slice();
         hashify::fnc_map_ignore_case!(arg_slice,
             "NUM_TREES" => {
-                rcf_options.num_trees = Some(parse_single_value(args, "NUM_TREES")? as usize);
+                rcf_options.num_trees = Some(parse_bounded_integer(
+                    args,
+                    "NUM_TREES",
+                    1,
+                    MAX_RCF_NUM_TREES,
+                )?);
             },
             "SAMPLE_SIZE" => {
-                rcf_options.sample_size = Some(parse_single_value(args, "SAMPLE_SIZE")? as usize);
+                rcf_options.sample_size = Some(parse_bounded_integer(
+                    args,
+                    "SAMPLE_SIZE",
+                    2,
+                    MAX_RCF_SAMPLE_SIZE,
+                )?);
             },
             "THRESHOLD" => {
-                let val = parse_single_value(args, "THRESHOLD")?;
+                // Positivity is `RCFThreshold::std_dev`'s job, not this parser's:
+                // it produces the specific "std_dev threshold must be positive"
+                // message, whereas a generic pre-check here would shadow it with
+                // a less informative one for every out-of-range value.
+                let val = parse_finite_value(args, "THRESHOLD")?;
                 rcf_options.threshold = Some(
                     RCFThreshold::std_dev(val)
                         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
                 );
             },
             "CONTAMINATION" => {
-                let val = parse_single_value(args, "CONTAMINATION")?;
+                // Same reasoning as THRESHOLD above: `RCFThreshold::contamination`
+                // validates the full `(0..0.5]` range and reports it, so this
+                // parser only needs to guard against non-finite input.
+                let val = parse_finite_value(args, "CONTAMINATION")?;
                 rcf_options.threshold = Some(
                     RCFThreshold::contamination(val)
                         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
@@ -524,10 +554,15 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
                 rcf_options.time_decay = Some(parse_single_value(args, "DECAY")?);
             },
             "SHINGLE_SIZE" => {
-                rcf_options.shingle_size = Some(parse_single_value(args, "SHINGLE_SIZE")? as usize);
+                rcf_options.shingle_size = Some(parse_bounded_integer(
+                    args,
+                    "SHINGLE_SIZE",
+                    1,
+                    MAX_RCF_SHINGLE_SIZE,
+                )?);
             },
             "OUTPUT_AFTER" => {
-                rcf_options.output_after = Some(parse_single_value(args, "OUTPUT_AFTER")? as usize);
+                rcf_options.output_after = Some(parse_positive_value(args, "OUTPUT_AFTER")? as usize);
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown RCF option {arg}")));
@@ -548,22 +583,28 @@ fn parse_esd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 
     let mut esd_options = ESDOutlierOptions::default();
 
-    while let Some(arg) = args.next() {
-        let arg_slice = arg.as_slice();
-
-        if is_command_option(arg_slice) {
+    // Peek before consuming: a trailing command option (OUTPUT, DIRECTION, ...)
+    // belongs to the caller's loop. Consuming it here and then breaking would
+    // swallow the token and leave its argument to be parsed as a top-level one.
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
             break;
         }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
 
         hashify::fnc_map_ignore_case!(arg_slice,
            "ALPHA" => {
-                esd_options.alpha = parse_single_value(args, "ALPHA")?;
+                esd_options.alpha = parse_esd_alpha(args)?;
             },
             "HYBRID" => {
-                esd_options.hybrid = true;
+                esd_options.estimator = EsdEstimator::Hybrid;
+            },
+            "CLASSIC" => {
+                esd_options.estimator = EsdEstimator::Classic;
             },
             "MAX_OUTLIERS" => {
-                esd_options.max_outliers = Some(parse_single_value(args, "MAX_OUTLIERS")? as usize);
+                esd_options.max_outliers = Some(parse_positive_value(args, "MAX_OUTLIERS")? as usize);
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown ESD option {arg}")));
@@ -581,10 +622,64 @@ fn parse_optional_threshold_option(args: &mut CommandArgIterator) -> ValkeyResul
         && arg.eq_ignore_ascii_case(b"threshold")
     {
         let _ = args.next();
-        Ok(Some(parse_single_value(args, "THRESHOLD")?))
+        Ok(Some(parse_positive_value(args, "THRESHOLD")?))
     } else {
         Ok(None)
     }
+}
+
+fn parse_bounded_integer(
+    iter: &mut CommandArgIterator,
+    option_name: &str,
+    min: usize,
+    max: usize,
+) -> ValkeyResult<usize> {
+    let Ok(value_str) = iter.next_str() else {
+        return Err(ValkeyError::String(format!(
+            "TSDB: Missing value for {option_name}"
+        )));
+    };
+
+    let value = value_str.parse::<u64>().map_err(|_e| {
+        ValkeyError::String(format!(
+            "TSDB: invalid integer value for {option_name}: {value_str}"
+        ))
+    })?;
+
+    if value < min as u64 || value > max as u64 {
+        return Err(ValkeyError::String(format!(
+            "TSDB: {option_name} must be between {min} and {max}"
+        )));
+    }
+
+    Ok(value as usize)
+}
+
+fn validate_rcf_options(options: &AnomalyOptions, sample_count: usize) -> ValkeyResult<()> {
+    let AnomalyDetectionMethodOptions::Rcf(rcf_options) = &options.options else {
+        return Ok(());
+    };
+
+    if let Some(shingle_size) = rcf_options.shingle_size
+        && shingle_size > sample_count
+    {
+        return Err(ValkeyError::String(format!(
+            "TSDB: SHINGLE_SIZE ({shingle_size}) cannot exceed the number of samples ({sample_count})"
+        )));
+    }
+
+    let num_trees = rcf_options.num_trees.unwrap_or(RCF_DEFAULT_NUM_TREES);
+    let sample_size = rcf_options.sample_size.unwrap_or(RCF_DEFAULT_SAMPLE_SIZE);
+    let shingle_size = rcf_options.shingle_size.unwrap_or(1);
+
+    let combined = (num_trees as u128) * (sample_size as u128) * (shingle_size as u128);
+    if combined > MAX_RCF_COMBINED_BUDGET {
+        return Err(ValkeyError::String(format!(
+            "TSDB: combined NUM_TREES * SAMPLE_SIZE * SHINGLE_SIZE ({num_trees} * {sample_size} * {shingle_size} = {combined}) exceeds the maximum allowed budget of {MAX_RCF_COMBINED_BUDGET}"
+        )));
+    }
+
+    Ok(())
 }
 
 fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
@@ -599,6 +694,60 @@ fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> Valke
             "TSDB: invalid value for {option_name}: {value_str}"
         ))
     })
+}
+
+fn parse_positive_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
+    let value = parse_finite_value(iter, option_name)?;
+    if value <= 0.0 {
+        return Err(ValkeyError::String(format!(
+            "TSDB: {option_name} must be positive"
+        )));
+    }
+    Ok(value)
+}
+
+/// ESD alpha is a statistical significance level, whose valid range is the
+/// open unit interval. In particular, accepting values above one can produce
+/// an invalid quantile probability in the ESD detector.
+fn parse_esd_alpha(iter: &mut CommandArgIterator) -> ValkeyResult<f64> {
+    let value = parse_finite_value(iter, "ALPHA")?;
+    if !(0.0..1.0).contains(&value) {
+        return Err(ValkeyError::Str(
+            "TSDB: ALPHA must be greater than 0 and less than 1",
+        ));
+    }
+    Ok(value)
+}
+
+/// Rejects NaN/infinite input but leaves range validation to the caller.
+/// For options backed by a constructor with its own range check (e.g.
+/// `RCFThreshold::std_dev`/`::contamination`), pre-filtering here for
+/// positivity would shadow that constructor's more specific error message.
+fn parse_finite_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
+    let value = parse_single_value(iter, option_name)?;
+    if !value.is_finite() {
+        return Err(ValkeyError::String(format!(
+            "TSDB: {option_name} must be finite"
+        )));
+    }
+    Ok(value)
+}
+
+/// `INFLUENCE` is a mixing weight — `influence * value + (1 - influence) *
+/// prev_value` — so anything outside `[0, 1]` turns that blend into an
+/// extrapolation rather than an interpolation. `0` (no influence) is valid and
+/// meaningful, which rules out reusing `parse_positive_value`.
+fn parse_unit_interval_value(
+    iter: &mut CommandArgIterator,
+    option_name: &str,
+) -> ValkeyResult<f64> {
+    let value = parse_single_value(iter, option_name)?;
+    if !(0.0..=1.0).contains(&value) {
+        return Err(ValkeyError::String(format!(
+            "TSDB: {option_name} must be between 0 and 1 inclusive"
+        )));
+    }
+    Ok(value)
 }
 
 fn send_reply(
@@ -946,7 +1095,7 @@ fn reply_with_parameters(
             ctx.reply_with_string("alpha");
             ctx.reply_with_double(o.alpha);
             ctx.reply_with_string("hybrid");
-            ctx.reply_with_bool(o.hybrid);
+            ctx.reply_with_bool(o.estimator.is_hybrid());
             if let Some(max) = o.max_outliers {
                 ctx.reply_with_string("max_outliers");
                 ctx.reply_with_integer(max as i64);
@@ -955,5 +1104,41 @@ fn reply_with_parameters(
         AnomalyDetectionMethodOptions::Cusum => {
             ctx.reply_with_map(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rcf_options_rejects_max_combination() {
+        let options = AnomalyOptions {
+            options: AnomalyDetectionMethodOptions::Rcf(RCFOptions {
+                num_trees: Some(MAX_RCF_NUM_TREES),
+                sample_size: Some(MAX_RCF_SAMPLE_SIZE),
+                shingle_size: Some(MAX_RCF_SHINGLE_SIZE),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = validate_rcf_options(&options, MAX_RCF_SAMPLE_SIZE)
+            .expect_err("maximum NUM_TREES/SAMPLE_SIZE/SHINGLE_SIZE combination must be rejected");
+        assert!(
+            err.to_string().contains("combined"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rcf_options_accepts_default_combination() {
+        let options = AnomalyOptions {
+            options: AnomalyDetectionMethodOptions::Rcf(RCFOptions::default()),
+            ..Default::default()
+        };
+
+        validate_rcf_options(&options, RCF_DEFAULT_SAMPLE_SIZE)
+            .expect("default RCF option combination must be within the budget");
     }
 }

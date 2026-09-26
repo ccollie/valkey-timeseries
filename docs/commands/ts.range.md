@@ -10,7 +10,7 @@ TS.RANGE key fromTimestamp toTimestamp
   [FILTER_BY_TS timestamp ...]
   [FILTER_BY_VALUE min max]
   [COUNT count]
-  [[ALIGN align] AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
+  [[ALIGN align] AGGREGATION aggregatorop value[,aggregatorop value...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
 ```
 
 ---
@@ -49,7 +49,7 @@ Include only samples with values in `[min, max]`. Both bounds are inclusive. App
 Limit output to the first `count` samples or buckets. When used with aggregation, limits bucket
 count (not samples per bucket).
 </details>
-<details open><summary><code>AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration</code></summary>
+<details open><summary><code>AGGREGATION aggregatorop value[,aggregatorop value...] bucketDuration</code></summary>
 Aggregate raw samples into fixed-size time buckets. See [Aggregators](#aggregators) for supported aggregation functions.
 
 `aggregator` may be a comma-separated list of up to 16 distinct aggregators (e.g. `avg,max,count`).
@@ -59,12 +59,12 @@ aggregator, in the order specified. With a single aggregator the output shape is
 (`[timestamp, value]`).
 
 A [filtered aggregator](#filtered-aggregators) (`countif`, `sumif`, `all`, `any`, `none`, `share`)
-**requires** an inline condition — `aggregator(op value)`, e.g. `countif(>5)` — with no spaces
-inside the parentheses since it is a single argument token; omitting it is an error. `count` and
-`sum` optionally accept the same inline form to filter which samples they count/sum. Any other
+**requires** an inline condition — `aggregatorop value`, e.g. `countif>5` — with no separator
+since `aggregator` and its condition form a single argument token; omitting it is an error. `count`
+and `sum` optionally accept the same inline form to filter which samples they count/sum. Any other
 aggregator (`avg`, `max`, ...) does not accept a condition at all; attaching one is an error.
 Different elements in the same list can use different conditions, e.g. `AGGREGATION
-countif(>5),sumif(<=2),avg 60000` counts samples over 5, sums samples at or under 2, and averages
+countif>5,sumif<=2,avg 60000` counts samples over 5, sums samples at or under 2, and averages
 everything — three independent conditions in a single clause.
 </details>
 <details open><summary><code>ALIGN align</code></summary> 
@@ -84,10 +84,10 @@ Control bucket alignment:
 </details>
 ### Aggregation
 
-- **`AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration`** — Aggregate raw samples into fixed-size time buckets
+- **`AGGREGATION aggregator[op value][,aggregator[op value]...] bucketDuration`** — Aggregate raw samples into fixed-size time buckets
   - **`aggregator`** — Aggregation function(s) to apply (see [Aggregators](#aggregators)); a
     comma-separated list produces one output column per aggregator, in the order specified
-  - **`(op value)`** — Inline comparison condition for a filtered aggregator, e.g. `countif(>5)`.
+  - **`op value`** — Inline comparison condition for a filtered aggregator, e.g. `countif>5`.
     `op` is one of `>`, `<`, `>=`, `<=`, `==`, `!=`; `value` is the number to compare against.
     Only samples satisfying the condition are included in that aggregator's computation.
   - **`bucketDuration`** — Bucket size in milliseconds (must be positive)
@@ -127,7 +127,7 @@ Control bucket alignment:
 
 ### Filtered Aggregators
 
-> These require an inline `(op value)` condition, e.g. `countif(>5)`; omitting it is an error.
+> These require an inline `op value` condition, e.g. `countif>5`; omitting it is an error.
 
 | Aggregator | Description                                           | Empty Bucket Value |
 |------------|-------------------------------------------------------|--------------------|
@@ -138,7 +138,7 @@ Control bucket alignment:
 | `any`      | `1.0` if any sample matches, `0.0` otherwise          | `NaN`              |
 | `none`     | `1.0` if no samples match, `0.0` otherwise            | `NaN`              |
 
-`count` and `sum` also accept an *optional* inline condition (`count(>5)`, `sum(<=2)`) to count or
+`count` and `sum` also accept an *optional* inline condition (`count>5`, `sum<=2`) to count or
 sum only matching samples; without one they operate over every sample in the bucket as usual.
 
 ---
@@ -234,7 +234,7 @@ TS.RANGE metrics 1609459200000 1609545600000
 Count samples over 90 and sum samples at or under 10, per hour, in one scan:
 
 ```
-TS.RANGE cpu:utilization 1609459200000 1609545600000 AGGREGATION countif(>90),sumif(<=10) 3600000
+TS.RANGE cpu:utilization 1609459200000 1609545600000 AGGREGATION countif>90,sumif<=10 3600000
 ```
 
 ---
@@ -242,7 +242,12 @@ TS.RANGE cpu:utilization 1609459200000 1609545600000 AGGREGATION countif(>90),su
 ## Behavior Notes
 
 - **Timestamp Inclusivity:** Both `fromTimestamp` and `toTimestamp` are inclusive
-- **Empty Buckets:** Omitted by default; use `EMPTY` to include them
+- **Empty Buckets:** Omitted by default; use `EMPTY` to include them. The buckets reported are
+  those the query window and the series' own data extent have in common, so an empty bucket
+  appears wherever data exists on both sides of it — including past the last sample inside the
+  window, when the series continues beyond it — and no bucket is reported before the series'
+  first sample or after its last, however wide the window is. `FILTER_BY_TS`/`FILTER_BY_VALUE`
+  narrow that extent to the samples they keep.
 - **Filtered Aggregators:** Condition filters are applied within each bucket after timestamp/value filters
 - **Reverse Queries:** `TS.REVRANGE` adjusts semantics of `FIRST`/`LAST` appropriately
 - **Bucket Boundaries:** Computed based on alignment and `bucketDuration`
@@ -268,5 +273,4 @@ TS.RANGE cpu:utilization 1609459200000 1609545600000 AGGREGATION countif(>90),su
 - `TS.MRANGE` — Query multiple time series at once
 - `TS.GET` — Get the latest sample only
 - `TS.ADD` — Add samples to a time series
-
 

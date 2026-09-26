@@ -1,4 +1,4 @@
-use super::utils::{normalize_unbounded_score, normalize_value};
+use super::utils::{normalize_evidence, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::{
@@ -41,6 +41,7 @@ impl Default for CusumOutlierDetector {
 }
 
 impl CusumOutlierDetector {
+    #[cfg(test)]
     pub fn with_params(mean: f64, std_dev: f64) -> Self {
         CusumOutlierDetector {
             target: mean,
@@ -50,6 +51,7 @@ impl CusumOutlierDetector {
         }
     }
 
+    #[cfg(test)]
     pub fn from_series(ts: &[f64]) -> Self {
         let (target, std_dev) = fit_baseline(ts);
         Self::with_params(target, std_dev)
@@ -93,8 +95,10 @@ impl CusumOutlierDetector {
             cusum_pos = f64::max(0.0, cusum_pos + deviation - self.k);
             cusum_neg = f64::max(0.0, cusum_neg - deviation - self.k);
 
-            // Already in sigmas; normalize straight to [0, 1].
-            let score = normalize_unbounded_score(f64::max(cusum_pos, cusum_neg));
+            // Both arms and the decision interval are in sigmas, so the
+            // accumulated drift is the evidence and `h` is the boundary it is
+            // tested against — the same comparison the signal below makes.
+            let score = normalize_evidence(f64::max(cusum_pos, cusum_neg), threshold);
             scores.push(score);
 
             let signal = if cusum_pos > threshold {
@@ -142,13 +146,6 @@ fn fit_baseline(ts: &[f64]) -> (f64, f64) {
     calculate_mean_std_dev(&ts[0..training_size])
 }
 
-/// Statistical Process Control (Spc) cusum anomaly detection
-pub(super) fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = CusumOutlierDetector::from_series(ts);
-    detector.train(ts)?;
-    detector.detect(ts)
-}
-
 /// CUSUM implements only [`AnomalyDetector`], not [`PointDetector`]. Its whole
 /// purpose is to accumulate small deviations until they add up, so a point is
 /// flagged because of the drift preceding it — a per-point test would answer a
@@ -156,10 +153,6 @@ pub(super) fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult
 impl AnomalyDetector for CusumOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::Cusum
-    }
-
-    fn model_info(&self) -> Option<MethodInfo> {
-        Some(CusumOutlierDetector::method_info(self))
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -172,6 +165,10 @@ impl AnomalyDetector for CusumOutlierDetector {
         Ok(())
     }
 
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(CusumOutlierDetector::method_info(self))
+    }
+
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         CusumOutlierDetector::detect(self, ts)
     }
@@ -180,6 +177,13 @@ impl AnomalyDetector for CusumOutlierDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Statistical Process Control (Spc) cusum anomaly detection
+    fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let mut detector = CusumOutlierDetector::from_series(ts);
+        detector.train(ts)?;
+        detector.detect(ts)
+    }
 
     #[test]
     fn test_detect_empty_series() {

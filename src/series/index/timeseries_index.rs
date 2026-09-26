@@ -6,17 +6,16 @@ use std::sync::{RwLock, RwLockReadGuard};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{Postings, PostingsBitmap};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::context::{get_acl_user, is_acl_enforced};
+use crate::common::context::create_key_string;
 use crate::common::hash::DeterministicHasher;
 use crate::common::sync::{read_lock, write_lock};
 use crate::error_consts;
-use crate::labels::filters::SeriesSelector;
+use crate::labels::filters::{LabelFilter, SeriesSelector};
 use crate::labels::{Label, SeriesLabel};
-use crate::series::acl::{clone_permissions, has_all_keys_permissions};
+use crate::series::acl::{KeyAccess, clone_permissions};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::Bitmap64;
-use std::mem::size_of;
 use std::ops::{Bound, ControlFlow, Deref, DerefMut};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -126,15 +125,23 @@ impl TimeSeriesIndex {
         inner.index_timeseries(ts, key);
     }
 
-    pub fn reindex_timeseries(&self, series: &TimeSeries, key: &[u8]) {
+    /// Move `series` from `old_key` to `new_key` (RENAME). The `unlink` callback has usually
+    /// retired `old_key` already, in which case only the insert is left to do.
+    pub fn reindex_timeseries(&self, series: &TimeSeries, old_key: &[u8], new_key: &[u8]) {
         let mut inner = write_lock(&self.inner);
-        inner.remove_timeseries(series);
-        inner.index_timeseries(series, key);
+        inner.remove_timeseries_for_key(series, old_key);
+        inner.index_timeseries(series, new_key);
     }
 
     pub fn remove_timeseries(&self, series: &TimeSeries) {
         let mut inner = write_lock(&self.inner);
         inner.remove_timeseries(series);
+    }
+
+    /// See [`Postings::remove_timeseries_for_key`].
+    pub fn remove_timeseries_for_key(&self, series: &TimeSeries, key: &[u8]) -> bool {
+        let mut inner = write_lock(&self.inner);
+        inner.remove_timeseries_for_key(series, key)
     }
 
     pub fn has_id(&self, id: SeriesRef) -> bool {
@@ -234,6 +241,11 @@ impl TimeSeriesIndex {
     /// ## Note
     /// If the user does not have permission to access all keys, an error is returned.
     /// Non-user clients (e.g., AOF client) bypass permission checks.
+    ///
+    /// Ids the postings still reference but that no longer map to a key are queued for the
+    /// stale-id sweep (see `Postings::mark_ids_as_stale` in `postings/stale.rs`) and
+    /// omitted from the result. That repair happens even when the call then fails the ACL
+    /// check, so a caller without access still leaves the index healthier than it found it.
     pub fn keys_for_selectors(
         &self,
         ctx: &Context,
@@ -241,92 +253,63 @@ impl TimeSeriesIndex {
         acl_permissions: Option<AclPermissions>,
     ) -> ValkeyResult<Vec<ValkeyString>> {
         let mut keys: Vec<ValkeyString> = Vec::new();
-        let mut missing_keys: Vec<SeriesRef> = Vec::new();
-
-        let postings = read_lock(&self.inner);
-
-        // get keys from ids
-        let ids = postings.postings_for_selectors(filters)?;
-
-        let mut expected_count = ids.cardinality() as usize;
-        if expected_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        keys.reserve(expected_count);
-
-        let current_user = get_acl_user(ctx);
-        let is_user_client = is_acl_enforced(ctx);
+        let mut dangling_ids: Vec<SeriesRef> = Vec::new();
+        let mut acl_denied = false;
 
         let cloned_perms = acl_permissions.as_ref().map(clone_permissions);
-        let can_access_all_keys = has_all_keys_permissions(ctx, &current_user, acl_permissions);
+        let access = acl_permissions.map(|perms| KeyAccess::new(ctx, perms));
 
-        for series_ref in ids.iter() {
-            let key = postings.get_key_by_id(series_ref);
-            match key {
-                Some(key) => {
-                    let real_key = ctx.create_string(key.as_ref());
-                    if is_user_client
-                        && !can_access_all_keys
-                        && let Some(perms) = &cloned_perms
-                    {
-                        // check if the user has permission for this key
-                        if ctx
-                            .acl_check_key_permission(&current_user, &real_key, perms)
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    keys.push(real_key);
+        // The read guard is confined to this block. Recording the dangling ids collected below
+        // needs the *write* lock, and `RwLock` is not reentrant: asking for it while this thread
+        // still held the read guard deadlocked the server -- and did so on the self-healing path,
+        // which only runs once the index is already inconsistent.
+        {
+            let postings = read_lock(&self.inner);
+
+            let ids = postings.postings_for_selectors(filters)?;
+            if ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            keys.reserve(ids.cardinality() as usize);
+
+            for series_ref in ids.iter() {
+                let Some(key) = postings.get_key_by_id(series_ref) else {
+                    // The postings reference a series whose id -> key mapping is gone. Queue
+                    // it for repair below; it cannot be returned to the caller either way.
+                    dangling_ids.push(series_ref);
+                    continue;
+                };
+                let real_key = create_key_string(ctx, key.as_ref());
+                if let Some(access) = &access
+                    && !access.allows(&real_key)
+                {
+                    acl_denied = true;
+                    break;
                 }
-                None => {
-                    // this should not happen, but in case it does, we log an error and continue
-                    missing_keys.push(series_ref);
-                }
+                keys.push(real_key);
             }
         }
 
-        expected_count -= missing_keys.len();
-
-        if keys.len() != expected_count {
-            // User does not have permission to read some keys, or some keys are missing
-            // Customize the error message accordingly
-            match cloned_perms {
-                Some(perms) => {
-                    if perms.contains(AclPermissions::DELETE) {
-                        return Err(ValkeyError::Str(
-                            error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
-                        ));
-                    }
-                    if perms.contains(AclPermissions::UPDATE) {
-                        return Err(ValkeyError::Str(
-                            error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
-                        ));
-                    }
-                    return Err(ValkeyError::Str(
-                        error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
-                    ));
-                }
-                None => {
-                    // todo: fix the problem here, for now we just log a warning
-                    ctx.log_warning("Index consistency: some keys are missing from the index.");
-                }
-            }
+        if !dangling_ids.is_empty() {
+            ctx.log_warning(&format!(
+                "Index consistency: {} series ids have no key and were queued for removal.",
+                dangling_ids.len()
+            ));
+            write_lock(&self.inner).mark_ids_as_stale(&dangling_ids);
         }
 
-        if !missing_keys.is_empty() {
-            let msg = format!(
-                "Index consistency: {} keys are missing from the index.",
-                missing_keys.len()
-            );
-            ctx.log_warning(&msg);
-
-            let mut postings = write_lock(&self.inner);
-
-            for missing_id in missing_keys {
-                postings.mark_id_as_stale(missing_id);
-            }
+        if acl_denied {
+            // The requested permission decides which "all keys" error the caller sees.
+            let all_keys_error = match cloned_perms {
+                Some(perms)
+                    if perms.contains(AclPermissions::DELETE)
+                        || perms.contains(AclPermissions::UPDATE) =>
+                {
+                    error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR
+                }
+                _ => error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+            };
+            return Err(ValkeyError::Str(all_keys_error));
         }
 
         Ok(keys)
@@ -358,7 +341,96 @@ impl TimeSeriesIndex {
         })
     }
 
+    /// The series matching every one of `selectors` (AND-ed together), or `None` when `selectors`
+    /// is empty and nothing is being restricted.
+    ///
+    /// The distinction matters to [`TimeSeriesIndex::stats_restricted`] and
+    /// [`TimeSeriesIndex::label_bitmaps_restricted`]: `None` means "the whole index", while
+    /// `Some(empty)` means "a filter was applied and nothing matched".
+    pub fn matching_postings(
+        &self,
+        selectors: &[SeriesSelector],
+    ) -> ValkeyResult<Option<PostingsBitmap>> {
+        if selectors.is_empty() {
+            return Ok(None);
+        }
+        let inner = read_lock(&self.inner);
+        Ok(Some(inner.postings_for_selectors(selectors)?.into_owned()))
+    }
+
+    /// Cardinality statistics over the whole index.
+    ///
+    /// `label` names the label whose values are broken out in `series_count_by_focus_label_value`
+    /// (the metric name when empty), and `limit` bounds the length of each top-N list.
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
+        self.collect_stats(None, label, limit)
+    }
+
+    /// [`TimeSeriesIndex::stats`], restricted to the series matching `filters` (AND-ed together).
+    ///
+    /// Every count reported is relative to the matching series alone — `series_count`,
+    /// `label_count` and `total_label_value_pairs` included — so a label carried only by
+    /// non-matching series does not appear at all. An empty `filters` slice matches everything and
+    /// is equivalent to [`TimeSeriesIndex::stats`].
+    pub fn stats_filtered(
+        &self,
+        filters: &[LabelFilter],
+        label: &str,
+        limit: usize,
+    ) -> ValkeyResult<PostingsStats> {
+        if filters.is_empty() {
+            return Ok(self.stats(label, limit));
+        }
+
+        let matching = {
+            let inner = read_lock(&self.inner);
+            inner.postings_for_label_filters(filters)?.into_owned()
+        };
+
+        Ok(self.stats_restricted(Some(&matching), label, limit))
+    }
+
+    /// [`TimeSeriesIndex::stats`], restricted to the series matching `selectors` (AND-ed together).
+    /// The selector-level counterpart of [`TimeSeriesIndex::stats_filtered`]; an empty `selectors`
+    /// slice matches everything.
+    pub fn stats_by_selectors(
+        &self,
+        selectors: &[SeriesSelector],
+        label: &str,
+        limit: usize,
+    ) -> ValkeyResult<PostingsStats> {
+        let matching = self.matching_postings(selectors)?;
+        Ok(self.stats_restricted(matching.as_ref(), label, limit))
+    }
+
+    /// [`TimeSeriesIndex::stats`] over a pre-resolved set of series — see
+    /// [`TimeSeriesIndex::matching_postings`]. Callers that need more than one statistic over the
+    /// same filter resolve the set once and pass it to each.
+    pub fn stats_restricted(
+        &self,
+        matching: Option<&PostingsBitmap>,
+        label: &str,
+        limit: usize,
+    ) -> PostingsStats {
+        if matching.is_some_and(PostingsBitmap::is_empty) {
+            // A filter matched nothing, so there are no series, no labels and no label-value pairs
+            // to report. Still report the (empty) focus-label list, as the unfiltered path does.
+            return PostingsStats {
+                series_count_by_focus_label_value: Some(Vec::new()),
+                ..Default::default()
+            };
+        }
+        self.collect_stats(matching, label, limit)
+    }
+
+    /// The shared body of the `stats` family. When `matching` is given, each posting list is
+    /// counted through its intersection with that set.
+    fn collect_stats(
+        &self,
+        matching: Option<&PostingsBitmap>,
+        label: &str,
+        limit: usize,
+    ) -> PostingsStats {
         let mut per_label_counts: AHashMap<String, u64> = AHashMap::new();
 
         let mut metric_name_counts = StatsMaxHeap::new(limit);
@@ -366,9 +438,12 @@ impl TimeSeriesIndex {
         let mut label_value_pair_counts = StatsMaxHeap::new(limit);
         let mut focus_label_value_counts = StatsMaxHeap::new(limit);
 
-        let series_count = {
-            let inner = read_lock(&self.inner);
-            inner.count() as u64
+        let series_count = match matching {
+            Some(matching) => matching.cardinality(),
+            None => {
+                let inner = read_lock(&self.inner);
+                inner.count() as u64
+            }
         };
 
         let mut total_label_value_pairs = 0usize;
@@ -381,7 +456,7 @@ impl TimeSeriesIndex {
         };
 
         const BATCH_SIZE: usize = 512;
-        let mut iterator = BatchIterator::new(self, BATCH_SIZE);
+        let mut iterator = BatchIterator::restricted(self, BATCH_SIZE, matching);
 
         while !iterator.is_complete() {
             iterator.next_batch(|key, _, count| {
@@ -455,13 +530,29 @@ impl TimeSeriesIndex {
     /// merge these bitmaps across nodes using a bitwise OR operation. The cardinality of the resulting bitmap will give us
     /// the total number of unique key=value pairs across the cluster without double-counting.
     pub fn get_label_bitmaps(&self) -> (Bitmap64, Bitmap64) {
+        self.label_bitmaps_restricted(None)
+    }
+
+    /// [`TimeSeriesIndex::get_label_bitmaps`] over a pre-resolved set of series — see
+    /// [`TimeSeriesIndex::matching_postings`]. Label names and pairs carried only by series outside
+    /// `matching` are left out of both fingerprints, which keeps a cluster-wide distinct count
+    /// consistent with the per-shard counts computed over the same set.
+    pub fn label_bitmaps_restricted(
+        &self,
+        matching: Option<&PostingsBitmap>,
+    ) -> (Bitmap64, Bitmap64) {
         const BATCH_SIZE: usize = 512;
 
         let mut label_names_bitmap = Bitmap64::default();
         let mut label_value_pairs_bitmap = Bitmap64::default();
+
+        if matching.is_some_and(PostingsBitmap::is_empty) {
+            return (label_names_bitmap, label_value_pairs_bitmap);
+        }
+
         let hasher = DeterministicHasher::default();
 
-        let mut iterator = BatchIterator::new(self, BATCH_SIZE);
+        let mut iterator = BatchIterator::restricted(self, BATCH_SIZE, matching);
 
         while !iterator.is_complete() {
             iterator.next_batch(|key, _bitmap, _| {
@@ -554,15 +645,26 @@ impl TimeSeriesIndex {
 /// Helper struct for batch iteration over the label index
 struct BatchIterator<'a> {
     index: &'a TimeSeriesIndex,
+    /// When set, posting lists are counted through their intersection with this set rather than
+    /// in full. Must be stale-free — see [`BatchIterator::restricted`].
+    matching: Option<&'a PostingsBitmap>,
     cursor: Option<IndexKey>,
     batch_size: usize,
     is_finished: bool,
 }
 
 impl<'a> BatchIterator<'a> {
-    fn new(index: &'a TimeSeriesIndex, batch_size: usize) -> Self {
+    /// An iterator reporting the size of each posting list within `matching` only. `matching` must
+    /// already have stale ids removed (as everything out of [`Postings::postings_for_selector`]
+    /// and friends does), since the intersection is reported as-is.
+    fn restricted(
+        index: &'a TimeSeriesIndex,
+        batch_size: usize,
+        matching: Option<&'a PostingsBitmap>,
+    ) -> Self {
         Self {
             index,
+            matching,
             cursor: None,
             batch_size,
             is_finished: false,
@@ -613,7 +715,10 @@ impl<'a> BatchIterator<'a> {
 
             processed_in_batch += 1;
 
-            let cardinality = Self::adjusted_cardinality(&inner, bitmap, has_stale_ids);
+            let cardinality = match self.matching {
+                Some(matching) => bitmap.and_cardinality(matching),
+                None => Self::adjusted_cardinality(&inner, bitmap, has_stale_ids),
+            };
             if cardinality > 0
                 && let ControlFlow::Break(_) = processor(key, bitmap, cardinality)
             {
@@ -641,10 +746,6 @@ impl<'a> BatchIterator<'a> {
     fn is_complete(&self) -> bool {
         self.is_finished
     }
-}
-
-fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
-    bmp.cardinality() as usize * size_of::<SeriesRef>()
 }
 
 #[cfg(test)]

@@ -1,13 +1,18 @@
-use super::acl::{get_fanout_user, with_fanout_user};
+use super::acl::get_fanout_user;
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
+use crate::common::context::get_current_db;
 use crate::common::sync::lock;
-use crate::common::threads::spawn;
+use crate::common::threads::ExecutorBusy;
+use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::serialization::{Deserialized, Serializable};
-use crate::fanout::{FanoutResult, FanoutTargetMode, FanoutTargets, NodeInfo, get_fanout_targets};
+use crate::fanout::workers::LOCAL_SHARE_EXECUTOR;
+use crate::fanout::{
+    FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_mode, get_fanout_targets,
+};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
+use std::time::{Duration, Instant};
+use valkey_module::{Context, ValkeyResult};
 
 pub(super) type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
 
@@ -26,7 +31,14 @@ pub trait FanoutCommand: Default + Send + 'static {
     fn name() -> &'static str;
 
     /// Handle a local request on the current node, returning the response or an error.
-    fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response>;
+    ///
+    /// Runs on a worker thread with the GIL *not* held. Implementations take it
+    /// with [`FanoutContext::lock`], which selects the request's database and
+    /// installs its ACL identity for the duration of the lock, and only around
+    /// the work that touches the keyspace or index: decode the request before
+    /// locking and build the response after releasing, so the server stays
+    /// responsive while the shard-local reply is materialized.
+    fn get_local_response(ctx: &FanoutContext, req: Self::Request) -> ValkeyResult<Self::Response>;
 
     /// Return the timeout duration for the entire fanout operation.
     /// This timeout applies to the overall operation, not individual RPC calls.
@@ -37,8 +49,8 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Get the target nodes for the fanout operation, bound to the cluster-map
     /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
-        get_fanout_targets(ctx, FanoutTargetMode::Random)
+    fn get_targets(&self, ctx: &Context) -> FanoutTarget {
+        compute_query_fanout_mode(ctx)
     }
 
     /// Execute the fanout operation across cluster nodes.
@@ -91,11 +103,10 @@ pub trait FanoutCommand: Default + Send + 'static {
 }
 
 /// Execute the fanout operation across cluster nodes.
-/// todo: pass in nodes to target instead of letting the command decide, for better separation of concerns.
 pub fn exec_command<OP: FanoutCommand, F>(
     ctx: &Context,
     command: OP,
-    targets: FanoutTargets,
+    targets: FanoutTarget,
     timeout: Duration,
     f: F,
 ) -> FanoutResult
@@ -103,44 +114,47 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     let op = command;
-
-    let FanoutTargets {
-        nodes: targets,
-        cluster_fingerprint,
-    } = targets;
+    let (targets, cluster_fingerprint) = get_fanout_targets(ctx, targets);
 
     let req = op.generate_request();
     let outstanding = targets.len();
     let fanout_user = get_fanout_user(ctx);
+    let db = get_current_db(ctx);
+    let deadline = Instant::now() + timeout;
 
-    let local_node = targets.iter().find(|x| x.is_local());
+    let local_node = targets.iter().find(|x| x.is_local()).copied();
+
+    // The local share always runs off the main thread: `get_local_response`
+    // takes the GIL itself, which this thread already holds, and running it on
+    // a worker keeps the main thread free while the reply is materialized.
+    let local_req = match local_node {
+        // Local-only fanout: there is no RPC to set up, so the local share is
+        // the whole operation. If the workers are saturated, nothing has run:
+        // dropping `state` while it is still `Pending` discards the callback
+        // without invoking it, as on an RPC setup failure below.
+        Some(local) if outstanding == 1 => {
+            let state = Arc::new(FanoutState::new(op, outstanding, f));
+            return spawn_local_request(state, req, local, fanout_user, db, deadline)
+                .map_err(|_| FanoutError::busy());
+        }
+        Some(_) => Some(op.generate_request()),
+        None => None,
+    };
 
     let state = Arc::new(FanoutState::new(op, outstanding, f));
 
-    if let Some(local) = local_node {
-        // when there are multiple outstanding requests, push the local request to the thread pool to avoid blocking.
-        if outstanding > 1 {
-            // push to the thread pool
-            let req_local = lock(&state.inner).operation.generate_request();
-            let local_state = state.clone();
-            spawn_local_request(local_state, req_local, *local, fanout_user.clone());
-        } else {
-            state.handle_local_request(ctx, req, local);
-            return Ok(());
-        }
-    }
-
+    let rpc_state = state.clone();
     let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
         let Ok(buf) = res else {
-            state.on_error(res.err().unwrap(), target);
+            rpc_state.on_error(res.err().unwrap(), target);
             return;
         };
         match OP::Response::deserialize(buf) {
-            Ok(resp) => state.on_response(resp, target),
+            Ok(resp) => rpc_state.on_response(resp, target),
             Err(e) => {
                 let err =
                     FanoutError::serialization(format!("Failed to deserialize response: {e}"));
-                state.on_error(err, target);
+                rpc_state.on_error(err, target);
             }
         }
     };
@@ -154,8 +168,27 @@ where
         Box::new(response_handler),
         timeout,
     ) {
-        // RPC invocation failed before the fanout could be set up.
+        // RPC invocation failed before the fanout could be set up. The local
+        // share has deliberately not been spawned yet, so no callback can run
+        // and the state's lifecycle is still `Pending`: dropping `state` (and
+        // the handler's clone, released by `invoke_rpc`) discards the completion
+        // callback without invoking it, which releases whatever it retains —
+        // for client commands, the blocked client — so the caller can reply
+        // with this error right away instead of waiting on a local response
+        // that would complete the fanout with a partial result.
         return Err(FanoutError::from(e));
+    }
+
+    // Only now that the remote side is in flight is it safe to spawn the local
+    // share: from here on the fanout completes through the normal
+    // response/timeout path.
+    if let Some((local, req_local)) = local_node.zip(local_req) {
+        let local_state = Arc::clone(&state);
+        if spawn_local_request(local_state, req_local, local, fanout_user, db, deadline).is_err() {
+            // Remote shares are already in flight, so this one fails through
+            // the fanout: `Busy` aborts it with that error.
+            state.on_error(FanoutError::busy(), &local);
+        }
     }
 
     Ok(())
@@ -240,10 +273,12 @@ where
         // command closed: data-returning commands (MGET/MRANGE/MREVRANGE) must not
         // silently drop keys the caller cannot read. Surface the shard's permission
         // error to the client verbatim (bypassing the generic aggregate error) and
-        // stop waiting on the remaining shards.
+        // stop waiting on the remaining shards. A shard that was too busy to take
+        // its share likewise leaves the result incomplete, and the client should
+        // see that it can retry.
         if matches!(
             error.kind,
-            ErrorKind::KeyPermissions | ErrorKind::Permissions
+            ErrorKind::KeyPermissions | ErrorKind::Permissions | ErrorKind::Busy
         ) {
             self.abort_error = Some(error);
             self.on_completion();
@@ -362,42 +397,54 @@ where
         inner.on_error(error, target);
     }
 
+    fn is_completed(&self) -> bool {
+        lock(&self.inner).lifecycle == FanoutLifecycleState::Completed
+    }
+
     fn on_response(&self, resp: OP::Response, target: &NodeInfo) {
         let mut inner = lock(&self.inner);
         inner.on_response(resp, target);
     }
-
-    fn handle_local_request(&self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
-        match OP::get_local_response(ctx, request) {
-            Ok(response) => self.on_response(response, target),
-            Err(err) => self.on_error(err.into(), target),
-        }
-    }
 }
 
-/// Spawn a local request handler in a separate thread.
+/// Queue the local share on the fanout workers.
+///
+/// `user` and `db` are the coordinator-side client's ACL identity and selected
+/// database; the [`FanoutContext`] built from them applies both each time
+/// `get_local_response` takes the GIL.
+///
+/// On `Err` the share was not queued and `state` has been dropped; the caller
+/// decides how the fanout fails.
 fn spawn_local_request<OP, F>(
     state: Arc<FanoutState<OP, F>>,
     req: OP::Request,
     target: NodeInfo,
     user: Option<String>,
-) where
+    db: i32,
+    deadline: Instant,
+) -> Result<(), ExecutorBusy>
+where
     OP: FanoutCommand,
     OP::Request: Send + 'static,
     OP::Response: Send + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
-    spawn(move || {
-        // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
-        let result = {
-            let ctx = MODULE_CONTEXT.lock();
-            with_fanout_user(&ctx, user.as_deref(), |ctx| {
-                OP::get_local_response(ctx, req)
-            })
-        };
-        match result {
+    // Off the pool: `get_local_response` takes the module lock (see `spawn_background`).
+    LOCAL_SHARE_EXECUTOR.try_spawn(move || {
+        // A share that waited in the queue may no longer be wanted: the fanout
+        // already completed (an RPC timeout or a fail-fast error), or its
+        // deadline passed and the blocked client has had the timeout error.
+        if state.is_completed() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            state.on_error(FanoutError::timeout(), &target);
+            return;
+        }
+        let fanout_ctx = FanoutContext::new(user, db);
+        match OP::get_local_response(&fanout_ctx, req) {
             Ok(response) => state.on_response(response, &target),
             Err(err) => state.on_error(err.into(), &target),
         }
-    });
+    })
 }

@@ -246,9 +246,12 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_samples_after = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_samples_after) >= initial_count
 
-        # Value should have changed due to upsert: (10 + 40 + 20 + 30) / 4 = 25
+        # Value should have changed due to upsert. The recomputed bucket
+        # [1000, 11000) holds (10 + 40 + 20) / 3; the sample at 16000 belongs
+        # to the next bucket and must NOT be folded into the recompute
+        # (reference-verified: RedisTimeSeries returns the same value).
         new_value = float(dest_samples_after[0][1])
-        assert new_value == 25.0
+        assert new_value == pytest.approx(70 / 3)
 
     def test_compaction_across_multiple_destination_series(self):
         """Test that one source can compact to multiple destinations with different rules"""
@@ -429,11 +432,12 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         assert len(dest_samples) >= 2  # At least two completed buckets
 
         # Verify compaction calculations are correct
-        # First bucket: 10 + 15 + 20 + 30 = 75 (with upsert)
-        # Second bucket: 30 + 35 = 65
+        # (reference-verified: RedisTimeSeries returns the same values)
+        # First bucket [100000, 105000): 10 + 20 + 15 (upsert) = 45
+        # Second bucket [105000, 110000): 30 + 35 = 65
         assert len(dest_samples) >= 2
 
-        assert float(dest_samples[0][1]) == 75.0
+        assert float(dest_samples[0][1]) == 45.0
         assert float(dest_samples[1][1]) == 65.0
 
     def test_chained_avg_aggregates_over_intermediate_series_not_raw_source(self):
@@ -480,3 +484,54 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         # aggregator, which would instead compute avg(10,20,30,100) = 40.
         dest_samples = self.get_samples(dest, 0, 19)
         assert dest_samples == [[0, b"60"]]
+
+    def test_aligned_rule_recalculates_the_clamped_first_bucket(self):
+        """With ALIGN 500 and 1000ms buckets the first bucket is [0, 500). An upsert into it
+        used to recalculate [0, 1000), folding the next bucket's samples in as well."""
+        c = self.client
+        c.execute_command("TS.CREATE", "algn:src")
+        c.execute_command("TS.CREATE", "algn:dst")
+        c.execute_command("TS.CREATERULE", "algn:src", "algn:dst", "AGGREGATION", "sum", 1000, 500)
+        c.execute_command("TS.ADD", "algn:src", 100, 1)
+        c.execute_command("TS.ADD", "algn:src", 700, 10)  # closes [0, 500)
+        assert c.execute_command("TS.RANGE", "algn:dst", "-", "+") == [[0, b"1"]]
+
+        c.execute_command("TS.ADD", "algn:src", 50, 100)  # back-fill into [0, 500)
+        assert c.execute_command("TS.RANGE", "algn:dst", "-", "+") == [[0, b"101"]]
+
+    def test_batch_backfill_uses_the_retention_floor_of_its_last_write(self):
+        """TS.MADD must publish what the same writes do one TS.ADD at a time. A bucket
+        back-filled after the batch's high-water mark rose must drop samples retention has
+        since evicted; the batch path used the floor of an earlier back-fill instead."""
+        c = self.client
+        for key in ("bf:seq", "bf:batch"):
+            c.execute_command("TS.CREATE", key, "RETENTION", 1000)
+            c.execute_command("TS.CREATE", f"{key}:dst")
+            c.execute_command("TS.CREATERULE", key, f"{key}:dst", "AGGREGATION", "sum", 1000)
+            c.execute_command("TS.ADD", key, 50, 1)
+            c.execute_command("TS.ADD", key, 950, 1)
+
+        for ts in (900, 1400, 600):
+            c.execute_command("TS.ADD", "bf:seq", ts, 1)
+        c.execute_command("TS.MADD", "bf:batch", 900, 1, "bf:batch", 1400, 1, "bf:batch", 600, 1)
+
+        seq = c.execute_command("TS.RANGE", "bf:seq:dst", "-", "+")
+        batch = c.execute_command("TS.RANGE", "bf:batch:dst", "-", "+")
+        assert seq == [[0, b"3"]]
+        assert batch == seq
+
+    def test_rate_rule_with_sub_second_buckets_survives_reload(self):
+        """`rate` kept its window in whole seconds, so a 500ms bucket divided by zero and
+        published nothing; after a reload the window must come back from the rule."""
+        c = self.client
+        c.execute_command("TS.CREATE", "rate:src")
+        c.execute_command("TS.CREATE", "rate:dst")
+        c.execute_command("TS.CREATERULE", "rate:src", "rate:dst", "AGGREGATION", "rate", 500)
+        for ts, value in ((0, 0), (400, 5), (600, 10)):
+            c.execute_command("TS.ADD", "rate:src", ts, value)
+        assert c.execute_command("TS.RANGE", "rate:dst", "-", "+") == [[0, b"10"]]
+
+        c.execute_command("DEBUG", "RELOAD")
+        for ts, value in ((900, 15), (1100, 20)):
+            c.execute_command("TS.ADD", "rate:src", ts, value)
+        assert c.execute_command("TS.RANGE", "rate:dst", "-", "+") == [[0, b"10"], [500, b"10"]]

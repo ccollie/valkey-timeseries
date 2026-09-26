@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 
-use crate::analysis::seasonality::SeasonalityDetector;
 use itertools::Itertools;
 use welch_sde::{Build, SpectralDensity};
 
@@ -29,35 +28,6 @@ impl Default for Builder {
 }
 
 impl Builder {
-    /// Set the minimum period to consider when detecting seasonal periods.
-    ///
-    /// The default is 4.
-    #[must_use]
-    pub fn min_period(mut self, min_period: u32) -> Self {
-        self.min_period = min_period;
-        self
-    }
-
-    /// Set the maximum period to consider when detecting seasonal periods.
-    ///
-    /// The default is the length of the data divided by 3, or 512, whichever is smaller.
-    #[must_use]
-    pub fn max_period(mut self, max_period: u32) -> Self {
-        self.max_period = Some(max_period);
-        self
-    }
-
-    /// Set the threshold for detecting peaks in the periodogram.
-    ///
-    /// The value will be clamped to the range 0.01 to 0.99.
-    ///
-    /// The default is 0.9.
-    #[must_use]
-    pub fn threshold(mut self, threshold: f64) -> Self {
-        self.threshold = threshold.clamp(0.01, 0.99);
-        self
-    }
-
     /// Build the periodogram detector.
     ///
     /// The data is the time series to detect seasonal periods in.
@@ -165,6 +135,18 @@ impl Detector {
         let data_len = data.len();
         let n_per_segment = (max_period * 2).min(data_len as u32 / 2).max(1);
         let max_fft_size = (n_per_segment as f64).log2().floor() as usize;
+
+        // welch-sde computes `2 << (dft_log2_max_size - 1)` while building
+        // the transform. A one-point segment produces a zero log-size, so
+        // return the empty result that auto-seasonality already treats as
+        // "no detectable period" instead of passing an invalid size to it.
+        if max_fft_size == 0 {
+            return Periodogram {
+                periods: Vec::new(),
+                powers: Vec::new(),
+            };
+        }
+
         let n_segments = (data_len as f64 / n_per_segment as f64).ceil() as usize;
 
         let welch: SpectralDensity<'_, f64> = SpectralDensity::builder(data, frequency)
@@ -214,12 +196,6 @@ impl Default for Detector {
     }
 }
 
-impl SeasonalityDetector for Detector {
-    fn detect(&self, data: &[f64]) -> Vec<u32> {
-        self.detect(data)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -260,5 +236,15 @@ mod test {
                 "Test case {i}"
             );
         }
+    }
+
+    #[test]
+    fn short_input_has_no_periodogram() {
+        let data = [1.0, 2.0, 1.0];
+        let periodogram = Detector::default().periodogram(&data);
+
+        assert!(periodogram.periods.is_empty());
+        assert!(periodogram.powers.is_empty());
+        assert!(Detector::default().detect(&data).is_empty());
     }
 }

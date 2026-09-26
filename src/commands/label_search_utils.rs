@@ -1,12 +1,15 @@
-use crate::commands::command_parser::{parse_filter_by_range_options, validate_selector_list};
-use crate::commands::fanout::LabelSearchType;
+use crate::commands::command_parser::{
+    parse_filter_by_range_options, parse_hash_tags, validate_selector_list,
+};
+use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
+use crate::commands::utils::get_multi_command_targets;
 use crate::common::SortDir;
 use crate::common::replies::{
     reply_with_array, reply_with_bool, reply_with_bulk_string, reply_with_integer, reply_with_map,
 };
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, is_clustered};
+use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
     DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
@@ -27,6 +30,8 @@ pub(crate) struct LabelNameSearchArgs {
     pub(crate) include_metadata: bool,
     pub(crate) sort_order: SearchResultOrdering,
     pub(crate) series_filter: MatchFilterOptions,
+    /// Optional hash tags that scope only the cluster fan-out.
+    pub(crate) tags: Vec<String>,
 }
 
 impl Default for LabelNameSearchArgs {
@@ -41,6 +46,7 @@ impl Default for LabelNameSearchArgs {
             include_metadata: false,
             sort_order: SearchResultOrdering::ValueAsc,
             series_filter: Default::default(),
+            tags: Vec::new(),
         }
     }
 }
@@ -93,11 +99,13 @@ enum LabelNameSearchToken {
     Limit,
     Filter,
     FilterByRange,
+    HashTag,
 }
 
 fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
-    hashify::tiny_map_ignore_case! {
+    hashify::map_ignore_case!(
         value,
+        LabelNameSearchToken,
         "search" => LabelNameSearchToken::Search,
         "fuzzy_threshold" => LabelNameSearchToken::FuzzyThreshold,
         "fuzzy_algo" => LabelNameSearchToken::FuzzyAlgorithm,
@@ -108,7 +116,9 @@ fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
         "limit" => LabelNameSearchToken::Limit,
         "filter" => LabelNameSearchToken::Filter,
         "filter_by_range" => LabelNameSearchToken::FilterByRange,
-    }
+        "hashtag" => LabelNameSearchToken::HashTag,
+    )
+    .copied()
 }
 
 fn resolve_label_search_ordering(
@@ -256,6 +266,9 @@ pub(super) fn parse_label_name_search_args(
                 let filter = parse_filter_by_range_options(&mut args)?;
                 parsed.series_filter.date_range = Some(filter);
             }
+            LabelNameSearchToken::HashTag => {
+                parsed.tags = parse_hash_tags(&mut args)?;
+            }
         }
     }
 
@@ -297,6 +310,10 @@ pub(super) fn parse_label_name_search_args(
     Ok(parsed)
 }
 
+pub(crate) fn label_search_targets(context: &Context, tags: &[String]) -> FanoutTarget {
+    get_multi_command_targets(context, tags)
+}
+
 pub(crate) fn process_label_search_request(
     ctx: &Context,
     parsed: &LabelNameSearchArgs,
@@ -313,6 +330,9 @@ pub(crate) fn process_label_search_request(
             ))
         };
     match parsed.search_type {
+        LabelSearchType::Unspecified => Err(ValkeyError::Str(
+            "TSDB: LabelSearchType::Unspecified on the wire — protocol error",
+        )),
         LabelSearchType::Name => {
             Ok(querier.get_label_names(ctx, select_hints, Some(&raw_hints))?)
         }

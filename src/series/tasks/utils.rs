@@ -1,29 +1,7 @@
+use crate::common::context::create_key_string;
 use crate::series::index::{TIMESERIES_INDEX, get_timeseries_index, with_timeseries_postings};
-use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
-use std::sync::atomic::{AtomicI32, Ordering};
+use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, try_get_timeseries_mut};
 use valkey_module::Context;
-
-pub(super) fn get_used_dbs() -> Vec<i32> {
-    let index = TIMESERIES_INDEX.pin();
-    let mut keys: Vec<i32> = index.keys().copied().collect();
-    keys.sort_unstable();
-    keys
-}
-
-pub(super) fn advance_db(cursor: &AtomicI32) -> i32 {
-    let used_dbs = get_used_dbs();
-    let current = cursor.load(Ordering::Relaxed);
-
-    let next = used_dbs
-        .iter()
-        .find(|&&d| d > current)
-        .copied()
-        .or_else(|| used_dbs.first().copied())
-        .unwrap_or(0);
-
-    cursor.store(next, Ordering::Relaxed);
-    next
-}
 
 pub(super) fn find_next_db(current: i32) -> Option<i32> {
     let index = TIMESERIES_INDEX.pin();
@@ -32,48 +10,56 @@ pub(super) fn find_next_db(current: i32) -> Option<i32> {
 }
 
 const SERIES_TRIM_BATCH_SIZE: usize = 25;
+const SERIES_TRIM_SCAN_ROUNDS: usize = 3;
+
 pub(super) fn fetch_series_batch(
     ctx: &'_ Context,
     start_id: SeriesRef,
     pred: fn(&TimeSeries) -> bool,
 ) -> Vec<SeriesGuardMut<'_>> {
-    let (result, stale_ids) = with_timeseries_postings(ctx, |postings| {
-        let all_postings = &postings.all_postings;
-        let mut cursor = all_postings.cursor();
+    // Resolve the ids to keys under the postings read guard, then open them *after* the guard is
+    // gone. Opening a key runs the server's lazy-expiry check, which reaps an expired series
+    // through this module's `unlink` callback -- and that takes the postings write lock on this
+    // same thread. See `series::index::querier::resolve_series_keys`.
+    let resolved = with_timeseries_postings(ctx, |postings| {
+        let mut cursor = postings.all_postings.cursor();
         cursor.reset_at_or_after(start_id);
-        let mut stale_ids = Vec::new();
-        let mut result = Vec::new();
 
-        // loop through a max of 3 times to fill the batch, to allow skipping stale ids without returning a smaller batch
-        for _ in 0..3 {
+        // Read up to 3 batches worth of ids, so that entries skipped below (dangling keys, or
+        // series rejected by `pred`) do not shrink the batch that is returned.
+        let mut resolved = Vec::with_capacity(SERIES_TRIM_BATCH_SIZE);
+        for _ in 0..SERIES_TRIM_SCAN_ROUNDS {
             let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
             let n = cursor.read_many(&mut buf);
             if n == 0 {
                 break;
             }
-            result.reserve(n);
+            resolved.reserve(n);
             for &id in &buf[..n] {
-                let Some(k) = postings.get_key_by_id(id) else {
-                    continue;
-                };
-
-                let key = ctx.create_string(k.as_ref());
-                let Ok(Some(series)) = get_timeseries_mut(ctx, &key, false, None) else {
-                    stale_ids.push(id);
-                    continue;
-                };
-
-                if pred(&series) {
-                    result.push(series);
-                    if result.len() >= SERIES_TRIM_BATCH_SIZE {
-                        break;
-                    }
+                if let Some(k) = postings.get_key_by_id(id) {
+                    resolved.push((id, create_key_string(ctx, k.as_ref())));
                 }
             }
         }
 
-        (result, stale_ids)
+        resolved
     });
+
+    let mut stale_ids = Vec::new();
+    let mut result = Vec::with_capacity(SERIES_TRIM_BATCH_SIZE);
+    for (id, key) in resolved {
+        let Ok(Some(series)) = try_get_timeseries_mut(ctx, &key, None) else {
+            stale_ids.push(id);
+            continue;
+        };
+
+        if pred(&series) {
+            result.push(series);
+            if result.len() >= SERIES_TRIM_BATCH_SIZE {
+                break;
+            }
+        }
+    }
 
     if !stale_ids.is_empty() {
         let index = get_timeseries_index(ctx);

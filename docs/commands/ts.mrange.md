@@ -11,9 +11,11 @@ TS.MRANGE fromTimestamp toTimestamp
     [FILTER_BY_VALUE min max]
     [WITHLABELS | SELECTED_LABELS label...]
     [COUNT count]
+    [HASHTAG hash_tag,...]
     [[ALIGN align] AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
     FILTER selector...
     [GROUPBY label REDUCE reducer[(op value)]]
+    [EXCLUDEEMPTY]
 ```
 
 ## Required Arguments
@@ -106,6 +108,23 @@ Maximum number of samples to return per series.
 COUNT 100
 ```
 
+### HASHTAG hash_tag,...
+
+In cluster mode, restricts the fan-out to nodes that own one or more of the
+given hash tags. Tags are comma-separated; supplying multiple tags queries the
+union of their owning nodes. A braced tag such as `{tenant-a}` is equivalent to
+the bare tag `tenant-a` for slot selection.
+
+`HASHTAG` only controls which cluster nodes are queried. It does not filter series
+by their labels or key names, and has no effect on a standalone server. It may
+appear with the other optional arguments.
+
+**Example:**
+
+```
+TS.MRANGE - + HASHTAG tenant-a,tenant-b FILTER metric_type=temperature
+```
+
 ### ALIGN align
 
 Specify the alignment strategy for aggregation buckets. Must be specified before `AGGREGATION`.
@@ -131,7 +150,7 @@ ALIGN 1609459200000 AGGREGATION sum 5m
 - Cannot use `start` align with `-` range start timestamp
 - Cannot use `end` align with `+` range end timestamp
 
-### AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration
+### AGGREGATION aggregatorop value[,aggregatorop value...] bucketDuration
 
 Aggregate samples into time buckets using the specified aggregator(s) and bucket size. A
 comma-separated list of up to 16 distinct aggregators produces one row per bucket containing the
@@ -168,11 +187,11 @@ AGGREGATION avg 1h
 AGGREGATION sum 5m
 ```
 
-#### Inline condition: aggregator(op value)
+#### Inline condition: aggregatorop value
 
 `all`, `any`, `countif`, `sumif`, `share`, and `none` **require** an inline comparison condition —
-`aggregator(op value)`, e.g. `countif(>5)` — with no spaces inside the parentheses since it is a
-single argument token; omitting it is an error. `count` and `sum` accept the same form
+`aggregatorop value`, e.g. `countif>5` — with no separator since `aggregator` and its condition
+form a single argument token; omitting it is an error. `count` and `sum` accept the same form
 *optionally*, to count/sum only matching samples. Any other aggregator (`avg`, `max`, ...) does
 not accept a condition; attaching one is an error.
 
@@ -181,13 +200,13 @@ not accept a condition; attaching one is an error.
 **Example:**
 
 ```
-AGGREGATION share(>20.0) 1h
+AGGREGATION share>20.0 1h
 ```
 
 Different elements of the `aggregator` list can filter on different conditions:
 
 ```
-AGGREGATION countif(>5),sumif(<=2),avg 1h
+AGGREGATION countif>5,sumif<=2,avg 1h
 ```
 
 #### BUCKETTIMESTAMP bt
@@ -230,7 +249,7 @@ GROUPBY region REDUCE sum
 
 Supports all aggregators except `rate` (e.g., `avg`, `sum`, `count`, `max`, `min`, etc.)
 
-#### Inline condition: reducer(op value)
+#### Inline condition: reducerop value
 
 Same inline condition syntax as `AGGREGATION` (see above): required for `countif`/`sumif`/`share`/
 `all`/`any`/`none`, optional for `count`/`sum`, and disallowed for other reducers.
@@ -238,7 +257,28 @@ Same inline condition syntax as `AGGREGATION` (see above): required for `countif
 **Example:**
 
 ```
-GROUPBY region REDUCE countif(>20.0)
+GROUPBY region REDUCE countif>20.0
+```
+
+### EXCLUDEEMPTY
+
+Omit matched series that report no samples for the query. By default every series
+passing `FILTER` is reported, including those with an empty sample list.
+
+Emptiness is judged on what would be reported, not on the stored series: a series
+left with nothing by `FILTER_BY_TS`/`FILTER_BY_VALUE`, or one whose in-range
+samples produce no bucket under `AGGREGATION`, is omitted just like one with no
+samples in the range. A series reporting a `NaN` sample is *not* empty and is kept.
+
+`EXCLUDEEMPTY` cannot be combined with `GROUPBY ... REDUCE` — grouping collapses
+the matched series into per-group results, leaving no per-series emptiness to act
+on, so the combination is rejected with
+`TSDB: EXCLUDEEMPTY is not allowed with GROUPBY`.
+
+**Example:**
+
+```
+TS.MRANGE - 500 EXCLUDEEMPTY FILTER region=us-west
 ```
 
 ## Return Value
@@ -350,7 +390,7 @@ O(n×m×k) where:
 ### Query with aggregation condition and empty buckets
 
 ```bash
-127.0.0.1:6379> TS.MRANGE - + AGGREGATION countif(>23.0) 1h EMPTY FILTER sensor_id=12
+127.0.0.1:6379> TS.MRANGE - + AGGREGATION countif>23.0 1h EMPTY FILTER sensor_id=12
 1) 1) "temperature:sensor:12"
    2) (empty array)
    3) 1) 1) (integer) 1609459200000
@@ -359,10 +399,31 @@ O(n×m×k) where:
          2) "0"
 ```
 
+### Query excluding series with no samples in the range
+
+```bash
+127.0.0.1:6379> TS.MRANGE - 500 WITHLABELS FILTER s=1
+1) 1) "s"
+   ...
+2) 1) "u"
+   2) 1) 1) "s"
+         2) "1"
+   3) (empty array)
+
+127.0.0.1:6379> TS.MRANGE - 500 WITHLABELS EXCLUDEEMPTY FILTER s=1
+1) 1) "s"
+   2) 1) 1) "s"
+         2) "1"
+   3) 1) 1) (integer) 100
+         2) "100"
+```
+
 ## Notes
 
 - All filter selectors must match for a series to be included (logical AND)
 - For clustered deployments, the command fans out to all shards automatically
+- `EXCLUDEEMPTY` is applied on every shard and again on the coordinator, so a
+  series is omitted regardless of which shard owns it
 - When using `GROUPBY`, series are grouped by the specified label value
 - Aggregation is applied before grouping when both are specified
 - `LATEST` is useful when you have compaction rules and want aggregated data without querying compacted series directly

@@ -3,7 +3,7 @@ use crate::error_consts;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 /// Fanout error. Designed mostly for compactness since it's sent over the wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FanoutError {
     pub kind: ErrorKind,
 
@@ -51,6 +51,13 @@ pub enum ErrorKind {
     /// message. See docs/fanout-compatibility-handshake.md.
     UnsupportedFeatures = 10,
 
+    /// The request selected a database that is not available on this node.
+    InvalidDb = 11,
+
+    /// A node rejected its share because its fan-out work queue was full. Retryable.
+    /// A peer too old to know this kind reports it as an invalid message.
+    Busy = 12,
+
     Custom = 255,
 }
 
@@ -67,6 +74,9 @@ pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
 pub(super) const CLUSTER_MAP_MISMATCH_ERROR: &str =
     "A multi-shard command failed because the cluster topology has changed";
 pub(super) const UNSUPPORTED_FEATURES_ERROR: &str = "A multi-shard command failed because a peer requires fanout features this node does not support";
+pub(super) const INVALID_DB_ERROR: &str = "Invalid database";
+pub(super) const BUSY_ERROR: &str =
+    "A multi-shard command failed because a node has too many fanout requests queued; retry later";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
@@ -82,6 +92,8 @@ impl ErrorKind {
             Self::Internal => INTERNAL_ERROR,
             Self::ClusterMapMismatch => CLUSTER_MAP_MISMATCH_ERROR,
             Self::UnsupportedFeatures => UNSUPPORTED_FEATURES_ERROR,
+            Self::InvalidDb => INVALID_DB_ERROR,
+            Self::Busy => BUSY_ERROR,
             Self::Custom => "Custom error",
         }
     }
@@ -118,6 +130,15 @@ impl FanoutError {
 
     pub fn unsupported_features() -> Self {
         ErrorKind::UnsupportedFeatures.into()
+    }
+
+    #[cfg(test)]
+    pub fn invalid_db() -> Self {
+        ErrorKind::InvalidDb.into()
+    }
+
+    pub fn busy() -> Self {
+        ErrorKind::Busy.into()
     }
 
     pub fn custom<S: Into<String>>(description: S) -> Self {
@@ -176,6 +197,8 @@ impl TryFrom<u8> for ErrorKind {
             8 => Ok(ErrorKind::Internal),
             9 => Ok(ErrorKind::ClusterMapMismatch),
             10 => Ok(ErrorKind::UnsupportedFeatures),
+            11 => Ok(ErrorKind::InvalidDb),
+            12 => Ok(ErrorKind::Busy),
             255 => Ok(ErrorKind::Custom),
             _ => {
                 let msg = format!("Invalid error kind: {value}");
@@ -197,6 +220,22 @@ impl From<ErrorKind> for FanoutError {
 impl core::fmt::Display for ErrorKind {
     fn fmt(&self, fmt: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
         write!(fmt, "{}", self.as_str())
+    }
+}
+
+impl core::fmt::Debug for FanoutError {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+        fmt.debug_struct("FanoutError")
+            .field("kind", &self.kind)
+            .field(
+                "message",
+                &if self.message.is_empty() {
+                    self.kind.as_str()
+                } else {
+                    self.message.as_str()
+                },
+            )
+            .finish()
     }
 }
 
@@ -243,6 +282,8 @@ fn convert_from_string(err: &str) -> FanoutError {
         INTERNAL_ERROR => ErrorKind::Internal.into(),
         CLUSTER_MAP_MISMATCH_ERROR => ErrorKind::ClusterMapMismatch.into(),
         UNSUPPORTED_FEATURES_ERROR => ErrorKind::UnsupportedFeatures.into(),
+        INVALID_DB_ERROR => ErrorKind::InvalidDb.into(),
+        BUSY_ERROR => ErrorKind::Busy.into(),
         NODE_UNREACHABLE_ERROR => ErrorKind::NodeUnreachable.into(),
         UNKNOWN_MESSAGE_TYPE_ERROR => ErrorKind::UnknownMessageType.into(),
         SERIALIZATION_ERROR => FanoutError::serialization(String::new()),
@@ -304,6 +345,10 @@ mod tests {
         let error = FanoutError::key_permissions("key access denied".to_string());
         assert_eq!(error.kind, ErrorKind::KeyPermissions);
         assert_eq!(error.message, "key access denied");
+
+        let error = FanoutError::invalid_db();
+        assert_eq!(error.kind, ErrorKind::InvalidDb);
+        assert!(error.message.is_empty());
     }
 
     #[test]
@@ -366,6 +411,8 @@ mod tests {
             ErrorKind::Internal,
             ErrorKind::ClusterMapMismatch,
             ErrorKind::UnsupportedFeatures,
+            ErrorKind::InvalidDb,
+            ErrorKind::Busy,
             ErrorKind::Custom,
         ];
 
@@ -501,6 +548,10 @@ mod tests {
             convert_from_string(INTERNAL_ERROR).kind,
             ErrorKind::Internal
         );
+        assert_eq!(
+            convert_from_string(INVALID_DB_ERROR).kind,
+            ErrorKind::InvalidDb
+        );
     }
 
     #[test]
@@ -517,6 +568,7 @@ mod tests {
         assert_eq!(ErrorKind::Internal as u8, 8);
         assert_eq!(ErrorKind::ClusterMapMismatch as u8, 9);
         assert_eq!(ErrorKind::UnsupportedFeatures as u8, 10);
+        assert_eq!(ErrorKind::InvalidDb as u8, 11);
         assert_eq!(ErrorKind::Custom as u8, 255);
     }
 }

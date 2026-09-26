@@ -81,13 +81,16 @@ impl TryFrom<String> for ChunkEncoding {
 }
 
 fn parse_encoding(encoding: &str) -> Option<ChunkEncoding> {
-    hashify::tiny_map_ignore_case! {
+    // `fnc_map` rather than `map`: `map` keeps its values in a `static`, and the default
+    // encoding comes from a (non-const) `Default` impl.
+    hashify::fnc_map_ignore_case!(
         encoding.as_bytes(),
-        "compressed" => ChunkEncoding::default(),
-        "uncompressed" => ChunkEncoding::Uncompressed,
-        "gorilla" => ChunkEncoding::Gorilla,
-        "chimp" => ChunkEncoding::Chimp,
-    }
+        "compressed" => Some(ChunkEncoding::default()),
+        "uncompressed" => Some(ChunkEncoding::Uncompressed),
+        "gorilla" => Some(ChunkEncoding::Gorilla),
+        "chimp" => Some(ChunkEncoding::Chimp),
+        _ => None
+    )
 }
 
 /// Core chunk operations that can be auto-dispatched via `enum_dispatch`.
@@ -109,6 +112,13 @@ pub trait ChunkOps {
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize>;
     fn add_sample(&mut self, sample: &Sample) -> TsdbResult<()>;
     fn get_range(&self, start: Timestamp, end: Timestamp) -> TsdbResult<Vec<Sample>>;
+    /// Insert `sample`, or merge it into an existing sample with the same timestamp per
+    /// `dp_policy`.
+    ///
+    /// Returns the chunk's sample count **after** the upsert — not the number of samples added.
+    /// Callers derive the delta by subtracting the length they read beforehand (see
+    /// `TimeSeries::upsert_sample`), so an implementation returning the delta silently makes
+    /// that subtraction zero and corrupts `total_samples`.
     fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize>;
 
     /// Efficiently merge a slice of Sample objects into the chunk.

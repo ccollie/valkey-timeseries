@@ -47,36 +47,46 @@ https://tech.loveholidays.com/redis-cluster-multi-key-command-optimisation-with-
 
 The following commands are supported
 
-```aiignore
-TS.ADD
-TS.ADDBULK
-TS.ALTER
-TS.CARD
-TS.CREATE
-TS.CREATERULE
-TS.DELETERULE
-TS.DECRBY
-TS.DEL
-TS.GET
-TS.INCRBY
-TS.JOIN
-TS.LABELNAMES
-TS.LABELSTATS
-TS.LABELVALUES
-TS.MADD
-TS.MDEL
-TS.MGET
-TS.MRANGE
-TS.MREVRANGE
-TS.OUTLIERS
-TS.QUERYINDEX
-TS.RANGE
-TS.REVRANGE
-TS._DEBUG
-```
+- [`TS.ADD`](docs/commands/ts.add.md)
+- [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
+- [`TS.ALTER`](docs/commands/ts.alter.md)
+- [`TS.CARD`](docs/commands/ts.card.md)
+- [`TS.CREATE`](docs/commands/ts.create.md)
+- [`TS.CREATERULE`](docs/commands/ts.createrule.md)
+- [`TS.DELETERULE`](docs/commands/ts.deleterule.md)
+- [`TS.DECRBY`](docs/commands/ts.decrby.md)
+- [`TS.DEL`](docs/commands/ts.del.md)
+- [`TS.GET`](docs/commands/ts.get.md)
+- [`TS.INCRBY`](docs/commands/ts.incrby.md)
+- [`TS.INFO`](docs/commands/ts.info.md)
+- [`TS.JOIN`](docs/commands/ts.join.md)
+- [`TS.LABELNAMES`](docs/commands/ts.labelnames.md)
+- [`TS.LABELSTATS`](docs/commands/ts.labelstats.md)
+- [`TS.LABELVALUES`](docs/commands/ts.labelvalues.md)
+- [`TS.MADD`](docs/commands/ts.madd.md)
+- [`TS.MDEL`](docs/commands/ts.mdel.md)
+- [`TS.MGET`](docs/commands/ts.mget.md)
+- [`TS.METRICNAMES`](docs/commands/ts.metricnames.md)
+- [`TS.MRANGE`](docs/commands/ts.mrange.md)
+- [`TS.MREVRANGE`](docs/commands/ts.mrevrange.md)
+- [`TS.NRANGE`](docs/commands/ts.nrange.md)
+- [`TS.NREVRANGE`](docs/commands/ts.nrevrange.md)
+- [`TS.OUTLIERS`](docs/commands/ts.outliers.md)
+- [`TS.QUERYINDEX`](docs/commands/ts.queryindex.md)
+- [`TS.QUERYLABELS`](docs/commands/ts.querylabels.md)
+- [`TS.RANGE`](docs/commands/ts.range.md)
+- [`TS.READ`](docs/commands/ts.read.md)
+- [`TS.REVRANGE`](docs/commands/ts.revrange.md)
+- [`TS._DEBUG`](docs/commands/ts._debug.md)
 
 
 ## Build instructions
+
+> **Note:** After pulling or switching branches, always rebuild the module with
+> `cargo build --release` or `./build.sh`. The module binary is not committed to the
+> repository and will be stale after source changes, which can cause new config parameters
+> or commands to appear missing at runtime.
+
 ```
 curl https://sh.rustup.rs -sSf | sh
 sudo yum install clang
@@ -85,7 +95,7 @@ cd valkey-timeseries
 cargo build --release
 valkey-server --loadmodule ./target/release/libvalkey_timeseries.so
 ```
-**Note**: This library requires a minimum rust version of `1.86`.
+**Note**: This library requires a minimum rust version of `1.96`.
 
 #### Running Unit tests
 
@@ -104,6 +114,43 @@ ASAN_BUILD=true
 # Clean build artifacts
 ./build.sh clean
 ```
+
+#### Compatibility fuzzing
+
+`./fuzz.sh` drives the RedisTimeSeries differential fuzzer: it generates
+random but valid command sequences and checks every reply against a pinned RedisTimeSeries
+reference server (v8.10), so an unexplained difference shows up as a test failure with a minimal
+reproducer. See [tests/compat/README.md](tests/compat/README.md) for the harness itself and
+[COMPATIBILITY.md](COMPATIBILITY.md) for the compatibility contract.
+
+The script is self-contained — it installs the Python test dependencies, builds the module
+and `valkey-server` if they are missing, starts the reference container (Docker) and a
+subject server, and tears both down when it finishes:
+
+```
+# quick check: 150 examples per protocol
+./fuzz.sh
+
+# nightly-style soak: 20k examples per round, new rounds until 20 minutes are up
+./fuzz.sh --examples 20000 --duration 20m --stats
+
+# reproduce a finding: one protocol, fixed seed, verbose
+./fuzz.sh --protocol resp3 --derandomize --seed 4 -v
+
+# replay the checked-in regression corpus instead of generating new cases
+./fuzz.sh --suite corpus
+
+# reuse servers you already have running (skips Docker and the local launch)
+./fuzz.sh --reference-url redis://127.0.0.1:16379 \
+              --subject-url   redis://127.0.0.1:16390
+```
+
+It puts the subject in `ts-compatibility-mode strict` by default (`--compat-mode`), so the
+intentional, documented divergences do not fail the run — a failure means an *unregistered*
+divergence worth investigating. Run `./fuzz.sh --help` for the full option
+list, including `--rounds`, `--filter`, `--reference-port`, `--keep-reference`,
+`--server-version`, `--skip-build`, `--rebuild`, `--skip-install`, `--python`, `--report`
+and `--dry-run`; anything after `--` is passed through to pytest.
 
 ## Load the Module
 To test the module with a Valkey, you can load the module in the following ways:

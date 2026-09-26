@@ -1,15 +1,17 @@
 use crate::commands::CommandArgToken;
 use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
-use crate::commands::ts_create::parse_series_options;
-use crate::common::Timestamp;
+use crate::commands::ts_create::{parse_series_options, series_option_keywords};
+use crate::common::block_on_keys::signal_timeseries_ready;
+use crate::common::{Sample, Timestamp};
 use crate::error_consts;
-use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, get_timeseries_mut};
+use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, try_get_timeseries_mut};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+acl_categories!(TS_INCRBY, "ts.incrby", "write timeseries");
 #[valkey_module_macros::command({
-    name: "TS.INCRBY",
+    name: "ts.incrby",
     flags: [Write, DenyOOM],
     summary: "Increase the value of the last sample, creating the series if needed.",
     complexity: "O(1)",
@@ -25,8 +27,9 @@ pub fn ts_incrby_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, true)
 }
 
+acl_categories!(TS_DECRBY, "ts.decrby", "write timeseries");
 #[valkey_module_macros::command({
-    name: "TS.DECRBY",
+    name: "ts.decrby",
     flags: [Write, DenyOOM],
     summary: "Decrease the value of the last sample, creating the series if needed.",
     complexity: "O(1)",
@@ -48,20 +51,49 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     }
 
     let mut args = args;
-    let delta = parse_value_arg(&args[2])?;
+    // RTS reports every unusable increment operand — unparseable, empty, NaN —
+    // with one message, distinct from TS.ADD's "invalid value".
+    let delta = parse_value_arg(&args[2])
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_INCREMENT_VALUE))?;
     let timestamp = handle_parse_timestamp(&mut args)?;
-    let key_name = &args[1];
 
-    if let Some(mut series) = get_timeseries_mut(
+    // Captured for replication before the create path consumes `args`. `TIMESTAMP` has
+    // already been stripped above, so `create_options` holds only the auto-creation
+    // arguments (RETENTION, LABELS, CHUNK_SIZE, ...) that a replica needs to build the
+    // same series.
+    let key_name = args[1].clone();
+    let delta_arg = args[2].clone();
+    let create_options = args[3..].to_vec();
+
+    let outcome = if let Some(mut series) = try_get_timeseries_mut(
         ctx,
-        key_name,
-        false,
+        &key_name,
         Some(AclPermissions::UPDATE | AclPermissions::ACCESS),
     )? {
-        handle_update(ctx, &mut series, key_name, timestamp, delta, is_increment)
+        handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)?
     } else {
-        create_series_and_update(ctx, args, timestamp, delta, is_increment)
+        create_series_and_update(ctx, args, timestamp, delta, is_increment)?
+    };
+
+    if outcome.replicate {
+        replicate_and_notify(
+            ctx,
+            &key_name,
+            &delta_arg,
+            &create_options,
+            is_increment,
+            outcome.timestamp,
+        );
     }
+
+    Ok(ValkeyValue::Integer(outcome.timestamp))
+}
+
+/// What a successful increment settled on: the sample timestamp to report to the
+/// caller, and whether the series actually changed and so must be propagated.
+struct IncrOutcome {
+    timestamp: Timestamp,
+    replicate: bool,
 }
 
 fn create_series_and_update(
@@ -70,21 +102,38 @@ fn create_series_and_update(
     timestamp: Option<Timestamp>,
     delta: f64,
     is_increment: bool,
-) -> ValkeyResult {
+) -> ValkeyResult<IncrOutcome> {
     let key_name = args.remove(1);
     const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
 
     let options = parse_series_options(args, 2, INVALID_ARGS)?;
-    let mut series = create_and_store_series(ctx, &key_name, options, true, true)?;
+    // Auto-create: no ts.create event (RTS parity) and no replication from
+    // the create helper — this command replicates itself (a second
+    // propagation would double the increment on replicas).
+    let mut series = create_and_store_series(ctx, &key_name, options, false, true)?;
 
     handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
 }
 
+/// Index of the first creation option: `TS.INCRBY key delta [options]`.
+const FIRST_OPTION_INDEX: usize = 3;
+
+/// Strip the `TIMESTAMP <ts>` option from `args` and parse it.
+///
+/// `TIMESTAMP` is only an option in the option region — after `key delta` and before
+/// the variadic `LABELS` list, which runs to the end. Scanning the whole vector took a
+/// key named `timestamp` for the option (removing the key and delta, then indexing past
+/// the end: a panic, which aborts the server) and a `timestamp` label for the option
+/// too. The first occurrence wins, and its operand is the next argument even when that
+/// is `LABELS` (the reference then rejects it as an invalid timestamp). Option keywords
+/// are found by walking option boundaries, so another option's operand spelled
+/// `timestamp` or `labels` (`METRIC labels`) is not taken for a keyword.
 fn handle_parse_timestamp(args: &mut Vec<ValkeyString>) -> ValkeyResult<Option<Timestamp>> {
-    if let Some(index) = args
-        .iter()
-        .position(|x| x.eq_ignore_ascii_case(b"timestamp"))
-    {
+    let timestamp_index = series_option_keywords(args, FIRST_OPTION_INDEX)
+        .take_while(|&(_, token)| token != CommandArgToken::Labels)
+        .find(|&(_, token)| token == CommandArgToken::Timestamp)
+        .map(|(index, _)| index);
+    if let Some(index) = timestamp_index {
         return if index < args.len() - 1 {
             args.remove(index);
             let timestamp_str = args.remove(index).to_string_lossy();
@@ -104,18 +153,35 @@ fn handle_update(
     timestamp: Option<Timestamp>,
     delta: f64,
     is_increment: bool,
-) -> ValkeyResult {
+) -> ValkeyResult<IncrOutcome> {
     let delta = if !is_increment { -delta } else { delta };
 
+    // Captured before the write: an increment at exactly the last timestamp updates the
+    // existing sample in place, which compaction must treat as an upsert rather than a
+    // fresh append (see `run_compaction_for_increment`).
+    let prev_last_ts = series.last_sample.map(|s| s.timestamp);
     let result = series.increment_sample_value(timestamp, delta)?;
     match result {
         SampleAddResult::Ok(added) => {
-            replicate_and_notify(ctx, key_name, is_increment, added.timestamp)
+            // An increment is a write like any other and must drive the series'
+            // compaction rules; without this a counter maintained by
+            // TS.INCRBY/TS.DECRBY never reaches its downstream series.
+            run_compaction_for_increment(ctx, series, key_name, added, prev_last_ts)?;
+            // An increment at the last timestamp updates in place and adds nothing readable, so
+            // only an append wakes blocked `TS.READ` readers. Not a `total_samples` comparison:
+            // the retention trim that follows an append can drop more than it added.
+            if prev_last_ts.is_none_or(|last| added.timestamp > last) {
+                signal_timeseries_ready(ctx, key_name);
+            }
+            Ok(IncrOutcome {
+                timestamp: added.timestamp,
+                replicate: true,
+            })
         }
-        SampleAddResult::Ignored(_ts) => {
-            let last_ts = series.last_timestamp();
-            Ok(ValkeyValue::Integer(last_ts))
-        }
+        SampleAddResult::Ignored(_ts) => Ok(IncrOutcome {
+            timestamp: series.last_timestamp(),
+            replicate: false,
+        }),
         SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
         SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
         _ => {
@@ -124,18 +190,65 @@ fn handle_update(
     }
 }
 
+/// Drive the series' compaction rules after a successful increment.
+///
+/// TS.INCRBY/TS.DECRBY reject a timestamp *older* than the last sample, but not one equal
+/// to it: `TS.INCRBY key <d> TIMESTAMP <last_ts>` updates the existing sample in place. That
+/// is an upsert, so the affected bucket must be recalculated from the source instead of the
+/// new value being streamed into the open bucket as an additional sample — otherwise the old
+/// and new values are both aggregated (e.g. `TS.ADD k 0 0` then `TS.INCRBY k 1 TIMESTAMP 0`
+/// gave an `avg` rollup of 0.5 instead of 1). Mirrors the is_upsert split in TS.ADD.
+fn run_compaction_for_increment(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    key_name: &ValkeyString,
+    added: Sample,
+    prev_last_ts: Option<Timestamp>,
+) -> ValkeyResult<()> {
+    if series.rules.is_empty() {
+        return Ok(());
+    }
+    let is_upsert = prev_last_ts.is_some_and(|last_ts| added.timestamp <= last_ts);
+    let result = if is_upsert {
+        series.upsert_compaction(ctx, added)
+    } else {
+        let sample = series.last_sample.unwrap_or(added);
+        series.run_compaction(ctx, sample)
+    };
+    result.map_err(|err| {
+        ValkeyError::String(format!(
+            "TSDB: error running compaction for key '{key_name}': {err}"
+        ))
+    })
+}
+
+/// Propagate the increment with the timestamp the primary actually used.
+///
+/// Verbatim replication is wrong here: without an explicit `TIMESTAMP`, a replica (or an
+/// AOF reload) re-derives "now" and lands the increment on a different timestamp than the
+/// primary. That diverges the sample set outright, and then diverges retention trimming
+/// and compaction-bucket assignment on top of it. Sending the resolved timestamp — plus
+/// the original auto-creation options, so a replica that has to create the series gets the
+/// same retention, labels and chunk size — makes the write deterministic.
 fn replicate_and_notify(
     ctx: &Context,
     key_name: &ValkeyString,
+    delta_arg: &ValkeyString,
+    create_options: &[ValkeyString],
     is_increment: bool,
     ts: Timestamp,
-) -> ValkeyResult {
-    let event = if is_increment {
-        "ts.incrby"
+) {
+    let (command, event) = if is_increment {
+        ("TS.INCRBY", "ts.incrby")
     } else {
-        "ts.decrby"
+        ("TS.DECRBY", "ts.decrby")
     };
-    ctx.replicate_verbatim();
+
+    let timestamp_token = ctx.create_string("TIMESTAMP");
+    let timestamp_arg = ctx.create_string(ts.to_string().as_bytes());
+    let mut replication_args = vec![key_name, delta_arg, &timestamp_token, &timestamp_arg];
+    replication_args.extend(create_options.iter());
+
+    ctx.replicate(command, &*replication_args);
     ctx.notify_keyspace_event(NotifyEvent::MODULE, event, key_name);
-    Ok(ValkeyValue::Integer(ts))
 }

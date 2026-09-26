@@ -16,7 +16,7 @@ mod tests {
             .expect_err("selector has no positive matcher");
         assert_eq!(
             err.to_string(),
-            error_consts::UNBOUNDED_SERIES_FILTERS,
+            error_consts::MISSING_FILTER,
             "unexpected error for {selector}"
         );
         parsed
@@ -98,6 +98,13 @@ mod tests {
         let result = parse_series_selector("");
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Empty series selector");
+    }
+
+    #[test]
+    fn test_regex_matcher_with_trailing_token_returns_parse_error() {
+        let result = parse_series_selector(r#"{job=~"prometheus" unexpected}"#);
+
+        assert!(result.is_err(), "malformed selector must not panic");
     }
 
     #[test]
