@@ -6,7 +6,7 @@
 #[cfg(not(test))]
 use crate::common::block_on_keys::signal_timeseries_ready;
 #[cfg(not(test))]
-use crate::common::context::create_key_string;
+use crate::common::context::{create_key_string, notify_keyspace_event};
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
@@ -16,8 +16,6 @@ use orx_parallel::{IterIntoParIter, Par, ParCollection};
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
-#[cfg(not(test))]
-use valkey_module::NotifyEvent;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub const MAX_SAMPLES_PER_INSERT: usize = 1_000;
@@ -436,14 +434,11 @@ pub fn bulk_insert_samples(
         ))
     });
 
+    // Always `ts.add`, even when the target is a compaction destination: `ts.add:dest` marks
+    // rule output only (emitted by the compaction path), matching TS.ADD/TS.MADD on RTS.
     #[cfg(not(test))]
     if series.total_samples > _saved_sample_count {
-        let event = if series.is_compaction() {
-            "ts.add:dest"
-        } else {
-            "ts.add"
-        };
-        notify_added(ctx, event, &series.key);
+        notify_added(ctx, &series.key);
     }
 
     // Propagate the accepted samples to compaction destinations in one batch.
@@ -484,9 +479,9 @@ pub fn bulk_insert_samples(
 }
 
 #[cfg(not(test))]
-fn notify_added(ctx: &Context, event: &str, key: &[u8]) {
+fn notify_added(ctx: &Context, key: &[u8]) {
     let key = create_key_string(ctx, key);
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, event, &key);
+    notify_keyspace_event(ctx, c"ts.add", &key);
     // The sole caller already gated on the series' sample count having grown, which is
     // exactly the condition that can satisfy a blocked `TS.READ`.
     signal_timeseries_ready(ctx, &key);

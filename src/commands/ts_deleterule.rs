@@ -1,8 +1,11 @@
+use crate::common::context::notify_keyspace_event;
 use crate::error_consts;
 use crate::series::{get_timeseries_mut, try_get_timeseries_mut};
-use valkey_module::{
-    AclPermissions, Context, NotifyEvent, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString,
-};
+use std::ffi::CStr;
+use valkey_module::{AclPermissions, Context, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString};
+
+const DELETERULE_SRC_EVENT: &CStr = c"ts.deleterule:src";
+const DELETERULE_DEST_EVENT: &CStr = c"ts.deleterule:dest";
 
 acl_categories!(TS_DELETERULE, "ts.deleterule", "write timeseries");
 ///
@@ -71,8 +74,8 @@ pub fn ts_deleterule_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     // Replicate the command
     ctx.replicate_verbatim();
 
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.deleterule:src", source_key);
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.deleterule:dest", dest_key);
+    notify_keyspace_event(ctx, DELETERULE_SRC_EVENT, source_key);
+    notify_keyspace_event(ctx, DELETERULE_DEST_EVENT, dest_key);
 
     VALKEY_OK
 }
