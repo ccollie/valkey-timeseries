@@ -1477,6 +1477,7 @@ pub fn check_new_rule_circular_dependency(
     if dependency_reaches(
         ctx,
         dest_key,
+        None,
         source_key.as_slice(),
         &mut std::collections::HashSet::new(),
     )? {
@@ -1488,12 +1489,29 @@ pub fn check_new_rule_circular_dependency(
     Ok(())
 }
 
+/// Whether `current` reaches `target` through live rules. `from` is the source whose rule led
+/// to `current` (`None` for the starting series).
 fn dependency_reaches(
     ctx: &Context,
     current: &ValkeyString,
+    from: Option<&[u8]>,
     target: &[u8],
     visited: &mut std::collections::HashSet<Vec<u8>>,
 ) -> ValkeyResult<bool> {
+    let Some(series) = try_get_timeseries(ctx, current, None)? else {
+        return Ok(false);
+    };
+    // Follow a rule only while its destination names the rule's owner as its source. A stale
+    // rule (the destination was deleted and re-created, overwritten...) is not an edge, and
+    // must be checked before the target: the target itself may be the re-created key.
+    if let Some(from) = from
+        && !series
+            .src_series
+            .as_ref()
+            .is_some_and(|src| src.points_to(from))
+    {
+        return Ok(false);
+    }
     if current.as_slice() == target {
         return Ok(true);
     }
@@ -1501,12 +1519,9 @@ fn dependency_reaches(
         return Ok(false);
     }
 
-    let Some(series) = try_get_timeseries(ctx, current, None)? else {
-        return Ok(false);
-    };
-
     for rule in &series.rules {
-        if dependency_reaches(ctx, &rule.dest.to_key_string(ctx), target, visited)? {
+        let dest_key = rule.dest.to_key_string(ctx);
+        if dependency_reaches(ctx, &dest_key, Some(&*series.key), target, visited)? {
             return Ok(true);
         }
     }
