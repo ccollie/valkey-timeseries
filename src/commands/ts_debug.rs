@@ -3,12 +3,13 @@ use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::panic_next_analysis_job;
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::replies::{
-    reply_with_array, reply_with_bulk_string, reply_with_double, reply_with_str, reply_with_usize,
-    reply_with_valkey_string,
+    reply_with_array, reply_with_bulk_string, reply_with_double, reply_with_simple_string,
+    reply_with_str, reply_with_usize, reply_with_valkey_string,
 };
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
 use crate::config::is_debug_mode_enabled;
 use crate::error_consts;
+use crate::promql::engine::query_workers::panic_next_evaluation;
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -163,6 +164,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
             "Query this node's local index only (no cluster fanout)",
         ),
         (
+            "TS._DEBUG PANIC_NEXT_EVALUATION",
+            "Make the next PromQL evaluation panic (tests that a failed query still answers)",
+        ),
+        (
             "TS._DEBUG LIST_CONFIGS [VERBOSE] [APP|DEV|HIDDEN]",
             "List config names (default) or VERBOSE details, optionally filtered by visibility",
         ),
@@ -202,10 +207,16 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> 
         "QUERYINDEX" => local_query_index(ctx, &mut itr),
         "HELP" => help_cmd(ctx, &mut itr),
         "LIST_CONFIGS" => list_configs_cmd(ctx, &mut itr),
+        "PANIC_NEXT_EVALUATION" => {
+            itr.done()?;
+            panic_next_evaluation();
+            reply_with_simple_string(ctx, "OK");
+            Ok(())
+        }
         "PANIC_NEXT_ANALYSIS_JOB" => {
             itr.done()?;
             panic_next_analysis_job();
-            reply_with_str(ctx, "OK");
+            reply_with_simple_string(ctx, "OK");
             Ok(())
         }
         _ => Err(ValkeyError::String(format!(
