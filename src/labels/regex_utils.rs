@@ -776,6 +776,38 @@ mod test {
     use crate::labels::filters::{PredicateMatch, PredicateValue};
 
     #[test]
+    fn literal_alternatives_accepts_only_escaped_literals() {
+        let lits = |s: &str| literal_alternatives(s);
+        let owned = |v: &[&str]| Some(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        assert_eq!(lits("api"), owned(&["api"]));
+        assert_eq!(lits(r"a|a\.c|b"), owned(&["a", "a.c", "b"]));
+        assert_eq!(
+            lits(r"us-east|eu west|x\|y"),
+            owned(&["us-east", "eu west", "x|y"])
+        );
+        assert_eq!(lits(r"\(\)\[\]\{\}\^\$\*\+\?\\"), owned(&[r"()[]{}^$*+?\"]));
+        assert_eq!(lits("café|日本"), owned(&["café", "日本"]));
+        // The derived filters' own encoding round-trips.
+        let values = ["b", "a.c", "1+1", "(x)"];
+        let mut sorted = values.map(String::from).to_vec();
+        sorted.sort();
+        assert_eq!(
+            lits(&crate::promql::engine::label_profile::join_regexp_values(
+                values
+            )),
+            Some(sorted)
+        );
+
+        for expr in [
+            "", "a|", "|a", "a||b", "a.c", "a*", "(a|b)", "[ab]", "a{2}", "^a", "a$", r"\d", r"\n",
+            r"a\", "(?i)a",
+        ] {
+            assert_eq!(lits(expr), None, "{expr:?}");
+        }
+    }
+
+    #[test]
     fn test_is_dot_star() {
         fn check(s: &str, expected: bool) {
             let sre = super::build_hir(s).unwrap();
