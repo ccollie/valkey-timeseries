@@ -16,9 +16,9 @@ use crate::parser::{
     ParseError, metric_name::parse_metric_name as parse_metric, parse_nonnegative_duration_value,
     timestamp::parse_timestamp as parse_timestamp_internal, timestamp::timestamp_error,
 };
-use crate::promql::check_query_depth;
 use crate::promql::engine::promql_config::PromqlConfig;
 use crate::promql::engine::validate_query_regexes;
+use crate::promql::{check_query_depth, duration_ms};
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
@@ -1867,7 +1867,7 @@ pub(super) fn parse_query_range_command_args(
         }
         (None, None) => {
             let end = current_time_millis();
-            let start = end - lookback_delta.as_millis() as i64;
+            let start = end.saturating_sub(duration_ms(lookback_delta));
             (start, end)
         }
         (Some(start_value), None) => {
@@ -1877,7 +1877,7 @@ pub(super) fn parse_query_range_command_args(
         }
         (None, Some(end_value)) => {
             let end = end_value.as_timestamp(None);
-            let start = end - lookback_delta.as_millis() as i64;
+            let start = end.saturating_sub(duration_ms(lookback_delta));
             (start, end)
         }
     };
