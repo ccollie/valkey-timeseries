@@ -233,7 +233,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         // truncated additional entries — either condition means results were cut off.
         query_result.has_more |= self.has_more;
 
-        match reply_with_label_search_result(ctx, query_result, hints.include_meta) {
+        match reply_with_label_search_result(ctx.context(), query_result, hints.include_meta) {
             Ok(_) => Status::Ok,
             Err(_e) => Status::Err,
         }

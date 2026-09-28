@@ -3,6 +3,7 @@ use crate::common::{MultiSample, Sample, Timestamp};
 use crate::labels::Label;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_long};
+use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     Context, ContextFlags, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN,
     ValkeyModule_ReplySetArrayLength, ValkeyModuleCtx, ValkeyResult, ValkeyValue, raw,
@@ -41,7 +42,6 @@ impl IntoRawCtx for &Context {
     }
 }
 
-#[allow(dead_code)]
 pub fn reply_with_str(ctx: &Context, s: &str) -> Status {
     reply_with_simple_str(ctx.ctx, s)
 }
@@ -174,13 +174,11 @@ pub fn reply_with_integer<C: IntoRawCtx>(ctx: C, value: i64) -> Status {
     raw::reply_with_long_long(raw_ctx, value)
 }
 
-#[allow(dead_code)]
 pub fn reply_with_usize<C: IntoRawCtx>(ctx: C, value: usize) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_long_long(raw_ctx, value as i64)
 }
 
-#[allow(dead_code)]
 pub fn reply_with_double<C: IntoRawCtx>(ctx: C, value: f64) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_double(raw_ctx, value)
@@ -306,6 +304,28 @@ fn reply_with_postponed_array<C: IntoRawCtx>(ctx: C) -> Status {
     raw::reply_with_array(raw_ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long)
 }
 
+/// Reply with a simple string. `\r`, `\n` and NUL, which would end or corrupt it on the wire,
+/// become spaces.
+pub fn reply_with_simple_string<C: IntoRawCtx>(ctx: C, s: &str) -> Status {
+    let msg = str_as_legal_resp_string(s);
+    raw::reply_with_simple_string(ctx.into_raw(), msg.as_ptr())
+}
+
+fn reply_with_key(raw_ctx: *mut raw::RedisModuleCtx, key: ValkeyValueKey) -> Status {
+    match key {
+        ValkeyValueKey::Integer(i) => raw::reply_with_long_long(raw_ctx, i),
+        ValkeyValueKey::String(s) => reply_with_bulk_string(raw_ctx, &s),
+        ValkeyValueKey::BulkString(b) => reply_with_slice(raw_ctx, &b),
+        ValkeyValueKey::BulkValkeyString(s) => raw::reply_with_string(raw_ctx, s.inner),
+        ValkeyValueKey::Bool(b) => raw::reply_with_bool(raw_ctx, b.into()),
+    }
+}
+
+/// Forward a [`ValkeyResult`] to the client.
+///
+/// `Context::reply` does the same, but its error path maps each `char` of the message to a byte
+/// and garbles any non-ASCII text in it — a key name or label value echoed in an error. Errors
+/// here go through [`reply_error_string`], which keeps UTF-8 intact.
 #[allow(clippy::must_use_candidate)]
 pub fn reply<C: IntoRawCtx>(ctx: C, result: ValkeyResult) -> Status {
     let raw_ctx = ctx.into_raw();

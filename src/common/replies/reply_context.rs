@@ -61,6 +61,8 @@ impl<'a> ReplyContext<'a> {
     /// and ACL identity. Inside a blocked-client reply or timeout callback this carries the real
     /// blocked client, so both protocol detection and ACL lookups behave as they do on the
     /// original command call.
+    ///
+    /// Main thread only (or with the GIL held): never from a worker answering a blocked client.
     #[inline]
     pub(crate) fn context(&self) -> &Context {
         &self.ctx
@@ -103,6 +105,17 @@ impl<'a> ReplyContext<'a> {
     /// Reply with a bulk string.
     pub fn reply_with_string(&self, value: &str) -> Status {
         reply_with_bulk_string(self.raw_ctx, value)
+    }
+
+    /// Reply with a simple string; `\r`, `\n` and NUL become spaces.
+    pub fn reply_with_simple_string(&self, value: &str) -> Status {
+        reply_with_simple_string(self.raw_ctx, value)
+    }
+
+    /// Reply with a `[timestamp, value]` pair.
+    pub fn reply_with_sample(&self, sample: &Sample) -> Status {
+        reply_with_sample(self.raw_ctx, sample);
+        Status::Ok
     }
 
     /// Start an array reply with the given length.
