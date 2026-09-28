@@ -146,7 +146,7 @@ impl Drop for BlockedClient {
         unsafe {
             if !self.answered {
                 let ctx = raw::RedisModule_GetThreadSafeContext.unwrap()(self.inner);
-                reply_no_reply_written(ctx);
+                reply(ctx, Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)));
                 raw::RedisModule_FreeThreadSafeContext.unwrap()(ctx);
             }
             raw::RedisModule_UnblockClient.unwrap()(self.inner, ptr::null_mut());
@@ -225,8 +225,7 @@ impl ThreadSafeReplyContext {
     #[allow(clippy::must_use_candidate)]
     pub fn reply(&self, r: ValkeyResult) -> raw::Status {
         self.answered.store(true, Ordering::Relaxed);
-        let ctx = Context::new(self.ctx);
-        ctx.reply(r)
+        reply(self.ctx, r)
     }
 
     /// A context to write the reply through. The caller takes responsibility for writing it.
@@ -239,7 +238,10 @@ impl ThreadSafeReplyContext {
 impl Drop for ThreadSafeReplyContext {
     fn drop(&mut self) {
         if !self.answered.load(Ordering::Relaxed) {
-            reply_no_reply_written(self.ctx);
+            reply(
+                self.ctx,
+                Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)),
+            );
         }
         unsafe {
             raw::RedisModule_BlockedClientMeasureTimeEnd.unwrap()(self.blocked_client.inner);
