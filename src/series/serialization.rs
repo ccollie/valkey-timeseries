@@ -179,6 +179,8 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
         }
         chunks.push(chunk);
     }
+    // Past the up-front reservation the list grew by doubling; don't keep the slack.
+    chunks.shrink_to_fit();
     let first_timestamp = first_timestamp.unwrap_or_default();
 
     // rule related
