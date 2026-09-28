@@ -66,14 +66,12 @@ pub(in crate::series::index) const BODY_VERSION: u8 = 1;
 // Every limit below is generous enough that only a corrupt or hostile payload trips it, and the
 // cost of a false positive is a soft fallback to the per-key rebuild, never data loss.
 
-/// Ceiling on one reconstructed label key (`prefix ++ suffix`). Label names are schema-bound and
-/// values come from the ingest path, so this sits orders of magnitude above anything
-/// [`IndexKey::for_label_value`] produces.
-const MAX_INDEX_KEY_LEN: usize = 64 * 1024;
-
-/// Ceiling on one timeseries key name in the id directory. Same rationale as
-/// [`MAX_INDEX_KEY_LEN`]: far above any real key name, tight enough to bound a corrupt length.
-const MAX_SERIES_KEY_LEN: usize = 64 * 1024;
+// No ceiling on one label key or one timeseries key name. The write path bounds neither (a
+// label value or key name is limited only by the server's bulk-length limit), so any fixed
+// ceiling rejects real data — and every restart then pays the full rebuild. Nor does either need
+// one: a key name and a key's suffix are copied from the payload byte for byte, and the one part
+// that is reused per entry, a group's prefix, is charged against the expansion budget below
+// before its key is allocated.
 
 /// Ceiling on one serialized bitmap blob. The largest legitimate bitmap is `all_postings` for a
 /// very large db — a densely packed billion-id set serializes to roughly 120 MiB — so this
@@ -84,7 +82,7 @@ const MAX_BITMAP_BLOB_BYTES: usize = 256 * 1024 * 1024;
 /// from.
 ///
 /// This is the bound that closes prefix-fanout amplification, and neither a per-key cap nor an
-/// entry count closes it alone: the directory writes a group's prefix *once* and the decoder
+/// entry count closes it alone (nor is needed beside it): the directory writes a group's prefix *once* and the decoder
 /// rebuilds it *per entry*, so `n` minimum-size entries under one long prefix cost `n * 32`
 /// bytes of payload but `n * prefix.len()` bytes of memory. At the per-key ceiling above that
 /// ratio reaches 2048x.
@@ -262,12 +260,6 @@ pub(in crate::series::index) fn deserialize(buf: &mut &[u8]) -> DecodeResult<Pos
     let mut entry_count: usize = 0;
     for _ in 0..group_count {
         let prefix = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
-        if prefix.len() > MAX_INDEX_KEY_LEN {
-            return Err(format!(
-                "label group prefix of {} bytes exceeds maximum {MAX_INDEX_KEY_LEN}",
-                prefix.len()
-            ));
-        }
         let count = try_read_uvarint(buf).map_err(|e| e.to_string())? as usize;
         entry_count = entry_count.saturating_add(count);
         groups.push((prefix, count));
@@ -282,10 +274,11 @@ pub(in crate::series::index) fn deserialize(buf: &mut &[u8]) -> DecodeResult<Pos
     for (prefix, count) in groups {
         for _ in 0..count {
             let suffix = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
+            // Charged before the key is built, so no allocation outruns the budget.
             let key_len = prefix.len() + suffix.len();
-            if key_len > MAX_INDEX_KEY_LEN {
+            if key_bytes_used.saturating_add(key_len) > key_budget {
                 return Err(format!(
-                    "label index key of {key_len} bytes exceeds maximum {MAX_INDEX_KEY_LEN}"
+                    "label index keys expand past {key_budget} bytes, {MAX_KEY_EXPANSION_RATIO}x the encoded body"
                 ));
             }
             key_bytes.clear();
@@ -294,10 +287,11 @@ pub(in crate::series::index) fn deserialize(buf: &mut &[u8]) -> DecodeResult<Pos
             key_bytes.extend_from_slice(suffix);
             let key = IndexKey::from(key_bytes.as_slice());
 
-            // Charged after construction, not from `key_len`: `IndexKey::from` converts lossily,
-            // and each invalid byte expands into a 3-byte U+FFFD. Charging the encoded length
-            // would leave the budget short by 3x on a payload of invalid UTF-8, which is free
-            // for an attacker to produce. The check above already bounds this one allocation.
+            // Charged again after construction, at the built length: `IndexKey::from` converts
+            // lossily, and each invalid byte expands into a 3-byte U+FFFD. Charging only the
+            // encoded length would leave the budget short by 3x on a payload of invalid UTF-8,
+            // which is free for an attacker to produce. The check above bounds this one
+            // allocation to 3x what it was charged.
             key_bytes_used = key_bytes_used.saturating_add(key.len());
             if key_bytes_used > key_budget {
                 return Err(format!(
@@ -342,12 +336,6 @@ pub(in crate::series::index) fn deserialize(buf: &mut &[u8]) -> DecodeResult<Pos
             .ok_or_else(|| "series id overflow".to_string())?;
         prev_id = id;
         let key = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
-        if key.len() > MAX_SERIES_KEY_LEN {
-            return Err(format!(
-                "timeseries key name of {} bytes exceeds maximum {MAX_SERIES_KEY_LEN}",
-                key.len()
-            ));
-        }
         id_to_key.insert(id, key.to_vec().into_boxed_slice());
     }
 
@@ -524,32 +512,23 @@ mod tests {
         assert!(err.contains("expand past"), "unexpected rejection: {err}");
     }
 
-    /// A prefix so long that a single key is implausible, independent of how many entries follow.
+    /// A long prefix fanned out over entries is charged per entry before each key is built, so
+    /// the budget stops it at the first entry that would cross it rather than after allocating.
     #[test]
-    fn rejects_oversized_group_prefix() {
-        let prefix = vec![b'x'; MAX_INDEX_KEY_LEN + 1];
-        let body = hostile_body(&live_ids(), &[(prefix, 0)], &[], 0, &[]);
-        let err = decode_err(&body);
-        assert!(err.contains("group prefix"), "unexpected rejection: {err}");
-    }
-
-    /// The prefix fits, the suffix fits, but the key they rebuild does not.
-    #[test]
-    fn rejects_oversized_reconstructed_key() {
-        let prefix = vec![b'x'; MAX_INDEX_KEY_LEN - 1];
-        let suffix = vec![b'y'; 8];
+    fn rejects_a_long_prefix_fanned_out_before_building_the_key() {
+        let prefix = vec![b'x'; 64 * 1024];
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..64)
+            .map(|i| (vec![b'0' + (i % 10) as u8], min_bitmap_blob()))
+            .collect();
         let body = hostile_body(
             &live_ids(),
-            &[(prefix, 1)],
-            &[(suffix, min_bitmap_blob())],
+            &[(prefix, entries.len() as u64)],
+            &entries,
             0,
             &[],
         );
         let err = decode_err(&body);
-        assert!(
-            err.contains("label index key"),
-            "unexpected rejection: {err}"
-        );
+        assert!(err.contains("expand past"), "unexpected rejection: {err}");
     }
 
     /// A directory promising more entries than the remaining bytes could encode must fail before
@@ -655,20 +634,43 @@ mod tests {
         );
     }
 
+    /// The write path bounds neither a label value nor a key name, so neither may the decoder:
+    /// past the former 64 KiB ceilings, the index round-trips instead of forcing a rebuild.
     #[test]
-    fn rejects_oversized_series_key_name() {
-        let body = hostile_body(
-            &live_ids(),
-            &[],
-            &[],
-            1,
-            &[(1, vec![b'k'; MAX_SERIES_KEY_LEN + 1])],
-        );
-        let err = decode_err(&body);
-        assert!(
-            err.contains("timeseries key name"),
-            "unexpected rejection: {err}"
-        );
+    fn round_trips_label_values_and_key_names_past_64_kib() {
+        let long_value = "v".repeat(100 * 1024);
+        let long_name = "n".repeat(100 * 1024);
+        let mut postings = Postings::default();
+        for (id, key) in [
+            (1u64, IndexKey::for_label_value("blob", &long_value)),
+            (2, IndexKey::for_label_value(&long_name, "x")),
+            (3, IndexKey::for_label_value("job", "api")),
+        ] {
+            let mut bitmap = PostingsBitmap::new();
+            bitmap.add(id);
+            postings.label_index.try_insert(key, bitmap).unwrap();
+            postings.all_postings.add(id);
+        }
+        let long_key = vec![b'k'; 100 * 1024].into_boxed_slice();
+        postings.id_to_key.insert(1, long_key.clone());
+        postings
+            .id_to_key
+            .insert(2, b"b".to_vec().into_boxed_slice());
+        postings
+            .id_to_key
+            .insert(3, b"c".to_vec().into_boxed_slice());
+
+        let mut buf = Vec::new();
+        serialize(&mut buf, &postings);
+        let decoded = deserialize(&mut buf.as_slice()).expect("long keys must decode");
+        assert_eq!(decoded.id_to_key.get(&1), Some(&long_key));
+        let keys: Vec<String> = decoded
+            .label_index
+            .iter()
+            .map(|(k, _)| k.as_str().to_string())
+            .collect();
+        assert!(keys.contains(&format!("blob={long_value}")));
+        assert!(keys.contains(&format!("{long_name}=x")));
     }
 
     /// The guard that matters most is the one that must *not* fire. A long label name over

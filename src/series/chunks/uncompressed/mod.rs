@@ -1,6 +1,8 @@
 use crate::common::encoding::write_f64_le;
 use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_uvarint};
-use crate::common::rdb::{rdb_load_len, rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usize};
+use crate::common::rdb::{
+    MAX_RDB_COLLECTION_LEN, rdb_load_len, rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usize,
+};
 use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
@@ -478,12 +480,15 @@ impl Chunk for UncompressedChunk {
         // forward compat - read encoding flag
         let _flag = rdb_load_u8(rdb)?;
         let max_size = rdb_load_usize(rdb)?;
-        // No chunk can legitimately declare more elements than the largest allowed chunk size
-        // permits; bounding on that closes off a corrupt/hostile `max_elements` before it's used
-        // as the ceiling for `len` below.
-        let max_elements = rdb_load_len(rdb, MAX_CHUNK_SIZE / SAMPLE_SIZE)?;
-        let len = rdb_load_len(rdb, max_elements)?;
-        let mut samples = Vec::with_capacity(len);
+        // A capacity, not a fact about the payload: clamped to the largest chunk size rather
+        // than rejected, since a series load error aborts the whole RDB load.
+        let max_elements = rdb_load_usize(rdb)?.min(MAX_CHUNK_SIZE / SAMPLE_SIZE);
+        // Nor is `len` bounded by it: `upsert_sample`, `merge_samples` and `set_data` do not
+        // check `is_full`, so nothing guarantees a saved chunk stayed within its capacity. The
+        // generic guard rejects a corrupt count, and the allocation is capped up front — each
+        // sample is a read that fails on a short payload.
+        let len = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
+        let mut samples = Vec::with_capacity(len.min(max_elements));
         for _ in 0..len {
             let ts = raw::load_signed(rdb)?;
             let val = raw::load_double(rdb)?;
@@ -499,8 +504,9 @@ impl Chunk for UncompressedChunk {
         }
         Ok(UncompressedChunk {
             max_size,
+            // An overfull chunk loads as full, so the next append starts a new one.
+            max_elements: max_elements.max(samples.len()),
             samples,
-            max_elements,
         })
     }
 

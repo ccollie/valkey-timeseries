@@ -1,6 +1,6 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::rdb::{rdb_load_len, rdb_load_string, rdb_save_usize};
+use crate::common::rdb::{MAX_RDB_COLLECTION_LEN, rdb_load_len, rdb_load_string, rdb_save_usize};
 use crate::common::string_interner::InternedString;
 use crate::parser::ParseError;
 use crate::parser::metric_name::parse_metric_name;
@@ -223,8 +223,13 @@ impl MetricName {
     }
 
     pub fn from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
-        let count = rdb_load_len(rdb, MAX_LABELS_PER_SERIES)?;
-        let mut entries = Vec::with_capacity(count);
+        // Not `MAX_LABELS_PER_SERIES`: `TS.CREATE … LABELS` does not enforce it,
+        // and a series `rdb_load` error aborts the whole load, so a tighter
+        // bound here turns an accepted write into a server that cannot start.
+        // The generic guard still rejects a corrupt count, and the allocation
+        // is capped up front: each label is a read that fails on a short payload.
+        let count = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
+        let mut entries = Vec::with_capacity(count.min(MAX_LABELS_PER_SERIES));
         for _ in 0..count {
             let name = rdb_load_string(rdb)?;
             let value = rdb_load_string(rdb)?;
