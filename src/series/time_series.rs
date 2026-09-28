@@ -694,8 +694,7 @@ impl TimeSeries {
         };
         let (start_index, end_index) = range;
         let chunks = &self.chunks[start_index..=end_index];
-        if chunks.len() < PARALLEL_RANGE_MIN_CHUNKS || rayon_core::current_thread_index().is_some()
-        {
+        if chunks.len() < PARALLEL_RANGE_MIN_CHUNKS || on_pool_worker() {
             // Decode on this thread when the range is small, or when the caller
             // is already a pool worker — a fan-out across series, where a
             // nested scope per series costs more than it parallelizes (and its
