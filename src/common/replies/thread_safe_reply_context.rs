@@ -153,7 +153,7 @@ impl Drop for BlockedClient {
         unsafe {
             if !self.answered {
                 let ctx = raw::RedisModule_GetThreadSafeContext.unwrap()(self.inner);
-                reply_no_reply_written(ctx);
+                reply(ctx, Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)));
                 raw::RedisModule_FreeThreadSafeContext.unwrap()(ctx);
             }
             raw::RedisModule_UnblockClient.unwrap()(self.inner, ptr::null_mut());
@@ -260,7 +260,10 @@ impl ThreadSafeReplyContext {
 impl Drop for ThreadSafeReplyContext {
     fn drop(&mut self) {
         if !self.answered.load(Ordering::Relaxed) {
-            reply_no_reply_written(self.ctx);
+            reply(
+                self.ctx,
+                Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)),
+            );
         }
         unsafe {
             raw::RedisModule_BlockedClientMeasureTimeEnd.unwrap()(self.blocked_client.inner);
