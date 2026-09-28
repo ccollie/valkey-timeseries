@@ -4,6 +4,7 @@ use crate::fanout::{FanoutAclScope, FanoutIdentity};
 use crate::series::acl::ModuleUser;
 use std::ops::Deref;
 use std::rc::Rc;
+use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The GIL, held for one step of a shard-local fan-out request.
