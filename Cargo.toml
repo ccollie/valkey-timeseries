@@ -138,3 +138,8 @@ use-redismodule-api = [] # We don't support this feature flag which is why it is
 # Enabled automatically for dev targets via the self dev-dependency above.
 # The generators in src/tests are the only users of these two.
 test-utils = ["dep:bon", "dep:rand_distr"]
+
+[[bench]]
+name = "literal_set_filter"
+harness = false
+required-features = ["enable-system-alloc"]
