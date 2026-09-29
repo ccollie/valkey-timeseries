@@ -37,15 +37,6 @@ impl IntoRawCtx for &Context {
     }
 }
 
-pub fn reply_with_str(ctx: &Context, s: &str) -> Status {
-    let msg = CString::new(s).unwrap_or_else(|_| {
-        // Remove any interior NUL bytes to ensure CString::new cannot fail here.
-        let sanitized: String = s.chars().filter(|c| *c != '\0').collect();
-        CString::new(sanitized).unwrap()
-    });
-    raw::reply_with_simple_string(ctx.ctx, msg.as_ptr())
-}
-
 pub fn reply_with_valkey_string<C: IntoRawCtx>(ctx: C, s: &ValkeyString) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_string(raw_ctx, s.inner)
