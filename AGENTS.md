@@ -144,9 +144,10 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 
 ## Warnings / gotchas
 
-- **`enable-system-alloc` is mandatory** for anything linking the crate outside a live server (tests,
-  doctests, benches, `tools/` binaries) — without it the binary SIGABRTs at startup
-  (`Critical error: the Valkey Allocator isn't available`). `build.sh` passes it for you.
+- **`enable-system-alloc` is mandatory** for doctests, benches and `tools/` binaries — without it
+  they SIGABRT at startup (`Critical error: the Valkey Allocator isn't available`). Unit tests
+  (`--lib`) pick the system allocator under `cfg(test)` and run without it; doctests do not, because
+  they link the ordinary library build. `build.sh` passes it for you.
 - **Threading rules (R1–R5) live in the `src/common/threads/mod.rs` docs.** Take the GIL with
   `MODULE_CONTEXT.lock_gil()`, enter parallel work through the `*_rayon` adapters or
   `threads::join`, and put work that blocks or takes the GIL on a `BoundedExecutor` or
