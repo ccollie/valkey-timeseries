@@ -4,7 +4,7 @@ use crate::commands::analysis_runner::panic_next_analysis_job;
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::replies::{
     reply_with_array, reply_with_bulk_string, reply_with_double, reply_with_simple_string,
-    reply_with_str, reply_with_usize, reply_with_valkey_string,
+    reply_with_usize, reply_with_valkey_string,
 };
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
 use crate::config::is_debug_mode_enabled;
@@ -17,23 +17,23 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 fn dump_bucket(ctx: &Context, bucket: &BucketStats) {
     reply_with_array(ctx, 12);
 
-    reply_with_str(ctx, "count");
+    reply_with_simple_string(ctx, "count");
     reply_with_usize(ctx, bucket.count);
 
-    reply_with_str(ctx, "bytes");
+    reply_with_simple_string(ctx, "bytes");
     reply_with_usize(ctx, bucket.bytes);
 
-    reply_with_str(ctx, "avgSize");
+    reply_with_simple_string(ctx, "avgSize");
     reply_with_double(ctx.ctx, bucket.get_avg_size());
 
-    reply_with_str(ctx, "allocated");
+    reply_with_simple_string(ctx, "allocated");
     reply_with_usize(ctx, bucket.allocated);
 
-    reply_with_str(ctx, "avgAllocated");
+    reply_with_simple_string(ctx, "avgAllocated");
     reply_with_double(ctx, bucket.get_avg_allocated());
 
     let utilization = bucket.get_utilization() * 100.0;
-    reply_with_str(ctx, "utilization");
+    reply_with_simple_string(ctx, "utilization");
     reply_with_usize(ctx, utilization as usize);
 }
 
@@ -41,16 +41,16 @@ fn dump_bucket(ctx: &Context, bucket: &BucketStats) {
 fn dump_top_k_entry(ctx: &Context, entry: &TopKEntry) {
     reply_with_array(ctx, 8);
 
-    reply_with_str(ctx, "value");
+    reply_with_simple_string(ctx, "value");
     reply_with_bulk_string(ctx, &entry.value);
 
-    reply_with_str(ctx, "refCount");
+    reply_with_simple_string(ctx, "refCount");
     reply_with_usize(ctx, entry.ref_count);
 
-    reply_with_str(ctx, "bytes");
+    reply_with_simple_string(ctx, "bytes");
     reply_with_usize(ctx, entry.bytes);
 
-    reply_with_str(ctx, "allocated");
+    reply_with_simple_string(ctx, "allocated");
     reply_with_usize(ctx, entry.allocated);
 }
 
@@ -99,17 +99,17 @@ fn string_pool_stats(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResu
     // reference costs whether or not the bytes behind it are shared, so the four fields after
     // it restate the same saving against total string storage; see `Stats` for the split.
     reply_with_array(ctx, 12);
-    reply_with_str(ctx, "memorySavedBytes");
+    reply_with_simple_string(ctx, "memorySavedBytes");
     reply_with_usize(ctx, stats.memory_saved_bytes);
-    reply_with_str(ctx, "memorySavedPct");
+    reply_with_simple_string(ctx, "memorySavedPct");
     reply_with_double(ctx.ctx, stats.memory_saved_pct);
-    reply_with_str(ctx, "holders");
+    reply_with_simple_string(ctx, "holders");
     reply_with_usize(ctx, stats.holder_count);
-    reply_with_str(ctx, "holderSlotBytes");
+    reply_with_simple_string(ctx, "holderSlotBytes");
     reply_with_usize(ctx, stats.holder_slot_bytes);
-    reply_with_str(ctx, "totalStorageBytes");
+    reply_with_simple_string(ctx, "totalStorageBytes");
     reply_with_usize(ctx, stats.total_storage_bytes);
-    reply_with_str(ctx, "storageSavedPct");
+    reply_with_simple_string(ctx, "storageSavedPct");
     reply_with_double(ctx.ctx, stats.storage_saved_pct);
 
     if k > 0 {
