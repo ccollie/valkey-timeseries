@@ -178,6 +178,14 @@ pub fn spawn_background_single<F: FnOnce() + Send + 'static>(
     });
 }
 
+/// Runs `work` on the evaluation pool and waits for it: the one sanctioned way in, because it
+/// checks R2 first. Every parallel entry point `work` reaches resolves to that pool (R4).
+#[track_caller]
+pub(crate) fn run_on_eval_pool<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    check_may_wait_on_eval_pool();
+    EVAL_POOL.install(work)
+}
+
 /// Runs `work` on `pool` and waits for it without running anything else meanwhile.
 ///
 /// `pool.install(work)` from a worker of *another* pool is rayon's cross-pool path: the waiting
