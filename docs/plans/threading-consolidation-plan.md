@@ -1,8 +1,26 @@
 # Threading consolidation across `unstable`, `promql` and `feat/forecasting` (plan)
 
-**Status:** Phase A implemented 2026-10-01 on `refactor/threads-consolidation` (from `unstable`
-30dc029c0, uncommitted at the time of writing). Phases B and C (the two rebases) and the A/B
-measurements of Phase D are not started. Analysis of `unstable` 30dc029c0, `promql` 5481d941c and
+**Status (2026-10-01):** Phases A, B and C are implemented on local branches; nothing is on
+`unstable`, `promql` or `feat/forecasting` themselves, and nothing is pushed.
+
+- **A** — `refactor/threads-consolidation` (from `unstable` 30dc029c0).
+- **B** — `promql-on-threads-consolidation`: `promql` 5481d941c with A merged in, not rebased.
+  The PromQL pools moved to the generic roles (`EvalPool` → `BlockingPool`, `MaterializePool` →
+  `IsolatedPool`); TS.OUTLIERS uses the shared analysis lane.
+- **C** — `forecasting-on-threads-consolidation`: `feat/forecasting` 4c15f01c9 with A merged in.
+  The analysis pool, `spawn_analysis` and `map_on_current_pool` are gone; analysis jobs run on
+  the lane (closing review §2.1 and §2.2). The merge also ported two `unstable` changes the
+  branch lacked (no-alloc keyspace notifications, removed `notify_added` imports).
+- **Verified** on each branch tip: `build.sh` (fmt, release clippy, release build with
+  `-D warnings`, unit, doc and integration tests: A 1530/1270, B 2494/1492, C 1644/1978), and
+  every integration server log scanned before deletion for `threading rule broken` and
+  `panicked`: no rule violations; the only panics are the tests' deliberate ones.
+- **Not done:** the Phase D A/B measurements (TS.JOIN/LABELSTATS, OUTLIERS under load, the §2.1
+  BACKTEST benchmark), an ASAN pass, the compat suite (no RTS-surface change), and a linear
+  rebase of B and C (they are merges, so a history-preserving rebase is still the owner's call).
+- **Pre-existing on `promql`, not fixed:** `cargo clippy --all-targets --features
+  enable-system-alloc -- -D clippy::all` fails on `benches/literal_set_filter.rs`
+  (`type_complexity`); `build.sh`'s release clippy, which omits the feature, passes. Analysis of `unstable` 30dc029c0, `promql` 5481d941c and
 `feat/forecasting` 4c15f01c9.
 
 Deviations from the text below, in Phase A:
