@@ -15,9 +15,9 @@
   `-D warnings`, unit, doc and integration tests: A 1530/1270, B 2494/1492, C 1644/1978), and
   every integration server log scanned before deletion for `threading rule broken` and
   `panicked`: no rule violations; the only panics are the tests' deliberate ones.
-- **Not done:** the Phase D A/B measurements (TS.JOIN/LABELSTATS, OUTLIERS under load, the §2.1
-  BACKTEST benchmark), an ASAN pass, the compat suite (no RTS-surface change), and a linear
-  rebase of B and C (they are merges, so a history-preserving rebase is still the owner's call).
+- **Phase D measurements:** run 2026-10-01; results in §8.
+- **Not done:** an ASAN pass, the compat suite (no RTS-surface change), and a linear rebase of B
+  and C (they are merges, so a history-preserving rebase is still the owner's call).
 - **Pre-existing on `promql`, not fixed:** `cargo clippy --all-targets --features
   enable-system-alloc -- -D clippy::all` fails on `benches/literal_set_filter.rs`
   (`type_complexity`); `build.sh`'s release clippy, which omits the feature, passes. Analysis of `unstable` 30dc029c0, `promql` 5481d941c and
@@ -426,3 +426,76 @@ command's own context, as `promql` does for PromQL and OUTLIERS. Forecasting's p
   the compat suite (no RTS-surface behaviour changes in Phase A).
 - **Verification debt carried over**: the ASAN pass and the thread-count comparison from
   `promql`'s plan are scheduled in Phase D rather than assumed.
+
+---
+
+## 8. Phase D results (2026-10-01)
+
+**Setup.** MacBook Air M2, 8 cores, 8 GB, fanless; `valkey-server` unstable (the test binary);
+module defaults (`ts-num-threads` 4, so a 4-thread shared pool and 4-worker lanes). Release
+modules: **U** = `unstable` 30dc029c0, **A** = Phase A (code of cdaebe000), **F0** =
+`feat/forecasting` 4c15f01c9, **C** = the forecasting port (code of 89d7fed7d). Each scenario ran
+before/after interleaved ABBA, 3 rounds (burst: 2); figures are the median across rounds with
+the min–max range. Clients are separate processes (valkey-py). No run logged a threading-rule
+violation or a request error. The harness was a throwaway script in the session scratchpad.
+
+### 8.1 A3: `join` moved from rayon's global pool (8 threads) to the shared pool (4)
+
+| Scenario | Metric | U | A | A/U |
+|---|---|---|---|---|
+| TS.JOIN of 2 × 1M samples, `REDUCE avg AGGREGATION avg 1h`, 1 client | p50 | 23.5 ms [23.3–24.1] | 23.5 ms [23.0–23.8] | 1.00 |
+| same, 4 clients | p50 / p99 | 94.9 / 120 ms | 92.1 / 119 ms | 0.97 / 1.00 |
+| TS.LABELSTATS LIMIT 10, 30k series, 3-primary cluster, 1 client | p50 / p99 | 30.1 / 34.4 ms | 30.8 / 54.1 ms | 1.02 / 1.57 |
+| same, 4 clients | p50 / p99 | 97.9 / 140 ms | 100.6 / 155 ms | 1.03 / 1.11 |
+
+TS.JOIN is unchanged. TS.LABELSTATS is about 3 % slower at the median with four clients
+(non-overlapping ranges: 96.1–98.6 vs 99.8–103.0 ms) and noisier in the tail; with three nodes
+and the clients on one 8-core laptop that is within what the fewer, smaller pools would cost.
+Not worth a change; revisit if a real cluster shows it.
+
+### 8.2 TS.OUTLIERS `METHOD rcf` on 10k samples, 8 clients for 40 s, PING probe every 5 ms
+
+| Metric | U (unbounded rayon spawn) | A (analysis lane, 4 workers) | A/U |
+|---|---|---|---|
+| detections/s | 2.92 | 2.92 | 1.00 |
+| detection p50 / p99 | 2.78 / 4.04 s | 2.83 / 3.38 s | 1.02 / 0.84 |
+| PING p50 / p90 / p99 under load | 0.31 / 5.53 / 15.7 ms | 0.26 / 0.45 / 2.90 ms | 0.85 / 0.08 / 0.18 |
+| PING replies/s (probe-limited) | 115 | 153 | 1.33 |
+
+Same detection throughput, and the main thread stays responsive: the lane leaves cores free,
+where eight detections on rayon's 8-thread pool took every core from it.
+
+### 8.3 Review §2.1: TS.BACKTEST (20k samples, `ARIMA(2,1,0)`, 8 folds) next to 4 AUTOFORECAST loops
+
+| Metric | F0 | C | C/F0 |
+|---|---|---|---|
+| BACKTEST alone p50 / p99 | 72 / 91 ms | 74 / 106 ms | 1.03 / 1.15 |
+| with 4 AUTOFORECAST clients p50 / p90 | 266 / 789 ms | 357 / 511 ms | 1.34 / 0.65 |
+| with 4 AUTOFORECAST clients p99 / max | 4.61 / 5.06 s | 0.59 / 0.60 s | 0.13 / 0.12 |
+| BACKTEST/s under load | 1.92 | 2.99 | 1.56 |
+| p99 inflation vs alone | ×50 | ×6.6 | |
+
+The multi-second tail is gone and throughput is up by half. The median is a third worse: in C a
+BACKTEST waits for a free lane worker behind four ~0.2 s AUTOFORECAST jobs, where F0's
+work-stealing sometimes ran it sooner, at the cost of the tail above.
+
+### 8.4 Review §2.2: 400 pipelined `TS.AUTOFORECAST af - + HORIZON 12 TIMEOUT 1` (2k samples)
+
+| | F0 | C |
+|---|---|---|
+| replies | 400 timeouts | 377–400 timeouts, 0–23 `too many queued jobs (limit 256)` |
+| analysis jobs after the burst | 400 | 227–260 (cap 256 queued + 4 running) |
+| outcome | **server killed by SIGILL** 6–13 s later, both rounds; no job had completed | drained in 34–40 s |
+| RSS peak | 77 MB | 39 MB |
+
+**F0 crashes.** The pipelined calls time out one per server tick (`hz` 10, so ~100 ms each), and
+every abandoned job stays queued on the analysis pool. A pool worker waiting on AUTOFORECAST's
+own `par_iter` (anofox `parallel`) runs the next queued *whole job* while it waits, which waits in
+turn, so each worker nests job inside job and none completes. The macOS crash report shows all
+four `valkey-timeseries-analysis` stacks past the reporter's 511-frame cap; symbolized, the
+innermost 511 frames of one worker hold seven nested `ts_autoforecast_cmd` jobs between
+`WorkerThread::wait_until_cold` frames. With `RUST_MIN_STACK=512 MiB` the crash goes away and the
+nest finishes only after ~65 s, all at once. So it is stack exhaustion from review §2.1's
+mechanism, reachable by any client: 100, 200 and 300 abandoned jobs survived, 400 crashed 3 of 3
+times (the threshold moves with input size and model). C bounds the queue and runs no whole job
+on a pool, so neither the nesting nor the crash can occur.
