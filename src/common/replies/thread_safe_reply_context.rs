@@ -122,7 +122,10 @@ impl Drop for ThreadSafeReplyContext {
 }
 
 impl IntoRawCtx for &ThreadSafeReplyContext {
+    /// Writing through the raw context is answering too: the caller takes responsibility for
+    /// the reply, so the drop must not add an error after it.
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
+        self.answered.store(true, Ordering::Relaxed);
         self.ctx
     }
 }
