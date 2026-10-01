@@ -18,8 +18,8 @@ use crate::commands::command_parser::StoreOptions;
 use crate::common::Sample;
 use crate::series::acl::check_key_permissions;
 use crate::series::{
-    DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
-    try_get_timeseries,
+    DestinationWriteMode, TimeSeriesOptions, check_series_creatable,
+    create_or_update_series_with_samples, try_get_timeseries,
 };
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -101,6 +101,22 @@ impl StoreTarget {
     pub fn check_destination_type(&self, ctx: &Context) -> ValkeyResult<()> {
         let key = ctx.create_string(self.key.as_slice());
         try_get_timeseries(ctx, &key, None).map(|_| ())
+    }
+
+    /// Fails with the error [`Self::write`] would hit creating a missing destination (a
+    /// `METRIC` already held by another series is `DUPLICATE_SERIES`), and checks the
+    /// destination's type like [`Self::check_destination_type`]. An existing series is only
+    /// written to, so it can't fail this way. For a command that also rewrites its source, so
+    /// every failure a client can cause happens before anything has changed.
+    ///
+    /// Call it only when a write will follow: with nothing to write the destination is never
+    /// created, so the same `METRIC` is not an error.
+    pub fn check_destination_writable(&self, ctx: &Context) -> ValkeyResult<()> {
+        let key = ctx.create_string(self.key.as_slice());
+        if try_get_timeseries(ctx, &key, None)?.is_none() {
+            check_series_creatable(ctx, &self.options)?;
+        }
+        Ok(())
     }
 
     /// Writes `samples` without replicating, for a command that replicates itself

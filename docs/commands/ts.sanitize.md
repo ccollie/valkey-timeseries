@@ -138,8 +138,12 @@ If no samples remain after sanitizing, the destination is left untouched (and no
   only samples within that range are considered. Samples outside the range are not used as
   interpolation anchors.
 
-- **Source rewrite:** Unless the `ERROR` policy fails, the source range is always replaced by the
-  sanitized samples, even when nothing was missing and even when `STORE` is given.
+- **Source rewrite:** Unless the `ERROR` policy fails, the source range ends up holding the
+  sanitized samples, even when `STORE` is given. Only what changed is written: an imputed value
+  replaces the stored one, `DROP` clears the range and writes the remaining samples back, and a
+  range with nothing missing is left untouched. The write is not subject to the series' `IGNORE`
+  filter, which applies to incoming samples (a sample put back is not one); the series' value
+  rounding and retention still apply.
 
 - **STORE behavior:** When `STORE` is specified, the sanitized samples are written to the
   destination key in addition to being applied to the source series. Without `MERGE`, the

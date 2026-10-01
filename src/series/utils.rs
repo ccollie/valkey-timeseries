@@ -1,10 +1,10 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{create_key_string, get_current_db, notify_keyspace_event};
 use crate::error_consts;
-use crate::labels::{InternedLabel, Label};
+use crate::labels::{InternedLabel, Label, MetricName};
 use crate::series::acl::{KeyAccess, check_key_permissions};
 use crate::series::chunks::ChunkEncoding;
-use crate::series::index::{get_db_index, next_timeseries_id};
+use crate::series::index::{TimeSeriesIndex, get_db_index, next_timeseries_id};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
     SeriesGuard, SeriesGuardMut, SeriesLink, TimeSeries, TimeSeriesOptions,
@@ -149,19 +149,38 @@ pub fn create_series(
 
     let index = guard.deref();
 
-    // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
-    // We do this only in the case where we have a __name__ label, signaling that the user is
-    // opting in to Prometheus semantics, meaning a metric name is unique to a series.
-    if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
-        let labels = ts.labels.to_label_vec();
-        // will return an error if the series already exists
-        if index.series_id_by_labels(&labels).is_some() {
-            return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
-        }
-    }
+    check_metric_name_unique(index, &ts.labels)?;
 
     index.index_timeseries(&ts, key.iter().as_slice());
     Ok(ts)
+}
+
+/// Fails with `DUPLICATE_SERIES` when `labels` would collide with an existing series.
+///
+/// Only a `__name__` label opts in to Prometheus semantics, where a metric name is unique to
+/// one series; without one any number of series may share a label set.
+fn check_metric_name_unique(index: &TimeSeriesIndex, labels: &MetricName) -> ValkeyResult<()> {
+    if labels.get_value(METRIC_NAME_LABEL).is_none() {
+        return Ok(());
+    }
+    if index.series_id_by_labels(&labels.to_label_vec()).is_some() {
+        return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
+    }
+    Ok(())
+}
+
+/// Fails with the error [`create_series`] would return for `options`, without creating
+/// anything. For a command that must know a destination can be created before it changes
+/// any other key.
+///
+/// The key's own state (an existing series is simply written to, a key of another type is
+/// `WRONGTYPE`) is not looked at here; that is the caller's to check.
+pub fn check_series_creatable(ctx: &Context, options: &TimeSeriesOptions) -> ValkeyResult<()> {
+    let Some(labels) = &options.labels else {
+        return Ok(());
+    };
+    let guard = get_db_index(get_current_db(ctx));
+    check_metric_name_unique(guard.deref(), &MetricName::new(labels))
 }
 
 pub fn create_and_store_internal(

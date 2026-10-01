@@ -211,6 +211,32 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
             v != b"nan" for _, v in self.replica.execute_command("TS.RANGE", "src", "-", "+")
         )
 
+    def test_sanitize_rejected_store_is_not_replicated(self):
+        """A STORE the command can't carry out changes nothing, here or on the replica.
+
+        The destination's METRIC is held by another series, so it can't be created. The command
+        used to rewrite the source and queue itself for replication before finding that out.
+        """
+        self.client.execute_command("TS.CREATE", "src")
+        self.client.execute_command(
+            "TS.MADD", "src", 1000, 1, "src", 2000, "nan", "src", 3000, 3
+        )
+        self.client.execute_command("TS.CREATE", "holder", "METRIC", "taken")
+        self.sync()
+        before = self.client.execute_command("TS.RANGE", "src", "-", "+")
+
+        with pytest.raises(Exception, match="duplicate series"):
+            self.client.execute_command(
+                "TS.SANITIZE", "src", "-", "+", "POLICY", "INTERPOLATE",
+                "STORE", "dst", "METRIC", "taken",
+            )
+
+        self.sync()
+        for client in (self.client, self.replica):
+            assert client.execute_command("TS.RANGE", "src", "-", "+") == before
+            assert client.execute_command("EXISTS", "dst") == 0
+        assert self.command_calls(self.replica, "ts.sanitize") == 0
+
     def test_background_store_writes_to_the_selected_db(self):
         self.client.select(3)
         try:

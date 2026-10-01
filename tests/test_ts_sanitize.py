@@ -983,6 +983,124 @@ class TestTimeSeriesSanitize(ValkeyTimeSeriesTestCaseBase):
         assert info_dict[b'duplicatePolicy'] == b'min'
         assert info_dict[b'chunkType'] == b'uncompressed'
 
+    # ------------------------------------------------------------------
+    # A STORE destination that cannot be created
+    # ------------------------------------------------------------------
+
+    def test_store_metric_collision_fails_before_changing_anything(self):
+        """A METRIC another series already holds is rejected before the source is rewritten."""
+        self._create_series_with_data('ts1', [
+            (1000, 1.0),
+            (2000, float('nan')),
+            (3000, 3.0),
+        ])
+        self.client.execute_command('TS.CREATE', 'holder', 'METRIC', 'taken')
+        before = self.client.execute_command('TS.RANGE', 'ts1', '-', '+')
+
+        with pytest.raises(ResponseError, match='duplicate series'):
+            self.client.execute_command(
+                'TS.SANITIZE', 'ts1', '-', '+',
+                'POLICY', 'FILLMEAN', 'STORE', 'dest1', 'METRIC', 'taken'
+            )
+
+        # The NaN is still there, and nothing was created.
+        assert self.client.execute_command('TS.RANGE', 'ts1', '-', '+') == before
+        assert self.client.execute_command('EXISTS', 'dest1') == 0
+
+    def test_store_metric_collision_is_ignored_when_nothing_is_written(self):
+        """With an empty result the destination is never created, so its METRIC can't collide."""
+        self._create_series_with_data('ts1', [(1000, 1.0), (2000, 2.0)])
+        self.client.execute_command('TS.CREATE', 'holder', 'METRIC', 'taken')
+
+        written = self.client.execute_command(
+            'TS.SANITIZE', 'ts1', 5000, 6000, 'STORE', 'dest1', 'METRIC', 'taken'
+        )
+
+        assert written == 0
+        assert self.client.execute_command('EXISTS', 'dest1') == 0
+
+    def test_store_metric_is_ignored_for_an_existing_destination(self):
+        """Creation options only apply to a new destination, so an existing one can't collide."""
+        self._create_series_with_data('ts1', [(1000, 1.0), (2000, float('nan')), (3000, 3.0)])
+        self.client.execute_command('TS.CREATE', 'holder', 'METRIC', 'taken')
+        self.client.execute_command('TS.CREATE', 'dest1')
+
+        written = self.client.execute_command(
+            'TS.SANITIZE', 'ts1', '-', '+',
+            'POLICY', 'FILLMEAN', 'STORE', 'dest1', 'METRIC', 'taken'
+        )
+
+        assert written == 3
+        assert self._get_all_samples('dest1') == [(1000, 1.0), (2000, 2.0), (3000, 3.0)]
+
+    # ------------------------------------------------------------------
+    # The write-back is not subject to the source's IGNORE filter
+    # ------------------------------------------------------------------
+
+    def _create_ignoring_series(self, key, samples):
+        """A series that drops writes within 10 s and 1.0 of the last stored sample."""
+        self.client.execute_command('TS.CREATE', key, 'IGNORE', 10000, 1.0)
+        args = []
+        for ts, val in samples:
+            args += [key, ts, val]
+        self.client.execute_command('TS.MADD', *args)
+
+    def test_sanitize_ignore_filter_does_not_drop_rewritten_samples(self):
+        """An imputed value is stored even though it is within IGNORE range of its neighbour."""
+        self._create_ignoring_series('src', [(1000, 5), (2000, 'nan'), (3000, 5.5)])
+
+        self.client.execute_command('TS.SANITIZE', 'src', 2000, 3000, 'POLICY', 'FILL', 5.2)
+
+        # 5.2 is 0.2 from 1000:5 and the untouched 3000:5.5 is 0.5 from it: both used to be
+        # judged against the sample before the range, and ignored.
+        assert self._get_all_samples('src') == [(1000, 5.0), (2000, 5.2), (3000, 5.5)]
+
+    def test_sanitize_drop_keeps_samples_the_ignore_filter_would_drop(self):
+        """DROP clears the range and puts the finite samples back; none of them is filtered."""
+        self._create_ignoring_series(
+            'src', [(1000, 5), (2000, 'nan'), (3000, 5.5), (4000, 5.6)]
+        )
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'DROP')
+
+        assert self._get_all_samples('src') == [(1000, 5.0), (3000, 5.5), (4000, 5.6)]
+
+    def test_sanitize_fills_a_trailing_gap_under_the_ignore_filter(self):
+        """The last stored sample is what IGNORE compares against, so it is the likeliest to go."""
+        self._create_ignoring_series('src', [(1000, 5), (2000, 'nan')])
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'FILL', 5.2)
+
+        assert self._get_all_samples('src') == [(1000, 5.0), (2000, 5.2)]
+
+    @pytest.mark.parametrize('policy', ['ERROR', 'DROP', 'INTERPOLATE'])
+    def test_sanitize_of_clean_data_changes_nothing_under_the_ignore_filter(self, policy):
+        """With nothing to fix the series is left alone, not cleared and merged back."""
+        self.client.execute_command('TS.CREATE', 'src', 'IGNORE', 10000, 1.0)
+        self.client.execute_command('TS.ADD', 'src', 1000, 5)
+        self.client.execute_command('TS.ADD', 'src', 20000, 6)
+        # Out of order, so it is an upsert the filter never saw. Merged back after the range
+        # was cleared it would sit 1 s and 0.1 after 1000:5, and be ignored.
+        self.client.execute_command('TS.ADD', 'src', 2000, 5.1)
+        before = self._get_all_samples('src')
+        assert before == [(1000, 5.0), (2000, 5.1), (20000, 6.0)]
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', policy)
+
+        assert self._get_all_samples('src') == before
+
+    def test_sanitize_rewrites_only_the_samples_it_changed(self):
+        """Samples outside the imputed ones keep their exact stored values."""
+        self.client.execute_command('TS.CREATE', 'src')
+        values = [1.0000000000000002, float('nan'), 0.1 + 0.2, float('nan'), 4.0]
+        for i, value in enumerate(values):
+            self.client.execute_command('TS.ADD', 'src', (i + 1) * 1000, value)
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'FILL', 9)
+
+        stored = self._get_all_samples('src')
+        assert [v for _, v in stored] == [values[0], 9.0, values[2], 9.0, values[4]]
+
     # ==================================================================
     # Edge cases
     # ==================================================================

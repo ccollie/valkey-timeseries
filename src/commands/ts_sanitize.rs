@@ -8,7 +8,7 @@ use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::common::Sample;
 use crate::common::replies::reply_with_samples;
 use crate::error_consts;
-use crate::series::{DuplicatePolicy, get_timeseries_mut};
+use crate::series::{TimeSeries, get_timeseries_mut};
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
     ValkeyValue,
@@ -130,11 +130,15 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ImputationPolicy::MovingAverage(_) | ImputationPolicy::Seasonal(_)
     );
 
-    // The source is rewritten below before the destination is written; check the destination
-    // first so a WRONGTYPE destination fails the command before anything has changed.
+    // Keys change from here on and a change can't be undone, so everything a client can cause
+    // to fail is checked first. A destination of another type fails even when there is nothing
+    // to write; one that can't be created is checked once the result is known.
     if let Some(dest) = &destination {
         dest.check_destination_type(ctx)?;
     }
+
+    // The range as stored, to tell afterwards what sanitizing changed.
+    let original = samples.clone();
 
     // Apply the sanitization policy
     let sanitized = sanitize(&mut samples, policy)
@@ -148,22 +152,40 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         &samples
     };
 
-    // --- Write sanitized samples back to the source series ---
-    // Remove the old range, then merge the sanitized result.
-    series
-        .remove_range(start_ts, end_ts)
-        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
-
-    if !to_return.is_empty() {
-        let mut sorted = to_return.to_vec();
-        sorted.sort_by_key(|s| s.timestamp);
-        series
-            .merge_samples(&sorted, Some(DuplicatePolicy::KeepLast))
-            .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+    // A destination that can't be created (a `METRIC` another series already holds) is the one
+    // failure a client can still cause, and it only matters when a write follows: an empty
+    // result never creates the destination.
+    if let Some(dest) = &destination
+        && !to_return.is_empty()
+    {
+        dest.check_destination_writable(ctx)?;
     }
 
+    // The destination is written first: if that fails the source is still as the client left
+    // it. `write_unreplicated` because the replica re-runs this whole command, and so this same
+    // write, from the replicated command below.
+    let stored = destination
+        .as_ref()
+        .map(|dest| dest.write_unreplicated(ctx, to_return))
+        .transpose()?;
+
+    // --- Write sanitized samples back to the source series ---
+    write_back(
+        &mut series,
+        start_ts,
+        end_ts,
+        to_return,
+        &diff_range(&original, to_return),
+    )?;
+    // --- End write-back ---
+
+    // Replication comes after the last write, so an error reply never follows a replicated
+    // command. What remains is a failure inside a write itself (an internal error, not
+    // something a client can cause), which can leave the first key written and nothing
+    // replicated.
+    //
     // Sanitizing runs inline, so the replica re-runs the command rather than replaying its
-    // effect. That covers the STORE write below too, which must therefore not replicate itself.
+    // effect. That covers the STORE write above too, which must therefore not replicate itself.
     // What it re-runs is the command with its inputs resolved: the range grammar accepts `*` and
     // relative offsets, and `SEASONAL auto` is detected from the data, so the verbatim command
     // would resolve differently on a replica (or an AOF replay at restart) than it did here.
@@ -181,15 +203,120 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
     ctx.replicate("TS.SANITIZE", repl_args.as_slice());
     ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.sanitize", &key);
-    // --- End write-back ---
 
-    if let Some(dest) = destination {
-        let written = dest.write_unreplicated(ctx, to_return)?;
+    if let Some(written) = stored {
         return Ok(ValkeyValue::from(written));
     }
 
     reply_with_samples(ctx, to_return.iter().cloned());
     Ok(ValkeyValue::NoReply)
+}
+
+/// What sanitizing changed within the range it read.
+#[derive(Debug, Default, PartialEq)]
+struct RangeChanges {
+    /// How many stored samples the result no longer contains (only `DROP` removes any).
+    removed: usize,
+    /// Samples whose value differs from what is stored, ascending by timestamp.
+    changed: Vec<Sample>,
+}
+
+/// Two values are the same if they are the same bits, or both NaN: a NaN left as it was is not a
+/// change, whatever its payload.
+fn same_value(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+}
+
+/// Compares the range as stored (`original`) with the sanitized `result`, matching samples by
+/// timestamp.
+fn diff_range(original: &[Sample], result: &[Sample]) -> RangeChanges {
+    let sorted;
+    let result = if result.is_sorted_by_key(|s| s.timestamp) {
+        result
+    } else {
+        sorted = {
+            let mut copy = result.to_vec();
+            copy.sort_by_key(|s| s.timestamp);
+            copy
+        };
+        &sorted
+    };
+
+    let mut changes = RangeChanges::default();
+    let (mut o, mut r) = (0, 0);
+    loop {
+        match (original.get(o), result.get(r)) {
+            (None, None) => break,
+            (Some(stored), Some(new)) if stored.timestamp == new.timestamp => {
+                if !same_value(stored.value, new.value) {
+                    changes.changed.push(*new);
+                }
+                o += 1;
+                r += 1;
+            }
+            (Some(stored), Some(new)) if stored.timestamp < new.timestamp => {
+                changes.removed += 1;
+                o += 1;
+            }
+            (Some(_), None) => {
+                changes.removed += 1;
+                o += 1;
+            }
+            // In the result only: not stored yet.
+            (_, Some(new)) => {
+                changes.changed.push(*new);
+                r += 1;
+            }
+        }
+    }
+    changes
+}
+
+/// Applies a sanitized `result` of the range `[start_ts, end_ts]` to the source series, writing
+/// only what changed.
+///
+/// A value that was imputed is written over the one stored, so nothing is deleted and nothing
+/// else is touched. `DROP` is the one policy that removes samples; clearing the range in one
+/// pass and putting the kept samples back costs one chunk rewrite, where deleting each gap
+/// separately re-encodes a chunk for every one of them.
+///
+/// Either way the write bypasses the series' IGNORE filter (see
+/// [`TimeSeries::overwrite_samples`]), which would otherwise judge each sample against whatever
+/// happens to precede it and drop some of them.
+fn write_back(
+    series: &mut TimeSeries,
+    start_ts: i64,
+    end_ts: i64,
+    result: &[Sample],
+    changes: &RangeChanges,
+) -> ValkeyResult<()> {
+    if changes.removed == 0 {
+        return overwrite(series, &changes.changed);
+    }
+    series
+        .remove_range(start_ts, end_ts)
+        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+    let mut kept = result.to_vec();
+    kept.sort_by_key(|s| s.timestamp);
+    overwrite(series, &kept)
+}
+
+/// Writes `samples` (ascending by timestamp) over the series, failing if any is not stored.
+fn overwrite(series: &mut TimeSeries, samples: &[Sample]) -> ValkeyResult<()> {
+    let outcomes = series
+        .overwrite_samples(samples)
+        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+    match samples
+        .iter()
+        .zip(&outcomes)
+        .find(|(_, outcome)| !outcome.is_ok())
+    {
+        None => Ok(()),
+        Some((sample, outcome)) => Err(ValkeyError::String(format!(
+            "TSDB: could not write the sanitized sample at {}: {outcome}",
+            sample.timestamp
+        ))),
+    }
 }
 
 /// The bounds to replicate for a range already resolved to `[start_ts, end_ts]`.
@@ -351,6 +478,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn samples(values: &[(i64, f64)]) -> Vec<Sample> {
+        values.iter().map(|&(t, v)| Sample::new(t, v)).collect()
+    }
+
+    #[test]
+    fn diff_reports_only_imputed_values() {
+        let original = samples(&[(1, 1.0), (2, f64::NAN), (3, 3.0), (4, f64::INFINITY)]);
+        let result = samples(&[(1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)]);
+
+        let changes = diff_range(&original, &result);
+
+        assert_eq!(changes.removed, 0);
+        assert_eq!(changes.changed, samples(&[(2, 2.0), (4, 4.0)]));
+    }
+
+    #[test]
+    fn diff_counts_dropped_samples() {
+        let original = samples(&[
+            (1, 1.0),
+            (2, f64::NAN),
+            (3, f64::NAN),
+            (4, 4.0),
+            (5, f64::NAN),
+        ]);
+        let result = samples(&[(1, 1.0), (4, 4.0)]);
+
+        let changes = diff_range(&original, &result);
+
+        assert_eq!(changes.removed, 3);
+        assert!(changes.changed.is_empty());
+    }
+
+    #[test]
+    fn diff_treats_a_nan_left_as_it_was_as_unchanged() {
+        // A leading NaN that FORWARDFILL has nothing to fill from stays NaN.
+        let original = samples(&[(1, f64::NAN), (2, 2.0)]);
+        let result = samples(&[(1, f64::from_bits(0x7ff8_0000_0000_0001)), (2, 2.0)]);
+
+        assert_eq!(diff_range(&original, &result), RangeChanges::default());
+    }
+
+    #[test]
+    fn diff_of_a_clean_range_is_empty() {
+        let original = samples(&[(1, 1.0), (2, -0.0), (3, 3.0)]);
+
+        assert_eq!(diff_range(&original, &original), RangeChanges::default());
+        assert_eq!(diff_range(&[], &[]), RangeChanges::default());
+    }
+
+    #[test]
+    fn diff_tolerates_an_unsorted_result_and_unstored_timestamps() {
+        let original = samples(&[(1, 1.0), (2, f64::NAN), (3, 3.0)]);
+        let result = samples(&[(3, 3.0), (2, 2.0), (1, 1.0), (9, 9.0)]);
+
+        let changes = diff_range(&original, &result);
+
+        assert_eq!(changes.removed, 0);
+        assert_eq!(changes.changed, samples(&[(2, 2.0), (9, 9.0)]));
     }
 
     #[test]
