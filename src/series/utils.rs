@@ -1,3 +1,4 @@
+use crate::common::Sample;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{create_key_string, get_current_db, notify_keyspace_event};
 use crate::error_consts;
@@ -295,7 +296,7 @@ pub fn create_or_update_series_with_samples(
         if write_mode == DestinationWriteMode::Overwrite
             && let Some(mut dest_series) = try_get_timeseries_mut(ctx, dest_key, None)?
         {
-            let deleted = clear_series(&mut dest_series)?;
+            let deleted = clear_series(ctx, &mut dest_series)?;
             if deleted > 0 {
                 ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
             }
@@ -311,14 +312,14 @@ pub fn create_or_update_series_with_samples(
     let mut delete_count = 0;
     if write_mode == DestinationWriteMode::Overwrite {
         // Clear the destination before writing
-        delete_count = clear_series(&mut dest_series)?;
+        delete_count = clear_series(ctx, &mut dest_series)?;
     }
 
     let policy_override =
         (write_mode == DestinationWriteMode::Merge).then_some(DuplicatePolicy::KeepLast);
 
     let merged = dest_series
-        .merge_samples(samples, policy_override)
+        .merge_samples_with_compaction(ctx, samples, policy_override)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
 
     let written = merged.iter().filter(|r| r.is_ok()).count();
@@ -335,10 +336,14 @@ pub fn create_or_update_series_with_samples(
     })
 }
 
-/// Removes every sample from a STORE destination, returning how many there were.
-fn clear_series(series: &mut TimeSeries) -> ValkeyResult<usize> {
+/// Removes every sample from a STORE destination, returning how many there were, and from the
+/// buckets of its compaction rules, which are computed from them.
+fn clear_series(ctx: &Context, series: &mut TimeSeries) -> ValkeyResult<usize> {
+    // Up to the last sample rather than `Timestamp::MAX`: it is the same set of samples, and a
+    // range that ends at the type's limit is one bucket arithmetic need not be asked to handle.
+    let last = series.last_timestamp();
     series
-        .remove_range(0, Timestamp::MAX)
+        .remove_range_with_compaction(ctx, 0, last)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))
 }
 

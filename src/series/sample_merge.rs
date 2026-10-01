@@ -102,28 +102,95 @@ pub(super) fn merge_samples(
     Ok(results)
 }
 
-/// Writes `samples` over whatever is stored at their timestamps, inserting any that are not
-/// stored yet. See [`TimeSeries::overwrite_samples`].
+/// Merges `samples` into `series` and propagates what was accepted to its compaction rules, as
+/// `TS.MADD` does for a batch: the rules' destination series are fed the same samples, so a
+/// downstream bucket never disagrees with the source it is computed from.
+///
+/// With `ignore` set to [`IgnoreFilter::Bypass`] the write is not an incoming client write (see
+/// [`TimeSeries::overwrite_samples`]). The retention trim is the caller's: compaction has to see
+/// the series before it (see [`TimeSeries::apply_retention`]).
 ///
 /// ### Returns
 ///
-/// One `SampleAddResult` per sample, in input order. `samples` **must** be sorted by timestamp.
-pub(super) fn overwrite_samples(
+/// One `SampleAddResult` per sample, in input order. A failure in a destination series is
+/// logged, not returned, as for `TS.MADD`: the samples are already stored in `series`.
+fn merge_and_compact(
+    ctx: &Context,
     series: &mut TimeSeries,
     samples: &[Sample],
+    policy_override: Option<DuplicatePolicy>,
+    ignore: IgnoreFilter,
 ) -> TsdbResult<Vec<SampleAddResult>> {
     if samples.is_empty() {
         return Ok(Vec::new());
     }
 
-    let results = merge_samples_into_series_with(
+    // Before the merge: samples above it are fresh appends, the rest may have replaced values.
+    let prev_last = series.last_sample.map(|s| s.timestamp);
+    let results = merge_samples_into_series_with(series, samples, policy_override, ignore);
+    series.split_chunks_if_needed()?;
+
+    if series.rules.is_empty() {
+        return Ok(results);
+    }
+
+    // Accepted samples, with the values as stored (rounded). `results` is parallel to
+    // `samples`, so the order they came in is captured before sorting for batch compaction.
+    let mut added: Vec<Sample> = results
+        .iter()
+        .filter_map(|res| match res {
+            SampleAddResult::Ok(sample) => Some(*sample),
+            _ => None,
+        })
+        .collect();
+    let added_order: Vec<Timestamp> = added.iter().map(|s| s.timestamp).collect();
+    added.sort_unstable_by_key(|s| s.timestamp);
+
+    if added.is_empty() {
+        return Ok(results);
+    }
+    if let Err(e) = series.batch_compaction(ctx, &added, prev_last, &added_order) {
+        let key =
+            get_series_key_by_id(ctx, series.id).unwrap_or_else(|| ctx.create_string("Unknown"));
+        ctx.log_warning(&format!(
+            "TSDB: error running compaction for key '{key}': {e}"
+        ));
+    }
+    Ok(results)
+}
+
+/// [`merge_and_compact`] followed by the retention trim, which `TimeSeries::merge_samples` does
+/// eagerly: a batch can advance the window. See [`TimeSeries::merge_samples_with_compaction`].
+pub(super) fn merge_samples_with_compaction(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    samples: &[Sample],
+    policy_override: Option<DuplicatePolicy>,
+) -> TsdbResult<Vec<SampleAddResult>> {
+    let results = merge_and_compact(ctx, series, samples, policy_override, IgnoreFilter::Apply)?;
+    series.apply_retention();
+    Ok(results)
+}
+
+/// Writes `samples` over whatever is stored at their timestamps, inserting any that are not
+/// stored yet, and propagates them to the compaction rules. See
+/// [`TimeSeries::overwrite_samples`].
+///
+/// ### Returns
+///
+/// One `SampleAddResult` per sample, in input order. `samples` **must** be sorted by timestamp.
+pub(super) fn overwrite_samples(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    samples: &[Sample],
+) -> TsdbResult<Vec<SampleAddResult>> {
+    merge_and_compact(
+        ctx,
         series,
         samples,
         Some(DuplicatePolicy::KeepLast),
         IgnoreFilter::Bypass,
-    );
-    series.split_chunks_if_needed()?;
-    Ok(results)
+    )
 }
 
 /// Merges samples across multiple series, supporting parallel processing when applicable.

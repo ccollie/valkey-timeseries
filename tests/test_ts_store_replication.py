@@ -318,6 +318,124 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
 
         assert self.client.execute_command("GET", "dst") == b"not a series"
 
+    # ------------------------------------------------------------------
+    # STORE feeds the destination's compaction rules
+    # ------------------------------------------------------------------
+
+    COMPACTION_POLICY = "count:10s:1h|^dst"
+    BUCKET_MS = 10_000
+
+    def use_compaction_policy(self):
+        """Give `dst` (only) a default count rule, on the primary and on the replica.
+
+        The configuration is per node, and the replica creates `dst` itself when it applies the
+        replicated write, so it needs the policy as much as the primary does.
+        """
+        for client in (self.client, self.replica):
+            client.execute_command("CONFIG", "SET", "ts.ts-compaction-policy", self.COMPACTION_POLICY)
+
+    def compaction_child(self, client, key="dst"):
+        info = client.execute_command("TS.INFO", key)
+        rules = dict(zip(info[::2], info[1::2]))[b"rules"]
+        assert len(rules) == 1, f"{key} should have exactly the one default rule: {rules}"
+        return rules[0][0]
+
+    def expected_closed_buckets(self, samples):
+        """What a `count` rule holds for `samples`: every bucket but the last one, still open."""
+        counts = {}
+        for ts, _ in samples:
+            bucket = ts // self.BUCKET_MS * self.BUCKET_MS
+            counts[bucket] = counts.get(bucket, 0) + 1
+        open_bucket = samples[-1][0] // self.BUCKET_MS * self.BUCKET_MS if samples else None
+        return [(b, float(n)) for b, n in sorted(counts.items()) if b != open_bucket]
+
+    def assert_compaction_matches_destination(self, expect_buckets):
+        """The rule's series holds exactly the buckets of `dst`'s samples, on both nodes."""
+        self.sync()
+        for client in (self.client, self.replica):
+            samples = client.execute_command("TS.RANGE", "dst", "-", "+")
+            expected = self.expected_closed_buckets(samples)
+            assert len(expected) == expect_buckets, f"expected {expect_buckets} buckets: {expected}"
+            child = client.execute_command("TS.RANGE", self.compaction_child(client), "-", "+")
+            assert [(ts, float(v)) for ts, v in child] == expected
+
+    def run_store_command(self, command, destination="dst"):
+        """One STORE write of ~20-60 samples spanning several 10 s buckets."""
+        if command == "sanitize":
+            self.add_series("sanitize_src", 60)
+            self.client.execute_command("TS.MADD", "sanitize_src", 5000, "nan", "sanitize_src", 6000, "nan")
+            return self.client.execute_command(
+                "TS.SANITIZE", "sanitize_src", "-", "+", "POLICY", "FILL", 0, "STORE", destination
+            )
+        if command == "fillgaps":
+            self.client.execute_command("TS.CREATE", "gaps_src")
+            self.client.execute_command("TS.MADD", "gaps_src", 1000, 1, "gaps_src", 2000, 2, "gaps_src", 60000, 3)
+            return self.client.execute_command(
+                "TS.FILLGAPS", "gaps_src", "-", "+", "FREQUENCY", STEP_MS, "VALUE", 1, "STORE", destination
+            )
+        self.add_series("model_src", 60)
+        if command == "trend":
+            return self.client.execute_command("TS.TREND", "model_src", "-", "+", "STORE", destination)
+        return self.client.execute_command(
+            "TS.FORECAST", "model_src", "-", "+", "MODELS", FORECAST_MODEL, "HORIZON", 25,
+            "STORE", destination,
+        )
+
+    # Closed 10 s buckets each command's output fills: all but the last sample's, which is open.
+    # sanitize and trend store 1000..60000, fillgaps 3000..59000, forecast 61000..85000.
+    @pytest.mark.parametrize("command, buckets", [
+        ("sanitize", 6), ("fillgaps", 5), ("trend", 6), ("forecast", 2),
+    ])
+    def test_store_feeds_the_destinations_compaction_rules(self, command, buckets):
+        """A new destination gets the default rules, and what is written to it flows into them.
+
+        The rules used to be attached to the destination and then never fed, so their series
+        stayed empty however much was stored.
+        """
+        self.use_compaction_policy()
+
+        assert self.run_store_command(command) > 0
+
+        self.assert_compaction_matches_destination(expect_buckets=buckets)
+
+    def test_store_overwrite_clears_the_compaction_buckets_too(self):
+        """Overwriting empties the destination, and the buckets computed from what was there."""
+        self.use_compaction_policy()
+        self.run_store_command("trend")  # 1000..60000: six closed buckets
+        self.assert_compaction_matches_destination(expect_buckets=6)
+
+        self.add_series("short_src", 30)
+        self.client.execute_command("TS.SANITIZE", "short_src", "-", "+", "STORE", "dst")
+
+        # 30 samples: three closed buckets. The stale ones from the first write are gone.
+        self.assert_compaction_matches_destination(expect_buckets=3)
+
+    def test_store_overwrite_with_no_output_empties_the_compaction_buckets(self):
+        self.use_compaction_policy()
+        self.run_store_command("trend")
+        self.assert_compaction_matches_destination(expect_buckets=6)
+
+        # No gaps in `model_src` at its own spacing: nothing to store, so `dst` is emptied.
+        assert self.client.execute_command(
+            "TS.FILLGAPS", "model_src", "-", "+", "FREQUENCY", STEP_MS, "STORE", "dst"
+        ) == 0
+
+        self.sync()
+        for client in (self.client, self.replica):
+            assert client.execute_command("TS.RANGE", "dst", "-", "+") == []
+            assert client.execute_command("TS.RANGE", self.compaction_child(client), "-", "+") == []
+
+    def test_store_merge_adds_to_the_compaction_buckets(self):
+        """MERGE keeps what is there, and the new samples join the same buckets."""
+        self.use_compaction_policy()
+        self.run_store_command("trend")  # 1000..60000
+        # Past it: 61000..85000. The 60000 and 70000 buckets close, on top of the six.
+        self.client.execute_command(
+            "TS.FORECAST", "model_src", "-", "+", "MODELS", FORECAST_MODEL, "HORIZON", 25,
+            "STORE", "dst", "MERGE",
+        )
+        self.assert_compaction_matches_destination(expect_buckets=8)
+
     def test_background_store_writes_to_the_selected_db(self):
         self.client.select(3)
         try:

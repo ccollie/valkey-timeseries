@@ -1101,6 +1101,68 @@ class TestTimeSeriesSanitize(ValkeyTimeSeriesTestCaseBase):
         stored = self._get_all_samples('src')
         assert [v for _, v in stored] == [values[0], 9.0, values[2], 9.0, values[4]]
 
+    # ------------------------------------------------------------------
+    # The source's compaction rules follow the rewrite
+    # ------------------------------------------------------------------
+
+    def _create_source_with_rule(self, aggregation):
+        """`src` with a rule into `agg` (10 s buckets) on `aggregation`."""
+        self.client.execute_command('TS.CREATE', 'src')
+        self.client.execute_command('TS.CREATE', 'agg')
+        self.client.execute_command(
+            'TS.CREATERULE', 'src', 'agg', 'AGGREGATION', aggregation, 10000
+        )
+
+    def test_sanitize_drop_updates_the_compaction_buckets(self):
+        """A dropped sample leaves the downstream bucket too, not just the source.
+
+        Aggregation skips NaN, so only an infinite sample is in a bucket to be dropped from.
+        """
+        self._create_source_with_rule('count')
+        # The 20000 sample closes the first bucket, which is what makes it visible in `agg`.
+        self.client.execute_command(
+            'TS.MADD', 'src', 1000, 1, 'src', 2000, 'inf', 'src', 3000, 3, 'src', 20000, 5
+        )
+        assert self._get_all_samples('agg') == [(0, 3.0)]
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'DROP')
+
+        assert self._get_all_samples('src') == [(1000, 1.0), (3000, 3.0), (20000, 5.0)]
+        # The bucket was computed from three samples, one of them the dropped +inf.
+        assert self._get_all_samples('agg') == [(0, 2.0)]
+
+    def test_sanitize_drop_of_an_infinity_recomputes_a_sum_bucket(self):
+        self._create_source_with_rule('sum')
+        self.client.execute_command(
+            'TS.MADD', 'src', 1000, 1, 'src', 2000, 'inf', 'src', 3000, 3, 'src', 20000, 5
+        )
+        assert self._get_all_samples('agg') == [(0, math.inf)]
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'DROP')
+
+        assert self._get_all_samples('agg') == [(0, 4.0)]
+
+    def test_sanitize_fill_recomputes_the_compaction_buckets(self):
+        """An imputed value replaces the NaN in the bucket, not only in the source."""
+        self._create_source_with_rule('sum')
+        self.client.execute_command(
+            'TS.MADD', 'src', 1000, 1, 'src', 2000, 'nan', 'src', 3000, 3, 'src', 20000, 5
+        )
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'FILL', 2)
+
+        assert self._get_all_samples('agg') == [(0, 6.0)]
+
+    def test_sanitize_with_nothing_to_fix_leaves_the_compaction_buckets_alone(self):
+        self._create_source_with_rule('sum')
+        self.client.execute_command(
+            'TS.MADD', 'src', 1000, 1, 'src', 3000, 3, 'src', 20000, 5
+        )
+
+        self.client.execute_command('TS.SANITIZE', 'src', '-', '+', 'POLICY', 'ERROR')
+
+        assert self._get_all_samples('agg') == [(0, 4.0)]
+
     # ==================================================================
     # Edge cases
     # ==================================================================

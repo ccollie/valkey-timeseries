@@ -145,7 +145,9 @@ destination is still emptied (it holds exactly the sanitized samples, which is n
   replaces the stored one, `DROP` clears the range and writes the remaining samples back, and a
   range with nothing missing is left untouched. The write is not subject to the series' `IGNORE`
   filter, which applies to incoming samples (a sample put back is not one); the series' value
-  rounding and retention still apply.
+  rounding and retention still apply. If the source has compaction rules, their series follow
+  the rewrite, as for `TS.DEL` and `TS.MADD`: an imputed value joins its bucket, and a dropped
+  infinity leaves it. (Aggregation skips NaN, so a NaN was never in a bucket to leave.)
 
 - **STORE behavior:** When `STORE` is specified, the sanitized samples are written to the
   destination key in addition to being applied to the source series. Without `MERGE`, the

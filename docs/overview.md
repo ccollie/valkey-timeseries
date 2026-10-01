@@ -132,6 +132,12 @@ with it. The destination must differ from the source and, in cluster mode, hash 
 Replicas and the AOF receive the stored samples, not the command, so the analysis runs only on
 the primary.
 
+A `STORE` write feeds the destination's compaction rules like any other write: a destination
+created by the command gets the rules `ts-compaction-policy` gives it, a rule made with
+`TS.CREATERULE` on an existing one applies too, and the rules' series follow what is stored,
+cleared and replaced (including an overwrite that clears the destination first). The node's own
+`ts-compaction-policy` decides the default rules, on a replica as on the primary.
+
 A statistic that is undefined for the input (the kurtosis of three values, a correlation against
 a constant series) is returned as null. Sample values are returned as stored, so a NaN sample
 still comes back as `nan`, as in `TS.RANGE`.

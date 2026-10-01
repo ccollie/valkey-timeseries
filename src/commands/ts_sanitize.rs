@@ -171,6 +171,7 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     // --- Write sanitized samples back to the source series ---
     write_back(
+        ctx,
         &mut series,
         start_ts,
         end_ts,
@@ -284,6 +285,7 @@ fn diff_range(original: &[Sample], result: &[Sample]) -> RangeChanges {
 /// [`TimeSeries::overwrite_samples`]), which would otherwise judge each sample against whatever
 /// happens to precede it and drop some of them.
 fn write_back(
+    ctx: &Context,
     series: &mut TimeSeries,
     start_ts: i64,
     end_ts: i64,
@@ -291,20 +293,20 @@ fn write_back(
     changes: &RangeChanges,
 ) -> ValkeyResult<()> {
     if changes.removed == 0 {
-        return overwrite(series, &changes.changed);
+        return overwrite(ctx, series, &changes.changed);
     }
     series
-        .remove_range(start_ts, end_ts)
+        .remove_range_with_compaction(ctx, start_ts, end_ts)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     let mut kept = result.to_vec();
     kept.sort_by_key(|s| s.timestamp);
-    overwrite(series, &kept)
+    overwrite(ctx, series, &kept)
 }
 
 /// Writes `samples` (ascending by timestamp) over the series, failing if any is not stored.
-fn overwrite(series: &mut TimeSeries, samples: &[Sample]) -> ValkeyResult<()> {
+fn overwrite(ctx: &Context, series: &mut TimeSeries, samples: &[Sample]) -> ValkeyResult<()> {
     let outcomes = series
-        .overwrite_samples(samples)
+        .overwrite_samples(ctx, samples)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     match samples
         .iter()

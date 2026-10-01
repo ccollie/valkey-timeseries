@@ -736,7 +736,7 @@ mod tests {
         let mut series = ignoring_series_with_a_gap();
         series.remove_range(2000, 3000).unwrap();
         let results = series
-            .overwrite_samples(&[s(2000, 5.2), s(3000, 5.5)])
+            .overwrite_samples(&Context::dummy(), &[s(2000, 5.2), s(3000, 5.5)])
             .unwrap();
         assert!(results.iter().all(SampleAddResult::is_ok));
         assert_eq!(
@@ -764,7 +764,9 @@ mod tests {
         assert!(series.add(1000, 5.0, None).is_ok());
         assert!(series.add(2000, f64::INFINITY, None).is_ok());
 
-        let results = series.overwrite_samples(&[s(2000, 5.2)]).unwrap();
+        let results = series
+            .overwrite_samples(&Context::dummy(), &[s(2000, 5.2)])
+            .unwrap();
 
         assert!(results[0].is_ok());
         assert_eq!(series.get_range(2000, 2000)[0].value, 5.2);
@@ -775,7 +777,9 @@ mod tests {
         for policy in [DuplicatePolicy::Block, DuplicatePolicy::KeepFirst] {
             let mut series = ignoring_series_with_a_gap();
             series.sample_duplicates.policy = Some(policy);
-            let results = series.overwrite_samples(&[s(2000, 5.2)]).unwrap();
+            let results = series
+                .overwrite_samples(&Context::dummy(), &[s(2000, 5.2)])
+                .unwrap();
             assert!(results[0].is_ok(), "{policy:?}");
             assert_eq!(series.get_range(2000, 2000)[0].value, 5.2, "{policy:?}");
             assert_eq!(series.len(), 3, "{policy:?}");
@@ -792,7 +796,7 @@ mod tests {
         series.retention = Duration::from_millis(1_000);
 
         let results = series
-            .overwrite_samples(&[s(1_000, 9.0), s(100_000, 2.46)])
+            .overwrite_samples(&Context::dummy(), &[s(1_000, 9.0), s(100_000, 2.46)])
             .unwrap();
 
         assert!(matches!(results[0], SampleAddResult::TooOld));
