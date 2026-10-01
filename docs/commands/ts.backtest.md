@@ -215,8 +215,10 @@ request is abandoned: its result is discarded. `0` disables the deadline for thi
 When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
 
-Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
-they do not block the server's main thread; requests beyond the worker count wait in a queue.
+Forecasting commands run on the analysis lane (2–8 worker threads, from `ts-num-threads`), so
+they do not block the server's main thread; requests beyond the worker count wait in a queue
+of up to 256, and a request that finds it full is refused at once with
+`TSDB: analysis: too many queued jobs (limit 256)`.
 The exception is a call that cannot block — inside `MULTI`/`EXEC`, a Lua script, or a module's
 `RM_Call` — which runs inline on the main thread (folds sequentially), where no deadline applies.
 There the work is held to 60,000 samples × models × folds; a larger request fails with

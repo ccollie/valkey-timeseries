@@ -1,7 +1,15 @@
 use crate::common::replies::{IntoRawCtx, ReplyContext};
+use crate::common::threads::GilToken;
 use crate::error_consts;
+use std::borrow::Borrow;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::os::raw::{c_int, c_longlong};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{Context, ValkeyError, ValkeyResult, raw};
 
 /// A lightweight "fork" of the BlockedClient in `valkey_module` to allow raw client replies from background threads
@@ -12,9 +20,13 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, raw};
 /// written to the client's thread-safe context, and unblocking with nothing written leaves the
 /// client waiting forever (or, if it pipelines, reading the next command's reply as this one's).
 /// So a handle dropped before anyone took responsibility for the reply (a job that panicked, or
-/// one the executor dropped without running) answers with an error itself.
+/// one the executor dropped without running) answers with an error itself. After a timeout
+/// the server has already answered and discards that error, as it discards any late reply.
 pub struct BlockedClient {
     pub(crate) inner: *mut raw::RedisModuleBlockedClient,
+    /// Set by the server-side timeout callback (see [`block_client_with_timeout`]).
+    /// `None` when the client was blocked without a timeout.
+    timed_out: Option<Arc<AtomicBool>>,
     /// Whether a reply has been written or handed to a writer.
     answered: bool,
 }
@@ -63,8 +75,18 @@ impl BlockedClient {
     pub(crate) fn new(inner: *mut raw::RedisModuleBlockedClient) -> Self {
         Self {
             inner,
+            timed_out: None,
             answered: false,
         }
+    }
+
+    /// Whether the server has already answered this client with a timeout error.
+    /// A worker should skip side effects (such as a `STORE` write) once this is set,
+    /// since the client has been told the command failed.
+    pub fn is_timed_out(&self) -> bool {
+        self.timed_out
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 }
 
@@ -72,6 +94,11 @@ impl Drop for BlockedClient {
     fn drop(&mut self) {
         if self.inner.is_null() {
             return;
+        }
+        if self.timed_out.is_some()
+            && let Ok(mut watchers) = TIMEOUT_WATCHERS.lock()
+        {
+            watchers.remove(&(self.inner as usize));
         }
         unsafe {
             if !self.answered {
@@ -142,6 +169,7 @@ pub(crate) fn block_client_with_timeout(
     BlockedClient {
         inner: blocked_client,
         timed_out: Some(timed_out),
+        answered: false,
     }
 }
 
@@ -154,6 +182,41 @@ pub struct ThreadSafeReplyContext {
     /// A writer that panics after starting its reply leaves a partial reply that nothing
     /// here can repair; this covers the far likelier failure, before any reply.
     answered: AtomicBool,
+}
+
+/// Holds the GIL for a [`ThreadSafeReplyContext`] and derefs to its context. Borrows the
+/// context rather than owning it, so dropping the guard only releases the lock.
+///
+/// Taken through a [`GilToken`], so it is checked like every other GIL acquisition (no pool
+/// worker, no re-entry: R1 in `common::threads`).
+pub struct ContextGuard<'a> {
+    ctx: Context,
+    /// Dropped, clearing the thread's GIL mark, just before the lock is released.
+    token: Option<GilToken>,
+    _owner: PhantomData<&'a ThreadSafeReplyContext>,
+}
+
+impl Drop for ContextGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.token.take());
+        unsafe {
+            raw::RedisModule_ThreadSafeContextUnlock.unwrap()(self.ctx.ctx);
+        };
+    }
+}
+
+impl Deref for ContextGuard<'_> {
+    type Target = Context;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ctx
+    }
+}
+
+impl Borrow<Context> for ContextGuard<'_> {
+    fn borrow(&self) -> &Context {
+        &self.ctx
+    }
 }
 
 /// SAFETY: a thread-safe context belongs to one blocked client and may be used from any one
@@ -183,6 +246,11 @@ impl ThreadSafeReplyContext {
         ctx.reply(r)
     }
 
+    /// See [`BlockedClient::is_timed_out`].
+    pub fn is_timed_out(&self) -> bool {
+        self.blocked_client.is_timed_out()
+    }
+
     /// A context to write the reply through. The caller takes responsibility for writing it.
     pub fn get_reply_context(&self) -> ReplyContext {
         self.answered.store(true, Ordering::Relaxed);
@@ -195,10 +263,14 @@ impl ThreadSafeReplyContext {
     /// The guard runs calls against this blocked client's own context, not a detached one:
     /// only this context has the client's selected db, so key writes land in the right db
     /// and `RM_Replicate` propagates them with the right `SELECT`.
+    #[track_caller]
     pub fn lock(&self) -> ContextGuard<'_> {
-        unsafe { raw::RedisModule_ThreadSafeContextLock.unwrap()(self.ctx) };
+        let (token, ()) = GilToken::take(|| unsafe {
+            raw::RedisModule_ThreadSafeContextLock.unwrap()(self.ctx);
+        });
         ContextGuard {
             ctx: Context::new(self.ctx),
+            token: Some(token),
             _owner: PhantomData,
         }
     }

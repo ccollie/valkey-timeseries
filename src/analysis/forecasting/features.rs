@@ -1,8 +1,9 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::analysis::forecasting::stats::moments;
-use crate::common::threads::map_on_current_pool;
+use crate::common::threads::ParCollectionRayon;
 use crate::error::TsdbError;
 use anofox_forecast::features::Feature;
+use orx_parallel::Par;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -296,11 +297,13 @@ pub fn compute_features_map(data: &[f64], features: &[Feature]) -> BTreeMap<Stri
         .cloned()
         .collect();
 
-    map_on_current_pool(&unique, |feature| {
-        (feature.name(), compute_feature(feature, data))
-    })
-    .into_iter()
-    .collect()
+    // One task per feature on the shared pool (see `ts_backtest::evaluate_model`).
+    unique
+        .par_rayon()
+        .map(|feature| (feature.name(), compute_feature(feature, data)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]

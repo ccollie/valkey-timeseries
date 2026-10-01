@@ -547,7 +547,7 @@ Detect pattern-based anomalies using a sliding window:
     * The lane queues up to 256 detections. When it is full the command is refused at once with
       `TSDB: outlier detection: too many queued jobs (limit 256)`; retry later.
     * Inside `MULTI`, a Lua script or a module call the client cannot be blocked, so the detection runs inline on
-      the main thread instead, whatever its size.
+      the main thread instead, up to the limits given above for a client that cannot be blocked.
 * **Performance tips:**
     * Use `DIRECTION` to filter results when only interested in one type of anomaly
     * Single seasonality periods are faster than multiple

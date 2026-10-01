@@ -8,8 +8,8 @@ use crate::series::chunks::ChunkEncoding;
 use crate::series::index::{TimeSeriesIndex, get_db_index, next_timeseries_id};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
-    SeriesGuard, SeriesGuardMut, SeriesLink, TimeSeries, TimeSeriesOptions,
-    create_compaction_rules_from_config,
+    DestinationWriteMode, DuplicatePolicy, SeriesGuard, SeriesGuardMut, SeriesLink, TimeSeries,
+    TimeSeriesOptions, create_compaction_rules_from_config,
 };
 use std::ops::Deref;
 use std::time::Duration;
@@ -298,7 +298,7 @@ pub fn create_or_update_series_with_samples(
         {
             let deleted = clear_series(ctx, &mut dest_series)?;
             if deleted > 0 {
-                ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
+                notify_keyspace_event(ctx, c"ts.del", dest_key);
             }
             return Ok(StoreWriteOutcome {
                 written: 0,
@@ -324,10 +324,10 @@ pub fn create_or_update_series_with_samples(
 
     let written = merged.iter().filter(|r| r.is_ok()).count();
     if delete_count > 0 {
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
+        notify_keyspace_event(ctx, c"ts.del", dest_key);
     }
     if written > 0 {
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", dest_key);
+        notify_keyspace_event(ctx, c"ts.add", dest_key);
     }
 
     Ok(StoreWriteOutcome {

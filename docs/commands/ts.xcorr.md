@@ -58,8 +58,7 @@ The command computes correlation at every integer lag in `-maxLag..=maxLag`.
 <summary><code>TIMEOUT milliseconds</code></summary>
 
 Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. When the number
-of aligned pairs times `2 × maxLag + 1` exceeds 10,000,000, the correlations are computed on a
-dedicated pool of analysis worker threads (sized by `ts-num-threads`) so they never stall the
+of aligned pairs times `2 × maxLag + 1` exceeds 10,000,000, the correlations are computed on the analysis lane (2–8 worker threads, from `ts-num-threads`) so they never stall the
 server, and the deadline applies to them; the timestamp alignment itself always runs inline.
 When it elapses the client receives `TSDB: command timed out before the result was ready (see
 TIMEOUT / ts-analysis-timeout)`. `0` disables the deadline for this call. Inside `MULTI`, a

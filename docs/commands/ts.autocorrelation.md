@@ -90,7 +90,7 @@ Deadline for the command, in milliseconds. Ranges of up to 50,000 samples (for `
 or a module call, where the client cannot be blocked, up to 100,000,000 of that measure; a larger
 range is refused, see the [overview](../overview.md#running-the-analysis-commands)); anything
 larger runs on
-a dedicated pool of analysis worker threads (sized by `ts-num-threads`) so it never stalls the
+the analysis lane (2–8 worker threads, from `ts-num-threads`) so it never stalls the
 server, and the deadline applies to it. It is counted from when the request is accepted, so
 time spent queued behind other analysis work counts. When it elapses the client receives
 `TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and

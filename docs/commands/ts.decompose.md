@@ -70,8 +70,7 @@ Examples:
 Deadline for the command, in milliseconds. Ranges of up to 2,000 samples are computed
 inline (inside `MULTI`, a script or a module call, where the client cannot be blocked, up to
 100,000 samples; a larger range is refused, see the
-[overview](../overview.md#running-the-analysis-commands)); larger ranges run on a dedicated pool of analysis worker threads (sized by
-`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+[overview](../overview.md#running-the-analysis-commands)); larger ranges run on the analysis lane (2–8 worker threads, from `ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work
 counts. When it elapses the client receives `TSDB: command timed out before the result was
 ready (see TIMEOUT / ts-analysis-timeout)` and the request is abandoned. `0` disables the
@@ -179,7 +178,7 @@ Returns an error if:
 `TS.DECOMPOSE` is O(n × p × i) where n is the number of samples, p is the number of seasonal periods,
 and i is the number of inner/outer LOESS iterations.
 
-Ranges of more than 2,000 samples are computed on the analysis pool (see `TIMEOUT`), so the
+Ranges of more than 2,000 samples are computed on the analysis lane (see `TIMEOUT`), so the
 server is never stalled; the calling client waits for the result. Narrow the time range to bound
 the cost on large series.
 

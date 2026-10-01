@@ -130,9 +130,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 - Analysis commands run through `run_analysis`/`run_analysis_in_background`
   (`src/commands/analysis_runner.rs`), never a hand-rolled `block_client` + `spawn`: the runner
   falls back to inline where blocking is denied (MULTI, Lua, `RM_Call` — blocking there errors or
-  asserts), catches panics, and applies `TIMEOUT`. Fan out with `map_on_current_pool`
-  (`src/common/threads`), not orx `.par()` (spawns OS threads per call) or the global pool from
-  the main thread.
+  asserts), catches panics, and applies `TIMEOUT`. Fan out inside a job with the `*_rayon`
+  adapters on the shared pool (`src/common/threads`), never on a pool of the job's own: a worker
+  waiting on its own pool runs whole queued jobs first.
 
 ## Testing
 

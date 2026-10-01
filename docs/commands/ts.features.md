@@ -111,7 +111,7 @@ Example: `FEATURE mean,median,quantile:0.5,autocorrelation:3`
 <summary><code>TIMEOUT milliseconds</code></summary>
 
 Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. Features are
-computed on a dedicated pool of analysis worker threads (sized by `ts-num-threads`), so they
+computed on the analysis lane (2–8 worker threads, from `ts-num-threads`), so they
 never stall the server. The deadline counts from when the request is accepted, including time
 spent queued behind other analysis work. When it elapses the client receives `TSDB: command
 timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and the request is
@@ -155,7 +155,7 @@ Returns an error if:
 ## Complexity
 
 `TS.FEATURES` reads the samples in the specified time range and computes each
-requested feature. Computation always runs on the analysis pool (see `TIMEOUT`). Most features
+requested feature. Computation always runs on the analysis lane (see `TIMEOUT`). Most features
 are linear in the number of samples; `pacf:<lag>` is O(n × lag), and `fourier_entropy` is O(n²):
 it is a direct DFT, about 1 s at 20,000 samples and 11 s at 60,000. Because nothing can cancel
 a computation once it has started, `fourier_entropy` is refused above 20,000 finite samples in

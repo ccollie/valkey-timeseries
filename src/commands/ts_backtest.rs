@@ -10,12 +10,13 @@ use crate::common::replies::{
     ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
     reply_with_str, reply_with_usize,
 };
-use crate::common::threads::map_on_current_pool;
+use crate::common::threads::ParRayon;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
 use anofox_forecast::utils::cross_validation::{
     CVStrategy, ConstraintViolation, CvFoldGenerator, Fold,
 };
+use orx_parallel::Par;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 struct BacktestOptions {
@@ -266,11 +267,15 @@ fn evaluate_model(
     folds: &[Fold],
     options: &BacktestOptions,
 ) -> BacktestModelResult {
-    let result: Result<Vec<FoldResult>, ValkeyError> = map_on_current_pool(folds, |fold| {
-        evaluate_fold(spec, series, fold, options.seasonal_period)
-    })
-    .into_iter()
-    .collect();
+    // On the shared pool: the job runs on an analysis-lane worker (a blocking thread), which
+    // waits without stealing, or inline on the main thread, which may wait on the shared pool
+    // (R2 in `common::threads`). Order is kept.
+    let result: Result<Vec<FoldResult>, ValkeyError> = folds
+        .par_rayon()
+        .map(|fold| evaluate_fold(spec, series, fold, options.seasonal_period))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect();
 
     match result {
         Ok(fold_results) => {

@@ -203,7 +203,7 @@ fn build_specific_trend(
 }
 
 /// Everything a reply or STORE needs, computed off the reply path so the fit can
-/// run on the analysis pool.
+/// run on the analysis lane.
 struct TrendFit {
     model_name: String,
     /// Selection criterion and candidate scores; `Some` only for `MODEL AUTO`.

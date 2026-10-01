@@ -3,7 +3,7 @@
 //!
 //! A [`StoreTarget`] is validated on the main thread, while the real client is still attached:
 //! the destination must differ from the source, and the caller's ACL user must be allowed to
-//! write it. It then carries only owned bytes, so it can cross to the analysis pool, where a
+//! write it. It then carries only owned bytes, so it can cross to the analysis lane, where a
 //! worker thread's context has neither the client's user nor anything to replicate verbatim.
 //!
 //! Replicas must not recompute the analysis — model fits are not guaranteed to be

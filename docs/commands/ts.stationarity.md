@@ -106,8 +106,7 @@ Deadline for the command, in milliseconds. Work of up to about 8 ms (see
 [Complexity](#complexity); with the default lags, ranges of up to 50,000 samples for the
 combined test) is computed inline (inside `MULTI`, a script or a module call, where the client
 cannot be blocked, up to about 0.9 s of work; more is refused, see the
-[overview](../overview.md#running-the-analysis-commands)); larger requests run on a dedicated pool of analysis worker threads (sized by
-`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+[overview](../overview.md#running-the-analysis-commands)); larger requests run on the analysis lane (2–8 worker threads, from `ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work
 counts. When it elapses the client receives `TSDB: command timed out before the result was
 ready (see TIMEOUT / ts-analysis-timeout)` and the request is abandoned. `0` disables the

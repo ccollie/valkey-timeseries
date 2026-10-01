@@ -97,15 +97,16 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 
 ### Running the analysis commands
 
-Small inputs are processed on the main thread. Larger ones, and all model fitting, run on a
-dedicated pool of analysis threads with the client blocked, bounded by the command's `TIMEOUT`
-or the `ts-analysis-timeout` configuration. Inside `MULTI` or a script, where a client cannot be
+Small inputs are processed on the main thread. Larger ones, and all model fitting, run on the
+analysis lane (2–8 worker threads, from `ts-num-threads`) with the client blocked, bounded by the
+command's `TIMEOUT` or the `ts-analysis-timeout` configuration. Inside `MULTI` or a script, where a client cannot be
 blocked, they run inline on the main thread, which nothing can cancel, so a range past a
 per-command ceiling is refused with
 `TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`
 instead of stalling the server (see below). User-supplied sizes are capped (lags at 1,000, horizons at
 `ts-forecast-max-horizon`, model orders and iteration counts) so a single call cannot exhaust
-memory or stall the server.
+memory or stall the server. The lane queues up to 256 requests; one that finds the queue
+full is refused at once with `TSDB: analysis: too many queued jobs (limit 256)`.
 
 Where a client cannot be blocked (`MULTI`/`EXEC`, a Lua script, a module's `RM_Call`) the
 largest range each command accepts is below. The ceilings are far above the sizes the commands
