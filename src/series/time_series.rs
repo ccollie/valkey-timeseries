@@ -2,6 +2,7 @@ use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::rounding::RoundingStrategy;
+use crate::common::threads::{IntoParRayon, ParMutRayon, ParRayon};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -19,8 +20,8 @@ use crate::series::series_sample_iterator::SeriesSampleIterator;
 use crate::series::{DuplicatePolicy, SeriesLink};
 use crate::{config, error_consts};
 use get_size2::GetSize;
+use orx_parallel::Par;
 use orx_parallel::ParResult;
-use orx_parallel::{IntoParIter, Par, ParCollectionMut, Parallelizable};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -535,7 +536,7 @@ impl TimeSeries {
         // todo: track error, but allow partials
         let mut new_chunks = if self.is_compressed() {
             self.chunks
-                .par_mut()
+                .par_mut_rayon()
                 .filter(|c| Self::needs_split(c))
                 .flat_map(|chunks| {
                     if let Ok(mut split_chunk) = chunks.split() {
@@ -750,7 +751,7 @@ impl TimeSeries {
                 [] => Ok(vec![]),
                 [meta] => meta_fetch(meta),
                 _ => slice
-                    .par()
+                    .par_rayon()
                     .map(|meta| meta_fetch(meta))
                     .into_fallible()
                     .flat_map(|r| r)
@@ -982,7 +983,7 @@ impl TimeSeries {
             }
             (true, [one]) => remove_internal(one, start_ts, end_ts)?,
             (true, many) => many
-                .into_par()
+                .into_par_rayon()
                 .map(|chunk| remove_internal(chunk, start_ts, end_ts))
                 .into_fallible()
                 .sum()?,
@@ -1209,7 +1210,7 @@ impl TimeSeries {
 
     pub fn optimize(&mut self) {
         // todo: merge chunks if possible
-        self.chunks.par_mut().for_each(|chunk| {
+        self.chunks.par_mut_rayon().for_each(|chunk| {
             let _ = chunk.optimize();
         });
     }
@@ -1434,7 +1435,7 @@ fn get_range_parallel(
         [] => Ok(vec![]),
         [chunk] => chunk.get_range(start, end),
         _ => chunks
-            .into_par()
+            .into_par_rayon()
             .map(|chunk| chunk.get_range(start, end))
             .into_fallible()
             .flat_map(|x| x)

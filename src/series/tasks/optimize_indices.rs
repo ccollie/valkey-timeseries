@@ -1,6 +1,6 @@
 use crate::common::logging::log_debug;
 use crate::common::sync::lock;
-use crate::common::threads::spawn;
+use crate::common::threads::{SingleFlight, spawn_background_single};
 use crate::series::index::{IndexKey, TIMESERIES_INDEX, get_db_index};
 use crate::series::tasks::utils::find_next_db;
 use std::sync::{LazyLock, Mutex};
@@ -27,8 +27,18 @@ fn set_optimize_cursor(db: i32, cursor: Option<IndexKey>) {
     context.cursor = cursor;
 }
 
+/// Held while an optimize run is queued or running: two overlapping runs would take the
+/// same cursor, and the second would restart the db from the top.
+static OPTIMIZE_RUN: SingleFlight = SingleFlight::new();
+
 pub fn optimize_indices_for_db() {
-    spawn(optimize_indices_internal);
+    // On its own thread rather than the shared pool: it takes the postings write lock, and a
+    // pool job may block only on its own pool (R1).
+    spawn_background_single(
+        "ts-optimize-indices",
+        &OPTIMIZE_RUN,
+        optimize_indices_internal,
+    );
 }
 
 /// Process optimization for a specific database, called by the dispatcher.

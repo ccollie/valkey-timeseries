@@ -1,9 +1,8 @@
 use super::utils::find_next_db;
 use crate::common::sync::lock;
-use crate::common::threads::spawn_background;
+use crate::common::threads::{SingleFlight, spawn_background_single};
 use crate::is_shutting_down;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 const STALE_ID_BATCH_SIZE: usize = 50;
@@ -16,15 +15,8 @@ struct StaleIdContext {
 
 static STALE_ID_CLEANUP_CONTEXT: LazyLock<Mutex<StaleIdContext>> =
     LazyLock::new(|| Mutex::new(StaleIdContext::default()));
-static IN_STALE_ID_CLEANUP: AtomicBool = AtomicBool::new(false);
-
-struct StaleIdCleanupGuard;
-
-impl Drop for StaleIdCleanupGuard {
-    fn drop(&mut self) {
-        IN_STALE_ID_CLEANUP.store(false, Ordering::SeqCst);
-    }
-}
+/// Held by an incremental or a full cleanup, so the two never overlap.
+static STALE_ID_CLEANUP: SingleFlight = SingleFlight::new();
 
 fn set_stale_id_cleanup_cursor(db: i32, cursor: Option<IndexKey>) {
     let mut context = lock(&STALE_ID_CLEANUP_CONTEXT);
@@ -62,19 +54,7 @@ fn process_db_until_done(db: i32, start_cursor: Option<IndexKey>) -> Option<Inde
     }
 }
 
-fn acquire_run_lock() -> Option<StaleIdCleanupGuard> {
-    let result =
-        IN_STALE_ID_CLEANUP.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed);
-
-    if let Err(true) = result {
-        // Another cleanup is already in progress
-        return None;
-    }
-
-    Some(StaleIdCleanupGuard)
-}
-
-fn remove_stale_series_internal(_guard: StaleIdCleanupGuard) {
+fn remove_stale_series_internal() {
     if is_shutting_down() {
         return;
     }
@@ -94,7 +74,7 @@ fn remove_stale_series_internal(_guard: StaleIdCleanupGuard) {
 /// ## Note
 /// Must be called in a separate thread to avoid blocking the main thread
 pub(in crate::series) fn remove_all_stale_series_internal() {
-    let Some(_cleanup_guard) = acquire_run_lock() else {
+    let Some(_run) = STALE_ID_CLEANUP.try_start() else {
         return;
     };
 
@@ -117,13 +97,12 @@ pub(in crate::series) fn remove_all_stale_series_internal() {
 }
 
 pub(crate) fn remove_stale_series_ids_incremental() {
-    // Checked before spawning, so a run still in progress costs no thread.
-    let Some(guard) = acquire_run_lock() else {
-        return;
-    };
-    // `spawn_background` logs a failed spawn (dropping the job and its guard);
-    // `std::thread::spawn` would panic inside the cron handler.
-    spawn_background("ts-stale-ids", move || remove_stale_series_internal(guard));
+    // Skipped, without spending a thread, while a cleanup is still running.
+    spawn_background_single(
+        "ts-stale-ids",
+        &STALE_ID_CLEANUP,
+        remove_stale_series_internal,
+    );
 }
 
 #[cfg(test)]
@@ -140,7 +119,7 @@ mod tests {
         context.db = 0;
         context.cursor = None;
 
-        IN_STALE_ID_CLEANUP.store(false, Ordering::SeqCst);
+        STALE_ID_CLEANUP.reset();
     }
 
     fn make_series(id: u64, idx: usize) -> TimeSeries {

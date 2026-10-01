@@ -41,6 +41,10 @@ pub const CANNOT_PARSE_CHUNK_SIZE: &str = "TSDB: Couldn't parse CHUNK_SIZE";
 pub const INVALID_CHUNK_SIZE: &str = "TSDB: invalid chunk size";
 pub const INVALID_DUPLICATE_POLICY: &str = "TSDB: Unknown DUPLICATE_POLICY";
 pub const MISSING_DUPLICATE_POLICY: &str = "TSDB: Couldn't parse DUPLICATE_POLICY";
+/// A blocked command's worker failed before writing any reply (a panic, or a job that never
+/// ran); the server log has the cause.
+pub const NO_REPLY_WRITTEN: &str =
+    "TSDB: internal error: the command failed before replying; see the server log";
 pub const DEBUG_MODE_DISABLED: &str = "TSDB: TS._DEBUG is disabled. Set the 'ts.debug-mode' configuration parameter to yes to enable it";
 pub const INVALID_DURATION: &str = "TSDB: invalid duration";
 pub const INVALID_INTEGER: &str = "TSDB: invalid integer";

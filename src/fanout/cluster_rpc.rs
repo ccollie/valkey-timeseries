@@ -7,6 +7,7 @@ use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
 use crate::common::sync::lock;
+use crate::common::threads::LockGil;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::acl::get_fanout_user;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
@@ -471,7 +472,7 @@ fn process_request_message(
     // GIL only for the call itself. The aggregate result would otherwise be
     // built from inconsistent per-node views.
     if !cluster_fingerprint_matches(&MODULE_CONTEXT, header.cluster_fingerprint) {
-        let ctx = MODULE_CONTEXT.lock();
+        let ctx = MODULE_CONTEXT.lock_gil();
         let msg = format!(
             "cluster rpc: rejecting request {request_id} from node {sender_id}: cluster-map fingerprint mismatch"
         );
@@ -493,7 +494,7 @@ fn process_request_message(
     let fanout_ctx = FanoutContext::new(header.user, header.db);
     match handler(&fanout_ctx, request_buf, &mut dest) {
         Ok(()) => {
-            let ctx = MODULE_CONTEXT.lock();
+            let ctx = MODULE_CONTEXT.lock_gil();
             if send_response_message(
                 &ctx,
                 request_id,
@@ -511,7 +512,7 @@ fn process_request_message(
         Err(e) => {
             let msg = e.to_string();
             MODULE_CONTEXT.log_warning(&msg);
-            let ctx = MODULE_CONTEXT.lock();
+            let ctx = MODULE_CONTEXT.lock_gil();
             send_error_response(&ctx, request_id, header.db, sender_id.raw_ptr(), e);
         }
     }
@@ -610,7 +611,7 @@ extern "C" fn on_request_received(
 
     let (request_id, db) = (header.request_id, header.db);
 
-    // Off the pool: the handler takes the module lock (see `spawn_background`).
+    // A blocking thread: the handler takes the GIL (R1 in `common::threads`).
     let queued = PEER_REQUEST_EXECUTOR.try_spawn(move || {
         process_request_message(header, handler, &buf, sender);
     });

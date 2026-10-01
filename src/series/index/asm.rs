@@ -9,6 +9,7 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice};
 use crate::common::module_options::{HANDLE_ATOMIC_SLOT_MIGRATION, declare_module_options};
 use crate::common::sync::{lock, read_lock, write_lock};
+use crate::common::threads::LockGil;
 #[cfg(test)]
 use crate::fanout::NUM_SLOTS;
 use crate::fanout::{is_clustered, mark_cluster_map_stale};
@@ -276,7 +277,7 @@ fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> usize {
         batch.len()
     ));
 
-    let ctx = MODULE_CONTEXT.lock();
+    let ctx = MODULE_CONTEXT.lock_gil();
     let save_db = get_current_db(&ctx);
     set_current_db(&ctx, db);
 

@@ -1,4 +1,5 @@
 use crate::common::hash::DeterministicHasher;
+use crate::common::threads::LockGil;
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::calculate_hash_slot;
@@ -46,7 +47,7 @@ impl ClusterNodesSource for Context {
 
 impl ClusterNodesSource for DetachedContext {
     fn cluster_nodes(&self) -> Option<String> {
-        let ctx = self.lock();
+        let ctx = self.lock_gil();
         ctx.cluster_nodes()
     }
 }

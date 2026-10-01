@@ -7,6 +7,7 @@
 use crate::common::block_on_keys::signal_timeseries_ready;
 #[cfg(not(test))]
 use crate::common::context::{create_key_string, notify_keyspace_event};
+use crate::common::threads::{IterIntoParRayon, ParCollectionRayon};
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::chunks::{ChunkOps, MIN_SAMPLES_FOR_BPS_ESTIMATE, TimeSeriesChunk};
@@ -14,7 +15,7 @@ use crate::series::ingest_normalize::{NormalizedBatch, normalize_batch};
 use crate::series::{
     DuplicatePolicy, SPLIT_SLACK_DIVISOR, SampleAddResult, TimeSeries, seal_chunk,
 };
-use orx_parallel::{IterIntoParIter, Par, ParCollection};
+use orx_parallel::Par;
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
@@ -470,7 +471,7 @@ pub(super) fn merge_samples_into_series(
         let existing_results: Vec<(usize, Vec<SampleAddResult>)> = chunk_refs
             .into_iter()
             .zip(existing_groups.iter())
-            .iter_into_par()
+            .iter_into_par_rayon()
             .map(|(chunk, &(group_pos, _, samples))| {
                 let res = exec_merge(chunk, samples, resolved_policy);
                 (group_pos, res)
@@ -487,7 +488,7 @@ pub(super) fn merge_samples_into_series(
         let encoding = series.chunk_encoding;
         let chunk_size = series.chunk_size_bytes;
         let new_results: Vec<(usize, TimeSeriesChunk, Vec<SampleAddResult>)> = new_groups
-            .par()
+            .par_rayon()
             .map(|&(group_pos, samples)| {
                 let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
                 let res = exec_merge(&mut chunk, samples, resolved_policy);

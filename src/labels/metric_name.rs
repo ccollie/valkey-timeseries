@@ -1,6 +1,6 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::rdb::{rdb_load_len, rdb_load_string, rdb_save_usize};
+use crate::common::rdb::{MAX_RDB_COLLECTION_LEN, rdb_load_len, rdb_load_string, rdb_save_usize};
 use crate::common::string_interner::InternedString;
 use crate::parser::ParseError;
 use crate::parser::metric_name::parse_metric_name;
@@ -83,19 +83,37 @@ impl MetricName {
     }
 
     pub fn new(labels: &[Label]) -> Self {
-        let mut entries = Vec::with_capacity(labels.len());
-        for label in labels {
-            Self::insert_pair(&mut entries, label.name(), label.value());
-        }
-        Self(Arc::from(entries))
+        Self::from_entries(
+            labels
+                .iter()
+                .map(|label| InternedString::new_pair(label.name(), label.value()))
+                .collect(),
+        )
     }
 
     /// Build from `(name, value)` pairs; a repeated name keeps the last value.
     pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
-        let mut entries = Vec::new();
-        for (name, value) in pairs {
-            Self::insert_pair(&mut entries, name, value);
-        }
+        Self::from_entries(
+            pairs
+                .into_iter()
+                .map(|(name, value)| InternedString::new_pair(name, value))
+                .collect(),
+        )
+    }
+
+    /// Build from entries in any order: one sort by name, then repeated names collapse to the
+    /// last value. Inserting one at a time shifts the vector on every out-of-order entry, which
+    /// is quadratic for reverse-ordered input.
+    fn from_entries(mut entries: Vec<InternedString>) -> Self {
+        // Stable, so equal names stay in input order and the swap below keeps the last one.
+        entries.sort_by(|a, b| a.name().cmp(b.name()));
+        entries.dedup_by(|later, kept| {
+            let same = later.name() == kept.name();
+            if same {
+                std::mem::swap(later, kept);
+            }
+            same
+        });
         Self(Arc::from(entries))
     }
 
@@ -223,14 +241,19 @@ impl MetricName {
     }
 
     pub fn from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
-        let count = rdb_load_len(rdb, MAX_LABELS_PER_SERIES)?;
-        let mut entries = Vec::with_capacity(count);
+        // Not `MAX_LABELS_PER_SERIES`: `TS.CREATE … LABELS` does not enforce it,
+        // and a series `rdb_load` error aborts the whole load, so a tighter
+        // bound here turns an accepted write into a server that cannot start.
+        // The generic guard still rejects a corrupt count, and the allocation
+        // is capped up front: each label is a read that fails on a short payload.
+        let count = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
+        let mut entries = Vec::with_capacity(count.min(MAX_LABELS_PER_SERIES));
         for _ in 0..count {
             let name = rdb_load_string(rdb)?;
             let value = rdb_load_string(rdb)?;
-            Self::insert_pair(&mut entries, &name, &value);
+            entries.push(InternedString::new_pair(&name, &value));
         }
-        Ok(Self(Arc::from(entries)))
+        Ok(Self::from_entries(entries))
     }
 
     /// The shared slice is always exactly sized; kept for API compatibility.
@@ -333,6 +356,20 @@ mod tests {
         let mut sorted = mn.clone();
         sorted.sort();
         assert_eq!(sorted, mn);
+    }
+
+    #[test]
+    fn repeated_names_keep_the_last_value_in_any_order() {
+        let mn = MetricName::from_pairs([
+            ("c", "1"),
+            ("a", "1"),
+            ("c", "2"),
+            ("b", "1"),
+            ("a", "2"),
+            ("c", "3"),
+        ]);
+        let pairs: Vec<(&str, &str)> = mn.iter().map(|l| (l.name, l.value)).collect();
+        assert_eq!(pairs, [("a", "2"), ("b", "1"), ("c", "3")]);
     }
 
     #[test]
