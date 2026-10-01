@@ -102,10 +102,11 @@ function uses its own internal defaults.
 <details open>
 <summary><code>TIMEOUT milliseconds</code></summary>
 
-Deadline for the command, in milliseconds. Ranges of up to 50,000 samples are computed
-inline (inside `MULTI`, a script or a module call, where the client cannot be blocked, up to
-2,000,000 samples; a larger range is refused, see the
-[overview](../overview.md#running-the-analysis-commands)); larger ranges run on a dedicated pool of analysis worker threads (sized by
+Deadline for the command, in milliseconds. Work of up to about 8 ms (see
+[Complexity](#complexity); with the default lags, ranges of up to 50,000 samples for the
+combined test) is computed inline (inside `MULTI`, a script or a module call, where the client
+cannot be blocked, up to about 0.9 s of work; more is refused, see the
+[overview](../overview.md#running-the-analysis-commands)); larger requests run on a dedicated pool of analysis worker threads (sized by
 `ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work
 counts. When it elapses the client receives `TSDB: command timed out before the result was
@@ -154,6 +155,16 @@ A map with 4 top-level fields:
 `TS.STATIONARITY` reads the samples in the range and runs the selected statistical test(s),
 O(n × lags) in the number of observations. At least 10 observations are required
 (`TSDB: insufficient data for stationarity test. Need at least 10 samples, got <n>`).
+
+Each lag is a pass over the samples (four for ADF, whose lag search refits at every lag, one for
+KPSS), so the cost of a call is the samples times the passes. Without `LAGS` the tests use about
+`(n − 1)^(1/3)` lags (ADF) and `4 (n / 100)^(1/4)` (KPSS); an explicit `LAGS` is held to half
+the range. That is what decides where a call runs (see `TIMEOUT`): `TEST adf LAGS 1000` takes
+about 170 ms over 50,000 samples and is run on the pool, where the default lags take 7 ms and
+run inline. Where the client cannot be blocked, work is capped at about 0.9 s, e.g. `TEST adf
+LAGS 1000` over roughly 250,000 samples; the error is
+`TSDB: range too large to run inside MULTI, a script or a module call: … sample-passes exceeds
+the limit of 1000000000; run the command outside of it`.
 
 A constant series (all values equal) is reported as stationary without running the tests:
 `statistic` 0, `pValue` 1, `lags` 0 and all critical values 0. A range containing a NaN or

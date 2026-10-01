@@ -117,7 +117,7 @@ the command outside the transaction for anything larger.
 | `TS.TREND`          | samples                          | 40,000                               |
 | `TS.DECOMPOSE`      | samples                          | 100,000                              |
 | `TS.PERIODS`        | samples                          | 1,000,000                            |
-| `TS.STATIONARITY`   | samples                          | 2,000,000                            |
+| `TS.STATIONARITY`   | samples × passes (4 per ADF lag, 1 per KPSS lag) | 1,000,000,000        |
 | `TS.AUTOCORRELATION`| samples (× (lag + 1) for `PARTIAL`/`AGGREGATED`) | 100,000,000          |
 | `TS.XCORR`          | pairs × (2 × `maxLag` + 1)       | 200,000,000                          |
 | `TS.FEATURES`       | per feature: samples; samples × lag for `pacf`; samples² for `fourier_entropy` | 100,000,000 |

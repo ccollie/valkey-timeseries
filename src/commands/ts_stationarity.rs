@@ -124,10 +124,10 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         )));
     }
 
-    let sample_count = values.len();
+    let work = stationarity_work(values.len(), test_type, lags);
     run_analysis(
         ctx,
-        sample_count,
+        work,
         LIMITS,
         timeout,
         move || Ok(run_tests(&values, test_type, lags)),
@@ -147,15 +147,55 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     )
 }
 
-/// ADF/KPSS are linear in the range (~50 ms at 200k samples, release build), so the bars are
-/// high. Up to `inline_max` samples it runs on the main thread, anything bigger goes to the
-/// pool; where the client cannot be blocked the pool is not available and `unblockable_max`
-/// (about 0.5 s) is the largest range it will take.
+/// Work is counted in passes over the samples (see [`stationarity_work`]): ADF and KPSS are
+/// linear in the range and in the lags they use, at ~0.9 ns a sample-pass (release build; ADF
+/// ~3.5 ns a lag at 50k samples, KPSS ~0.9 ns). Up to `inline_max` (~8 ms; the combined test
+/// with default lags up to 50,000 samples) it runs on the main thread, anything bigger goes to
+/// the pool; where the client cannot be blocked the pool is not available and `unblockable_max`
+/// (about 0.9 s) is the most it will take, e.g. `TEST adf LAGS 1000` over ~250,000 samples.
 const LIMITS: WorkLimits = WorkLimits {
-    inline_max: 50_000,
-    unblockable_max: 2_000_000,
-    unit: "samples",
+    inline_max: 8_500_000,
+    unblockable_max: 1_000_000_000,
+    unit: "sample-passes",
 };
+
+/// Passes over the samples ADF makes per lag: its AIC search computes two means, then the slope
+/// sums and then the residuals. KPSS makes one per lag (the autocovariance). Measured at 50k
+/// samples, ADF is ~3.5 ns a sample-lag and KPSS ~0.9 ns.
+const ADF_PASSES_PER_LAG: usize = 4;
+
+/// Passes either test makes outside its per-lag loop (means, partial sums, the final fit).
+const FIXED_PASSES: usize = 4;
+
+/// The lags `adf_test` runs its AIC search up to: `LAGS`, or `(n - 1)^(1/3)` without it, held to
+/// `n / 2 - 1` and at least 1 (anofox-forecast 0.15.10).
+fn adf_lags(n: usize, lags: Option<usize>) -> usize {
+    let default = (n.saturating_sub(1) as f64).powf(1.0 / 3.0).floor() as usize;
+    lags.unwrap_or(default)
+        .min((n / 2).saturating_sub(1))
+        .max(1)
+}
+
+/// The lags `kpss_test` uses: `LAGS`, or `4 (n / 100)^(1/4)` without it, held to `n / 2` and at
+/// least 1 (anofox-forecast 0.15.10).
+fn kpss_lags(n: usize, lags: Option<usize>) -> usize {
+    let default = (4.0 * (n as f64 / 100.0).powf(0.25)).floor() as usize;
+    lags.unwrap_or(default).min(n / 2).max(1)
+}
+
+/// How many passes over the `n` samples the test makes: each lag the test runs through is one
+/// more pass over the data (four for ADF), so `LAGS 1000` costs ~1000 times what `LAGS 1` does.
+/// The combined test runs both with their default lags (`LAGS` is not allowed with it).
+/// Saturating, so an absurd range cannot wrap into looking cheap.
+fn stationarity_work(n: usize, test: TestType, lags: Option<usize>) -> usize {
+    let adf = n.saturating_mul(ADF_PASSES_PER_LAG * adf_lags(n, lags) + FIXED_PASSES);
+    let kpss = n.saturating_mul(kpss_lags(n, lags) + FIXED_PASSES);
+    match test {
+        TestType::Adf => adf,
+        TestType::Kpss => kpss,
+        TestType::Combined => adf.saturating_add(kpss),
+    }
+}
 
 enum Outcome {
     Combined {
@@ -320,5 +360,99 @@ fn parse_test_type(arg: &str) -> ValkeyResult<TestType> {
         _ => Err(ValkeyError::String(format!(
             "TSDB: invalid TEST value '{arg}'. Expected adf, kpss, or combined"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn series(n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|i| 10.0 + (i % 24) as f64 + (i as f64 * 0.37) % 5.0 + i as f64 * 0.001)
+            .collect()
+    }
+
+    #[test]
+    fn kpss_lags_match_what_the_crate_uses() {
+        for n in [10, 11, 50, 99, 100, 1_000, 5_000] {
+            let values = series(n);
+            for lags in [None, Some(0), Some(1), Some(7), Some(1_000)] {
+                let used = stationarity::kpss_test(&values, lags).lags;
+                assert_eq!(kpss_lags(n, lags), used, "n={n} lags={lags:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn adf_lags_bound_the_lag_the_crate_selects() {
+        for n in [10, 11, 50, 100, 1_000, 5_000] {
+            let values = series(n);
+            for lags in [None, Some(0), Some(3), Some(1_000)] {
+                // The crate reports the lag its AIC search picked, up to the bound we count.
+                let picked = stationarity::adf_test(&values, lags).lags;
+                assert!(picked <= adf_lags(n, lags), "n={n} lags={lags:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_lags_are_held_to_what_the_range_allows() {
+        assert_eq!(adf_lags(100, Some(1_000)), 49);
+        assert_eq!(kpss_lags(100, Some(1_000)), 50);
+        assert_eq!(adf_lags(100, Some(0)), 1);
+        assert_eq!(kpss_lags(100, Some(0)), 1);
+        // Degenerate ranges do not underflow.
+        assert_eq!(adf_lags(0, None), 1);
+        assert_eq!(kpss_lags(0, None), 1);
+    }
+
+    #[test]
+    fn work_grows_with_the_lags_asked_for() {
+        let n = 50_000;
+        let few = stationarity_work(n, TestType::Adf, Some(10));
+        let many = stationarity_work(n, TestType::Adf, Some(1_000));
+        assert!(many > 50 * few, "{few} vs {many}");
+        assert_eq!(
+            stationarity_work(n, TestType::Adf, Some(1_000)),
+            n * (ADF_PASSES_PER_LAG * 1_000 + FIXED_PASSES)
+        );
+        assert_eq!(
+            stationarity_work(n, TestType::Kpss, Some(1_000)),
+            n * (1_000 + FIXED_PASSES)
+        );
+    }
+
+    #[test]
+    fn adf_costs_more_a_lag_than_kpss() {
+        let n = 20_000;
+        assert!(
+            stationarity_work(n, TestType::Adf, Some(100))
+                > 3 * stationarity_work(n, TestType::Kpss, Some(100))
+        );
+    }
+
+    #[test]
+    fn combined_with_default_lags_stays_inline_up_to_50_000_samples() {
+        // The boundary before the work counted lags: 50,000 samples, whatever the test did.
+        let work = |n| stationarity_work(n, TestType::Combined, None);
+        assert!(work(50_000) <= LIMITS.inline_max, "{}", work(50_000));
+        assert!(work(50_001) > LIMITS.inline_max, "{}", work(50_001));
+    }
+
+    #[test]
+    fn a_lags_request_that_used_to_run_inline_now_goes_to_the_pool() {
+        // 50,000 samples was inline whatever LAGS said; ADF at LAGS 1000 is ~170 ms there.
+        let work = stationarity_work(50_000, TestType::Adf, Some(1_000));
+        assert!(work > LIMITS.inline_max);
+        assert!(work <= LIMITS.unblockable_max);
+    }
+
+    #[test]
+    fn work_of_an_absurd_range_saturates() {
+        assert_eq!(
+            stationarity_work(usize::MAX, TestType::Combined, None),
+            usize::MAX
+        );
     }
 }

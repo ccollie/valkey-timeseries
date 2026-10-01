@@ -93,12 +93,14 @@ FOURIER_ENTROPY_MAX = 20_000
 
 # Each case is one sample past the command's ceiling in its own measure (see `WorkLimits` in
 # the command's source), so a refusal is immediate and the series is the only cost.
-# `(argv, samples in "s", samples in "t")`. TS.PERIODS (1M), TS.STATIONARITY (2M) and the
-# cheap TS.OUTLIERS methods (1M) are left out: building a series that large costs more than the
-# case is worth, and they share the runner path the others exercise.
+# `(argv, samples in "s", samples in "t")`. TS.PERIODS (1M) and the cheap TS.OUTLIERS methods
+# (1M) are left out: building a series that large costs more than the case is worth, and they
+# share the runner path the others exercise. TS.STATIONARITY is reached through `LAGS`, which
+# its work counts (four passes per ADF lag): 250,001 samples at 1,000 lags is 1.001G > 1G.
 OVERSIZED = [
     (["TS.TREND", "s", "-", "+"], 40_001, 0),
     (["TS.DECOMPOSE", "s", "-", "+", "SEASONALITY", 24], 100_001, 0),
+    (["TS.STATIONARITY", "s", "-", "+", "TEST", "adf", "LAGS", 1000], 250_001, 0),
     (["TS.AUTOCORRELATION", "s", "-", "+", 1000, "PARTIAL"], 100_001, 0),
     (["TS.XCORR", "s", "t", "-", "+", 1000], 100_001, 100_001),
     (["TS.FEATURES", "s", "-", "+", "FEATURE", "pacf:1000"], 100_001, 0),
