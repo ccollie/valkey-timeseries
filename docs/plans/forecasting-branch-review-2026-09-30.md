@@ -1,8 +1,11 @@
 # `feat/forecasting` Branch Review — 2026-09-30
 
-**Status:** Open. Findings record for the branch (49 commits, ~25k lines vs `main`, head
-`3ed24b966`). Each item has a location, why it matters, a fix, and a test or benchmark path.
-Mark items as they land with a dated note rather than deleting them.
+**Status:** In progress (updated 2026-10-01). Landed, each with a dated note under its item:
+1.2 (`56ea57dca`), 2.3 (`6377a41c4`), 2.4 (`11228654e`), 2.5 (`5435484a2`), 2.6 (`b0981c02d`),
+2.7 (`c0aa9691b`, `e9292203c`), 2.8 (`e9292203c`), 2.11 (`4ea9b87bc`). Everything else is open.
+Findings record for the branch (49 commits, ~25k lines vs `main`, head `3ed24b966`). Each item
+has a location, why it matters, a fix, and a test or benchmark path. Mark items as they land
+with a dated note rather than deleting them.
 **Scope:** `TS.FORECAST`, `TS.AUTOFORECAST`, `TS.BACKTEST`, `TS.DECOMPOSE`, `TS.PERIODS`,
 `TS.STATIONARITY`, `TS.AUTOCORRELATION`, `TS.XCORR`, `TS.FEATURES`, `TS.STATS`, `TS.FILLGAPS`,
 `TS.SANITIZE`, `TS.TREND`, `TS._STORE`, the analysis runner, the analysis pool, `StoreTarget`,
@@ -78,7 +81,7 @@ and documentation.
 - **Test:** `test_sanitize_relative_bounds_replicate_resolved` in a ReplicationTestCase: pause
   the replica link longer than the window, run `TS.SANITIZE src -10s *`, resume, compare
   `TS.RANGE src - +`; plus a `DEBUG RELOAD` / AOF restart case.
-- **Done 2026-09-30 (uncommitted).** `ts_sanitize.rs` replicates
+- **Done 2026-09-30 (`56ea57dca`).** `ts_sanitize.rs` replicates
   `TS.SANITIZE key <start> <end> POLICY <resolved policy> [STORE dst …]` via `ctx.replicate`;
   `StoreTarget::replication_clause()` supplies the raw STORE tokens. Differences from the plan:
   - Resolved bounds are clamped for replication (`replicable_bounds`): the range parser rejects
@@ -160,6 +163,49 @@ and documentation.
   transitive dependency); fix `docs/commands/ts.features.md` "most features are linear".
 - **Test:** `EVAL "return redis.call('TS.DECOMPOSE','s','-','+','SEASONALITY',24)" 0` on 100k
   samples → the error, not a multi-second reply.
+- **Done 2026-10-01 (`6377a41c4`).** Where `is_blocking_denied(ctx)`, a call whose work is past
+  a per-command ceiling is refused with `TSDB: range too large to run inside MULTI, a script or
+  a module call: <n> <unit> exceeds the limit of <max>; run the command outside of it`.
+  `WorkLimits { inline_max, unblockable_max, unit }` (`analysis_runner.rs`) carries the ceiling;
+  `run_analysis` checks it, and `run_analysis_in_background` takes one too. All ten analysis
+  commands have one. Differences from the plan:
+  - The ceiling is **not** `inline_max`. `test_ts_analysis_blocking.py` asserts that every
+    command runs inline inside `MULTI`/Lua at 6,000 samples, past each inline threshold (XCORR's
+    work is 12M against a 10M threshold), so the plan's cap would have broken that and ordinary
+    scripted use. Ceilings come from timing each command inline on a live server (release
+    build, the fanless 8 GB Mac), chosen so the worst case stalls about a second: `TS.TREND`
+    40,000 samples (quadratic: 0.2 s at 20k, 1.5 s at 60k); `TS.DECOMPOSE` 100,000;
+    `TS.PERIODS` 1M; `TS.STATIONARITY` 2M samples (since 2.5: 1G sample-passes);
+    `TS.AUTOCORRELATION` 100M sample-lags; `TS.XCORR`
+    200M; `TS.FEATURES` 100M; `TS.FORECAST` 20,000 samples × models; `TS.AUTOFORECAST` 10,000;
+    `TS.BACKTEST` 60,000 samples × models × folds; `TS.OUTLIERS` 1M, 10,000 for `rcf`, 6,000
+    for `esd`. The forecast families span ~50× per sample (SES ~0.07 µs, AutoTBATS ~75 µs), so
+    those ceilings are a compromise set by the heavy end. They are constants, not configs.
+  - `TS.OUTLIERS` is covered too: it has its own inline branch outside the runner and the same
+    hazard (`esd` is ~0.8 s at 6k samples and ~9 s at 20k inline). Its inline threshold and its
+    ceiling now come from one table (`work_limits`).
+  - `TS.FEATURES` got a work measure (`features_work`: samples per feature, samples × lag for
+    `pacf`, samples² for `fourier_entropy`), and `fourier_entropy` is capped at 20,000 finite
+    samples in **every** context, since the quadratic DFT pins a pool worker as surely as the
+    main thread and `TIMEOUT` cannot cancel it. This is a behaviour change: it used to compute
+    at any size. The rustfft alternative was not taken (a new direct dependency, and values would
+    shift in the low digits). `docs/commands/ts.features.md` "most features are linear" is
+    corrected, and every command page and `overview.md` document its ceiling.
+  - Tests (`test_ts_analysis_blocking.py`): 11 oversized cases, each refused in Lua and in
+    `MULTI` with the rest of the transaction still running; the message names size and limit;
+    a range exactly at the limit still runs inline (`pacf:1000` over 100,000 samples) while one
+    sample more is refused; the same large range runs outside a transaction; and the
+    `fourier_entropy` limit (small range computes, 20,001 refused, non-finite samples not
+    counted). Unit tests cover `check_unblockable`, `features_work` and the cap. With the ceiling
+    disabled, the 24 refusal and limit tests fail (the work simply runs inline) and the
+    outside-a-transaction control passes.
+  - **Not tested end to end:** the `TS.PERIODS` (1M) and cheap `TS.OUTLIERS` (1M) ceilings;
+    a series that large costs more to build than the case is worth. They share the runner path
+    the others exercise. (`TS.STATIONARITY`'s ceiling became reachable through `LAGS` in 2.5 and
+    is tested there.)
+  - **Not addressed:** the plan's note that the crate's `par_iter` runs on the global rayon pool
+    from the GIL-holding main thread on this path. Ranges under a ceiling still do (the
+    `TS.FEATURES`/AutoForecast/STL/cross-validation cases in 2.1).
 
 ### 2.4 `TS.TREND` inline threshold stalls the main thread ~20 ms per call
 
@@ -169,6 +215,39 @@ and documentation.
   it blocks every other client.
 - **Fix:** size the threshold for ~1 ms (≈100–200 samples by the same comment's scaling).
 - **Benchmark:** PING p99 while one client loops `TS.TREND` on 2 000 samples, before/after.
+- **Done 2026-10-01 (`11228654e`).** `ts_trend.rs` `LIMITS.inline_max` is 400 (was 2,000); the
+  doc comment and `docs/commands/ts.trend.md` say so. The numbers differ from the plan's:
+  - Measured (release build, default `MODEL AUTO`, fanless 8 GB Mac), the fit is ~0.4 ms plus
+    ~2.4 µs a sample: 0.5 ms at 100 samples, 1.2 ms at 500, 4.9 ms at 2,000 (not ~20 ms), so
+    ~1 ms is about 400 samples rather than 100–200. A specific `MODEL` is about a third of that
+    and shares the threshold. Beyond a few thousand samples it grows faster (~0.2 s at 20k).
+  - The pool handoff is not ~70 µs but below what a client round trip resolves: an
+    always-background `TS.FORECAST SES` differs by ≤ 0.02 ms between the pool and Lua-inline
+    at 100, 500 and 2,000 samples, and `TS.TREND` at 2,100 samples (pool) costs the caller no
+    more than at 2,000 (inline). Lowering the threshold costs the caller nothing.
+  - Benchmark (one client looping `TS.TREND` on 2,000 samples, another timing PING every
+    ~0.5 ms for 6 s; idle PING p50 ≈ 0.15 ms): PING p50 4.15 → 0.11 ms, p90 4.24 → 0.18 ms,
+    p99 4.53 → 1.22 ms, max 33.7 → 16.9 ms. The `TS.TREND` caller's median went 4.78 → 4.90 ms
+    (1,345 → 1,300 calls in 6 s). The p99 after is noisy: the machine was loaded.
+  - Tests (`test_ts_analysis_deadlines.py`, `TestTrendInlineThreshold`): the observable is the
+    slowlog, which records only main-thread time; a 2,000-sample fit forced inline through Lua
+    appears in it (the control) and the same call handed to the pool does not. A `TIMEOUT 1`
+    version was tried first and dropped: deadlines are processed too coarsely to beat ~5 ms of
+    work, so it did not distinguish the two paths. With the threshold put back to 2,000 that
+    test fails; two more pin that the range still answers with the fit and that a 300-sample
+    range stays inline and ignores `TIMEOUT`.
+  - **Not re-verified:** two replication tests errored at fixture setup (replica link-up
+    timeout) in the final run on the new sources, which took 35 min instead of ~4 with the
+    machine saturated by macOS indexing; the other 378 tests in that run passed. They are, in
+    `test_ts_store_replication.py`:
+    `test_store_merge_with_no_output_leaves_destination[fillgaps]` and
+    `test_store_to_the_source_key_is_rejected[TS.AUTOFORECAST]`.
+    Three re-runs were stopped at the 30-minute background limit. Unrelated to `TS.TREND` and
+    green in an earlier clean run; to be re-run on an idle machine.
+  - **Not changed, same defect:** other inline thresholds stall the main thread for several
+    ms: `TS.DECOMPOSE` at 2,000 samples ~20 ms (measured), `TS.STATIONARITY` at 50,000 ~9 ms,
+    `TS.XCORR` at its 10M-product threshold ~25 ms (the last two extrapolated from probes at
+    other sizes). They are not in this item and were left alone.
 
 ### 2.5 `TS.STATIONARITY` `work` ignores `LAGS`
 
@@ -181,6 +260,44 @@ and documentation.
   already does.
 - **Test:** `TS.STATIONARITY s - + TEST kpss LAGS 1000 TIMEOUT 1` on 50k samples should hit
   the pool and time out; today it answers inline.
+- **Done 2026-10-01 (`5435484a2`).** `stationarity_work(n, test, lags)` (`ts_stationarity.rs`)
+  replaces the bare sample count as the `run_analysis` work, in a new unit, `sample-passes`.
+  Measured inline at 50,000 samples (release build), cost is linear in lags as the plan said:
+  ADF default lags (36) 6.8 ms, `LAGS 10` 2.4 ms, `LAGS 100` 18 ms, `LAGS 1000` **171 ms**; KPSS
+  default (18) 1.5 ms, `LAGS 10` 1.1 ms, `LAGS 100` 5 ms, `LAGS 1000` 43 ms; combined 7.9 ms.
+  Differences from the plan:
+  - **Weighted, not `n × (lags + 1)`.** ADF costs ~3.5 ns a sample-lag and KPSS ~0.9 ns (~4×),
+    which matches the code: ADF's AIC search makes four passes over the data per lag
+    (`ADF_PASSES_PER_LAG`), KPSS's autocovariance one. The unweighted formula would either
+    under-protect ADF or refuse KPSS four times earlier than it needs.
+  - **Default lags** are the crate's own rules, as in the plan: `(n − 1)^(1/3)` for ADF and
+    `4 (n / 100)^(1/4)` for KPSS, an explicit `LAGS` held to `n / 2 − 1` / `n / 2` and at least 1
+    (anofox-forecast 0.15.10, so a bump of the pinned crate could drift them; the effect would be
+    a mis-sized threshold, not a wrong result). The combined test sums both with default lags
+    (`LAGS` is rejected with it).
+  - **Limits:** `inline_max` 8,500,000, chosen so the combined test with default lags stays
+    inline up to exactly 50,000 samples as before (~8 ms); `unblockable_max` 1,000,000,000 (about
+    0.9 s, e.g. `TEST adf LAGS 1000` over ~250,000 samples). That replaces the 2M-sample ceiling
+    from 2.3, which was extrapolated linearly from 200k and came out low: with default lags the
+    cost per sample grows with n, so 2M samples is ~1.1 s, not ~0.5 s.
+  - **Behaviour changes:** a `LAGS 1000` call over 50,000 samples used to run inline for ~170 ms
+    and now goes to the pool. Single-test calls with default lags move too: KPSS alone stays
+    inline up to ~386k samples (it was 50k; ~8 ms there) and ADF alone up to ~57k.
+  - **Test:** the plan's `TIMEOUT 1` was replaced by the slowlog, as in 2.4, since a 1 ms
+    deadline is processed too coarsely to be a reliable signal. `TestStationarityLagsRouting`
+    (`test_ts_analysis_deadlines.py`): `TEST adf LAGS 1000` over 50,000 samples forced inline
+    (Lua) shows in the slowlog, the same call outside Lua does not; the helper moved into a
+    shared `SlowlogMixin` (also used by the 2.4 test). `TS.STATIONARITY` joined the `MULTI`/Lua
+    refusal cases in `test_ts_analysis_blocking.py` (`TEST adf LAGS 1000` over 250,001 samples).
+    Eight unit tests: the KPSS lag rule agrees with the crate across sizes and `LAGS` values
+    (for ADF the crate reports the lag its AIC search *picked*, so only the bound is asserted),
+    the 50,000-sample boundary is unchanged for the combined test, ADF costs more per lag than
+    KPSS, and an absurd range saturates. With the old sample-count work, exactly the three new
+    integration tests fail and the other 27 oversized/stationarity tests pass; the analysis
+    family passes with the change (198 integration, 1613 unit, 13 doc).
+  - Docs: `ts.stationarity.md` (the `TIMEOUT` paragraph and `Complexity`) and the `overview.md`
+    ceiling row now describe passes. The default-lags inline stall (~8 ms at 50k, the combined
+    test) is unchanged; it is the same class of defect as 2.4 and was left alone.
 
 ### 2.6 STORE writes and `TS.SANITIZE` bypass compaction
 
@@ -203,6 +320,43 @@ and documentation.
   src 3000 3; TS.SANITIZE src - + POLICY DROP; TS.RANGE agg - +` → bucket 0 should be 2.
   `CONFIG SET ts-compaction-policy …; TS.TREND src - + STORE dst; TS.INFO dst` → either no
   rule, or a fed child series.
+- **Done 2026-10-01 (`b0981c02d`).** The "propagate" option was taken: `STORE` destinations and
+  `TS.SANITIZE`'s source now feed their compaction rules as `TS.MADD` and `TS.DEL` do.
+  - `merge_and_compact` (`series/sample_merge.rs`) merges, then calls `batch_compaction` with
+    the accepted samples (stored, rounded values; `prev_last` from before the merge).
+    `TimeSeries::merge_samples_with_compaction` is the destination entry point, and
+    `overwrite_samples` (2.7) now takes a `ctx` and propagates too. The retention trim follows
+    the compaction for the merge, as for `TS.MADD`; the overwrite does none (it cannot advance
+    the window). A failure in a rule's destination series is logged, not returned, as `TS.MADD`
+    does, since the samples are already stored.
+  - `create_or_update_series_with_samples` (`series/utils.rs`) clears with
+    `remove_range_with_compaction` and merges with the new method, which covers the overwrite
+    clear and the empty-result clear from 2.11. The clear runs up to the series' last timestamp
+    rather than `Timestamp::MAX`: the same samples, without asking bucket arithmetic to handle a
+    range that ends at the type's limit. `TS._STORE` runs this same function, so a replica's
+    rule series follow what the primary wrote.
+  - `TS.SANITIZE`'s `write_back` (`ts_sanitize.rs`) uses `remove_range_with_compaction` for
+    `DROP` and the propagating overwrite otherwise. `DROP` clears the range and writes the kept
+    samples back, so its buckets are recomputed twice; not measured.
+  - **The plan's example does not reproduce for NaN.** Compaction aggregators skip NaN (probed:
+    `count`, `sum`, `avg`, `first`, `last` over a range with a NaN all ignore it), so a `count`
+    bucket is not "one too high" and `DROP` of a NaN changes no bucket. They do not skip
+    ±infinity. The fix shows in two cases: an imputed value joins its bucket (`sum` 4 → 6,
+    `count` 2 → 3 for `FILL 2`), and a dropped infinity leaves it (`count` 3 → 2, `sum` inf → 4).
+    The tests use those.
+  - **The default rules come from each node's own `ts-compaction-policy`.** A replica without
+    the policy creates its destination without rules, as it already does for `TS.ADD`
+    auto-create. Documented in `overview.md`; the tests set it on both nodes.
+  - Tests: in `test_ts_sanitize.py`, `DROP` of an infinity under `count` and under `sum`, `FILL`
+    under `sum`, and "nothing to fix leaves the buckets alone"; in `test_ts_store_replication.py`,
+    `test_store_feeds_the_destinations_compaction_rules` (sanitize, fillgaps, trend, forecast),
+    `test_store_overwrite_clears_the_compaction_buckets_too`,
+    `test_store_overwrite_with_no_output_empties_the_compaction_buckets` and
+    `test_store_merge_adds_to_the_compaction_buckets`. Each STORE test compares the rule's series
+    with the buckets of the destination's own samples on both the primary and the replica. With
+    the old source, 10 of the 11 fail; "nothing to fix" passes either way and is only a guard.
+    The broad regression pass (652 integration, 1613 unit, 13 doc) is green.
+  - Docs: `overview.md` (a `STORE` write feeds the destination's rules) and `ts.sanitize.md`.
 
 ### 2.7 `TS.SANITIZE` write-back is subject to the source's IGNORE filter
 
@@ -218,6 +372,35 @@ and documentation.
 - **Fix:** re-insert only the changed timestamps (the map the imputation returns) through a
   raw path that bypasses IGNORE and rounding, instead of delete-and-remerge of the whole range.
 - **Test:** `test_sanitize_ignore_filter_does_not_drop_rewritten_samples` (the repro).
+- **Done 2026-09-30 (`c0aa9691b`, `e9292203c`).** The write-back no longer goes through the
+  IGNORE filter, and writes only what changed:
+  - `normalize_batch` takes an `IgnoreFilter` (`Apply`/`Bypass`) and the merge core a matching
+    `merge_samples_into_series_with`; `TimeSeries::overwrite_samples` is the bypassing entry
+    point (retention, rounding and chunk grouping unchanged, stored values replaced whatever the
+    duplicate policy). `ts_sanitize.rs` diffs the sanitized result against the range as read
+    (`diff_range`) and calls `write_back`.
+  - Imputing policies upsert only the timestamps whose value changed and delete nothing; a range
+    with nothing missing is left untouched (before, `POLICY ERROR` on clean data could lose
+    samples). Differences from the plan:
+  - `DROP` still clears the range in one pass and writes the kept samples back, now unfiltered.
+    The chunk API has no multi-timestamp removal, so removing each dropped run separately would
+    re-encode a chunk per run, a GIL stall on a large `DROP`. The plan's "re-insert the map" was
+    this same shape for `DROP`.
+  - Rounding is *not* bypassed for imputed values: a series with `DECIMAL_DIGITS 2` should not
+    gain `2.3333333` from a `FILLMEAN`. The complaint, re-rounding already-stored values, no
+    longer happens since untouched samples are not rewritten.
+  - A sanitized sample that is not stored is now an error (before, the per-sample results were
+    discarded and the data silently lost).
+  - Tests: in `test_ts_sanitize.py`,
+    `test_sanitize_ignore_filter_does_not_drop_rewritten_samples` (the repro),
+    `test_sanitize_drop_keeps_samples_the_ignore_filter_would_drop`,
+    `test_sanitize_fills_a_trailing_gap_under_the_ignore_filter`,
+    `test_sanitize_of_clean_data_changes_nothing_under_the_ignore_filter` (`ERROR`, `DROP`,
+    `INTERPOLATE`) and `test_sanitize_rewrites_only_the_samples_it_changed`; unit tests in
+    `bulk_add.rs` (the bypass, with the filtered `merge_samples` result alongside) and
+    `ts_sanitize.rs` (`diff_range`). All but `…_rewrites_only_the_samples_it_changed` fail on the
+    old write-back and pass now; that one passes either way and is only a guard.
+  - Docs: the "Source rewrite" note in `docs/commands/ts.sanitize.md` describes the new write.
 
 ### 2.8 `TS.SANITIZE` partial-mutation and error-after-replicate window
 
@@ -230,6 +413,27 @@ and documentation.
   client is told a command failed that mutated.
 - **Fix:** validate everything that can fail on the destination (type, METRIC collision)
   before touching the source; order compute → write destination → write source → replicate.
+- **Done 2026-09-30 (`e9292203c`).** The order is now compute → validate → write destination →
+  write source → replicate → notify, so an error reply never follows a replicated command and a
+  rejected command has changed nothing.
+  - The only failure a client could still cause after the source was rewritten was
+    `DUPLICATE_SERIES` from a `METRIC` another series holds: `CHUNK_SIZE` is validated when the
+    clause is parsed and default-compaction child failures are logged and skipped, not
+    returned. `StoreTarget::check_destination_writable` runs it up front through
+    `check_series_creatable` (`series/utils.rs`), which shares `check_metric_name_unique` with
+    `create_series` so the two cannot drift.
+  - The check only runs when a write follows: an empty result never creates the destination, so
+    a colliding `METRIC` there still succeeds (as before), and an existing destination ignores
+    `METRIC` (it only applies at creation).
+  - Side effect: the destination's `ts.del`/`ts.add` events now fire before `ts.sanitize`.
+  - **Not fixed:** a failure *inside* a write (`remove_range`/`merge_samples`, internal errors
+    only) can still leave the first key written and nothing replicated. 2.7 narrows it, since
+    the imputing policies now delete nothing, but `DROP` keeps its clear-then-write-back gap.
+  - Tests: `test_store_metric_collision_fails_before_changing_anything`,
+    `test_store_metric_collision_is_ignored_when_nothing_is_written` and
+    `test_store_metric_is_ignored_for_an_existing_destination` in `test_ts_sanitize.py`;
+    `test_sanitize_rejected_store_is_not_replicated` in `test_ts_store_replication.py`. The
+    first and last fail on the old order; the other two pin the behaviours above.
 
 ### 2.9 `TS.SANITIZE MOVINGAVERAGE` window is uncapped and inline
 
@@ -278,6 +482,30 @@ and documentation.
 - **Fix:** in overwrite mode clear an existing destination even when nothing is written (and
   replicate the clear); keep "not created when missing".
 - **Test:** `test_store_overwrite_with_no_output_clears_destination` for all three commands.
+- **Done 2026-10-01 (`4ea9b87bc`).** In overwrite mode an empty result now empties an existing
+  destination (`create_or_update_series_with_samples`, `series/utils.rs`) and fires `ts.del`;
+  the existing `changed` flag replicates it: `TS.FILLGAPS` as `TS._STORE key "" …` (the
+  replica's decoder already takes an empty payload), `TS.SANITIZE` by re-running. A missing
+  destination is still not created, `MERGE` still changes nothing, and clearing an
+  already-empty destination replicates nothing. `TS.FILLGAPS` lost its `gaps_filled == 0` early
+  return, which kept the fix from reaching it. Differences from the plan:
+  - `TS.TREND` cannot reach the empty case: `AutoTrend::fit_trend` returns an error when no
+    candidate wins (the module propagates it before any store), so `fitted_trend()` is never
+    empty, and `HORIZON 0` is rejected, so the forecast commands cannot either. Tested for
+    `TS.FILLGAPS` and `TS.SANITIZE` only; the test helper says why `TS.TREND` is absent.
+  - Behaviour change: `TS.FILLGAPS … STORE <non-series key>` with no gaps used to succeed with
+    `0` and now fails with `WRONGTYPE`, as a non-empty write does (`TS.SANITIZE` already did).
+    `MERGE` with an empty result still skips the check.
+  - The reply stays `0` when the destination is cleared: it counts samples written.
+  - Tests (`test_ts_store_replication.py`): `test_store_overwrite_with_no_output_clears_destination`
+    (replica emptied too), `…_merge_with_no_output_leaves_destination`,
+    `…_with_no_output_does_not_create_destination`,
+    `test_store_overwrite_of_an_empty_destination_is_not_replicated` and
+    `…_with_no_output_rejects_a_destination_of_another_type`. On the old code the two clear
+    tests and the `TS.FILLGAPS` wrong-type test fail; the rest pin behaviour that must not
+    change and pass either way.
+  - Docs: `ts.fillgaps.md` and `ts.sanitize.md` no longer say the destination is "left
+    untouched".
 
 ### 2.12 Non-finite input handling is inconsistent across commands
 
