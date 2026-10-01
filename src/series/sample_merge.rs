@@ -2,7 +2,9 @@ use crate::common::context::key_for_display;
 use crate::common::threads::ParMutRayon;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
-use crate::series::bulk_add::merge_samples_into_series;
+use crate::series::bulk_add::{merge_samples_into_series, merge_samples_into_series_with};
+use crate::series::index::get_series_key_by_id;
+use crate::series::ingest_normalize::IgnoreFilter;
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 use orx_parallel::Par;
 use orx_parallel::ParResult;
@@ -96,6 +98,30 @@ pub(super) fn merge_samples(
     }
 
     let results = merge_samples_into_series(series, samples, policy_override);
+    series.split_chunks_if_needed()?;
+    Ok(results)
+}
+
+/// Writes `samples` over whatever is stored at their timestamps, inserting any that are not
+/// stored yet. See [`TimeSeries::overwrite_samples`].
+///
+/// ### Returns
+///
+/// One `SampleAddResult` per sample, in input order. `samples` **must** be sorted by timestamp.
+pub(super) fn overwrite_samples(
+    series: &mut TimeSeries,
+    samples: &[Sample],
+) -> TsdbResult<Vec<SampleAddResult>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let results = merge_samples_into_series_with(
+        series,
+        samples,
+        Some(DuplicatePolicy::KeepLast),
+        IgnoreFilter::Bypass,
+    );
     series.split_chunks_if_needed()?;
     Ok(results)
 }

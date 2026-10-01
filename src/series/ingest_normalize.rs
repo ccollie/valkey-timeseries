@@ -7,6 +7,18 @@
 use crate::common::{Sample, Timestamp};
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 
+/// Whether normalization applies the series' IGNORE filter.
+///
+/// The filter exists to drop *incoming* client writes that barely differ from the last stored
+/// sample. A write the server makes to its own data on a client's behalf (a `TS.SANITIZE`
+/// rewrite) is not one: judged against whatever sample happens to precede it, it would be
+/// dropped, or would drop samples that were already stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum IgnoreFilter {
+    Apply,
+    Bypass,
+}
+
 /// Result of pre-merge normalization shared by all bulk ingest paths.
 pub(super) struct NormalizedBatch {
     /// Samples that should actually be merged into chunks (values already rounded), in ascending
@@ -65,10 +77,14 @@ fn retention_gate(series: &TimeSeries, samples: &[Sample]) -> Vec<bool> {
 /// earlier accepted item — that earlier sample is inserted and then removed by the post-merge
 /// retention trim, so it is still reported as accepted. Only the per-item result differs between
 /// the two orderings; the stored end-state is identical either way.
+///
+/// `ignore` switches the IGNORE filter off for a write that is not an incoming client write
+/// (see [`IgnoreFilter`]); retention, rounding and in-batch duplicate rejection always apply.
 pub(super) fn normalize_batch(
     series: &TimeSeries,
     samples: &[Sample],
     policy_override: Option<DuplicatePolicy>,
+    ignore: IgnoreFilter,
 ) -> NormalizedBatch {
     let too_old = retention_gate(series, samples);
     let dup_policy = series.sample_duplicates;
@@ -115,7 +131,8 @@ pub(super) fn normalize_batch(
 
         // IGNORE only applies to in-order samples (ts >= last); out-of-order samples are upserts
         // and are never filtered here, matching `TimeSeries::add`.
-        if let Some(last) = running_last
+        if ignore == IgnoreFilter::Apply
+            && let Some(last) = running_last
             && adjusted.timestamp >= last.timestamp
             && dup_policy.is_duplicate(&adjusted, &last, policy_override)
         {

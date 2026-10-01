@@ -11,7 +11,7 @@ use crate::common::threads::{IterIntoParRayon, ParCollectionRayon};
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::chunks::{ChunkOps, MIN_SAMPLES_FOR_BPS_ESTIMATE, TimeSeriesChunk};
-use crate::series::ingest_normalize::{NormalizedBatch, normalize_batch};
+use crate::series::ingest_normalize::{IgnoreFilter, NormalizedBatch, normalize_batch};
 use crate::series::{
     DuplicatePolicy, SPLIT_SLACK_DIVISOR, SampleAddResult, TimeSeries, seal_chunk,
 };
@@ -412,6 +412,16 @@ pub(super) fn merge_samples_into_series(
     samples: &[Sample],
     policy: Option<DuplicatePolicy>,
 ) -> Vec<SampleAddResult> {
+    merge_samples_into_series_with(series, samples, policy, IgnoreFilter::Apply)
+}
+
+/// [`merge_samples_into_series`] with the IGNORE filter optionally switched off.
+pub(super) fn merge_samples_into_series_with(
+    series: &mut TimeSeries,
+    samples: &[Sample],
+    policy: Option<DuplicatePolicy>,
+    ignore: IgnoreFilter,
+) -> Vec<SampleAddResult> {
     if samples.is_empty() {
         return Vec::new();
     }
@@ -425,7 +435,7 @@ pub(super) fn merge_samples_into_series(
         to_insert,
         insert_index,
         mut results,
-    } = normalize_batch(series, samples, policy);
+    } = normalize_batch(series, samples, policy, ignore);
 
     if to_insert.is_empty() {
         return results;
@@ -622,6 +632,8 @@ fn notify_added(ctx: &Context, key: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::rounding::RoundingStrategy;
+    use crate::series::SampleDuplicatePolicy;
     use crate::series::chunks::ChunkEncoding;
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
@@ -679,6 +691,115 @@ mod tests {
         }
     }
 
+    /// A series whose IGNORE filter drops anything within 10 s and 1.0 of the last sample, holding
+    /// `1000:5`, `2000:NaN` and `3000:5.5`: what `TS.SANITIZE` reads and rewrites.
+    fn ignoring_series_with_a_gap() -> TimeSeries {
+        let mut series = TimeSeries {
+            sample_duplicates: SampleDuplicatePolicy {
+                policy: None,
+                max_time_delta: 10_000,
+                max_value_delta: 1.0,
+            },
+            ..Default::default()
+        };
+        for sample in [s(1000, 5.0), s(2000, f64::NAN), s(3000, 5.5)] {
+            assert!(series.add(sample.timestamp, sample.value, None).is_ok());
+        }
+        series
+    }
+
+    fn stored(series: &TimeSeries) -> Vec<(Timestamp, u64)> {
+        series
+            .get_range(0, Timestamp::MAX)
+            .iter()
+            .map(|x| (x.timestamp, x.value.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn merge_ignores_samples_that_overwrite_keeps() {
+        // Clearing the range and merging it back: the first sample is compared with the one before
+        // the gap and the second with the first, so the IGNORE filter drops both.
+        let mut series = ignoring_series_with_a_gap();
+        series.remove_range(2000, 3000).unwrap();
+        let results = series
+            .merge_samples(
+                &[s(2000, 5.2), s(3000, 5.5)],
+                Some(DuplicatePolicy::KeepLast),
+            )
+            .unwrap();
+        assert!(matches!(results[0], SampleAddResult::Ignored(1000)));
+        assert!(matches!(results[1], SampleAddResult::Ignored(_)));
+        assert_eq!(series.len(), 1);
+
+        // The same two samples through the rewrite path are both stored.
+        let mut series = ignoring_series_with_a_gap();
+        series.remove_range(2000, 3000).unwrap();
+        let results = series
+            .overwrite_samples(&[s(2000, 5.2), s(3000, 5.5)])
+            .unwrap();
+        assert!(results.iter().all(SampleAddResult::is_ok));
+        assert_eq!(
+            stored(&series),
+            vec![
+                (1000, 5.0f64.to_bits()),
+                (2000, 5.2f64.to_bits()),
+                (3000, 5.5f64.to_bits())
+            ]
+        );
+    }
+
+    #[test]
+    fn overwrite_replaces_the_last_sample_whatever_the_filter_says() {
+        // The last stored sample is the one the IGNORE filter compares against, so a write at
+        // its own timestamp is the case most likely to be filtered.
+        let mut series = TimeSeries {
+            sample_duplicates: SampleDuplicatePolicy {
+                policy: None,
+                max_time_delta: 10_000,
+                max_value_delta: f64::INFINITY,
+            },
+            ..Default::default()
+        };
+        assert!(series.add(1000, 5.0, None).is_ok());
+        assert!(series.add(2000, f64::INFINITY, None).is_ok());
+
+        let results = series.overwrite_samples(&[s(2000, 5.2)]).unwrap();
+
+        assert!(results[0].is_ok());
+        assert_eq!(series.get_range(2000, 2000)[0].value, 5.2);
+    }
+
+    #[test]
+    fn overwrite_replaces_a_stored_value_under_any_duplicate_policy() {
+        for policy in [DuplicatePolicy::Block, DuplicatePolicy::KeepFirst] {
+            let mut series = ignoring_series_with_a_gap();
+            series.sample_duplicates.policy = Some(policy);
+            let results = series.overwrite_samples(&[s(2000, 5.2)]).unwrap();
+            assert!(results[0].is_ok(), "{policy:?}");
+            assert_eq!(series.get_range(2000, 2000)[0].value, 5.2, "{policy:?}");
+            assert_eq!(series.len(), 3, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn overwrite_still_rounds_and_applies_retention() {
+        let mut series = TimeSeries {
+            rounding: Some(RoundingStrategy::DecimalDigits(1)),
+            ..Default::default()
+        };
+        assert!(series.add(100_000, 1.0, None).is_ok());
+        series.retention = Duration::from_millis(1_000);
+
+        let results = series
+            .overwrite_samples(&[s(1_000, 9.0), s(100_000, 2.46)])
+            .unwrap();
+
+        assert!(matches!(results[0], SampleAddResult::TooOld));
+        assert!(results[1].is_ok());
+        assert_eq!(series.get_range(100_000, 100_000)[0].value, 2.5);
+    }
+
     #[test]
     fn group_empty_samples_returns_empty() {
         let series = TimeSeries::default();
@@ -698,7 +819,7 @@ mod tests {
 
         // One sample below the retention window, one inside.
         let samples = vec![s(min_allowed - 1, 1.0), s(min_allowed, 2.0)];
-        let batch = normalize_batch(&series, &samples, None);
+        let batch = normalize_batch(&series, &samples, None, IgnoreFilter::Apply);
 
         // Retention filtering happens in normalization, before grouping.
         assert!(matches!(batch.results[0], SampleAddResult::TooOld));
@@ -718,7 +839,12 @@ mod tests {
 
         // Newer-first: the older item is below the floor the newer item established -> TooOld.
         let series = mk();
-        let batch = normalize_batch(&series, &[s(1001, 0.0), s(0, 0.0)], None);
+        let batch = normalize_batch(
+            &series,
+            &[s(1001, 0.0), s(0, 0.0)],
+            None,
+            IgnoreFilter::Apply,
+        );
         assert!(matches!(batch.results[1], SampleAddResult::TooOld));
         let kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
         assert_eq!(kept, vec![1001]);
@@ -726,7 +852,12 @@ mod tests {
         // Older-first: both accepted (the older one is later removed by the post-merge trim, but is
         // still reported as accepted, not TooOld).
         let series = mk();
-        let batch = normalize_batch(&series, &[s(0, 0.0), s(1001, 0.0)], None);
+        let batch = normalize_batch(
+            &series,
+            &[s(0, 0.0), s(1001, 0.0)],
+            None,
+            IgnoreFilter::Apply,
+        );
         assert!(!matches!(batch.results[0], SampleAddResult::TooOld));
         let mut kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
         kept.sort();
@@ -866,7 +997,7 @@ mod tests {
         let min_allowed = get_min_allowed_timestamp(&series);
 
         let samples = vec![s(min_allowed - 100, 1.0), s(min_allowed - 1, 2.0)];
-        let batch = normalize_batch(&series, &samples, None);
+        let batch = normalize_batch(&series, &samples, None, IgnoreFilter::Apply);
 
         assert!(batch.to_insert.is_empty());
         assert!(

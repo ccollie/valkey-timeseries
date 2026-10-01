@@ -15,7 +15,7 @@ use crate::series::digest::{
     calc_metric_name_digest, calc_rounding_digest,
 };
 use crate::series::index::next_timeseries_id;
-use crate::series::sample_merge::merge_samples;
+use crate::series::sample_merge::{merge_samples, overwrite_samples};
 use crate::series::series_sample_iterator::SeriesSampleIterator;
 use crate::series::{DuplicatePolicy, SeriesLink};
 use crate::{config, error_consts};
@@ -637,6 +637,22 @@ impl TimeSeries {
         // Eager retention trim, as in `add` — a batch can advance the window too.
         self.apply_retention();
         Ok(results)
+    }
+
+    /// Writes `samples` over whatever is stored at their timestamps, inserting any that are not
+    /// stored yet. For a write the server makes to a series' own data (a `TS.SANITIZE`
+    /// rewrite), as opposed to a client adding data.
+    ///
+    /// It differs from [`Self::merge_samples`] in one way: the series' IGNORE filter does not
+    /// apply. That filter drops an incoming sample that barely differs from the last stored
+    /// one, which says nothing about a sample being put back in place. Retention and value
+    /// rounding still do, and a stored sample is replaced whatever the duplicate policy.
+    ///
+    /// No retention trim follows: writing over stored timestamps cannot advance the window.
+    ///
+    /// `samples` must be sorted by timestamp, ascending. Returns one result per sample.
+    pub fn overwrite_samples(&mut self, samples: &[Sample]) -> TsdbResult<Vec<SampleAddResult>> {
+        overwrite_samples(self, samples)
     }
 
     /// [`Self::merge_samples`] without the eager retention trim, for callers that
