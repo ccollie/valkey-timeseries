@@ -173,7 +173,7 @@ predicted values are skipped with a warning (fitted values are still stored).
 <details open>
 <summary><code>TIMEOUT milliseconds</code></summary>
 
-Deadline for the command, in milliseconds. Ranges of up to 2,000 samples are computed
+Deadline for the command, in milliseconds. Ranges of up to 400 samples are computed
 inline, as is any call inside `MULTI`, a Lua script or a module call (up to 40,000 samples there;
 a larger range is refused, see the [overview](../overview.md#running-the-analysis-commands));
 larger ranges run on a

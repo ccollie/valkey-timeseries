@@ -161,12 +161,18 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     )
 }
 
-/// Fitting is ~20 ms at 2k samples, ~0.2 s at 20k and ~16 s at 200k (release build): quadratic.
-/// Up to `inline_max` samples it runs on the main thread, anything bigger goes to the pool;
-/// where the client cannot be blocked the pool is not available and `unblockable_max` (about
-/// 0.8 s) is the largest range it will take.
+/// The default `MODEL AUTO` fit costs about 0.4 ms plus 2.4 µs a sample up to a few thousand
+/// samples (0.5 ms at 100, 1.2 ms at 500, 4.9 ms at 2k; release build), and grows faster beyond
+/// that (~0.2 s at 20k, ~16 s at 200k). A specific `MODEL` is about a third of that.
+///
+/// Up to `inline_max` samples the fit runs on the main thread, where it holds up every other
+/// client for as long as it takes, so the bar is about 1 ms: a call looping on 2k samples
+/// stalled a concurrent PING to ~4 ms at the median. The pool costs the caller next to nothing
+/// (a handoff is ~10-20 µs, below what a client round trip can resolve), so there is little to
+/// gain from running more inline. Where the client cannot be blocked the pool is not available
+/// and `unblockable_max` (about 0.8 s) is the largest range it will take.
 const LIMITS: WorkLimits = WorkLimits {
-    inline_max: 2_000,
+    inline_max: 400,
     unblockable_max: 40_000,
     unit: "samples",
 };
