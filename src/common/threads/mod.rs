@@ -13,6 +13,13 @@
 //! The two pinned kinds are for features that need a pool of their own; this module states
 //! the rules for them so that a feature adds a pool, not a rule.
 //!
+//! One pool sits outside the table: rayon's global pool, which third-party crates enter on
+//! their own (`krcf`, behind `TS.OUTLIERS METHOD rcf`, when its parallel heuristic fires). The
+//! module never submits work to it, and the jobs it runs there neither block nor take the GIL,
+//! so it obeys R1 without exception and any thread, a GIL holder included, may wait on it. It
+//! is sized by rayon, not by `ts-num-threads`. Keep it that way: a crate that could block or
+//! take the GIL inside its parallel iterators must not be called with the GIL held.
+//!
 //! # Rules
 //!
 //! A rayon worker that waits — on a `join`, a scope, a parallel iterator — runs other jobs of

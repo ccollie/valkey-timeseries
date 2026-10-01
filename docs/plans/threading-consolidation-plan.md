@@ -18,6 +18,19 @@ Deviations from the text below, in Phase A:
   256-deep queue deterministically costs more than it proves; the executor unit tests cover
   rejection. The panic-reply and MULTI-inline paths do have integration tests.
 - **The JOIN/LABELSTATS A/B (A3) was not run.**
+- **Correction: rayon's global pool is not retired.** `krcf` (Random Cut Forest, `TS.OUTLIERS
+  METHOD rcf`) depends on the full `rayon` crate through `krcflib`, on `unstable` too, and runs
+  its internal `par_iter` there when `RCFOptions::should_parallelize` fires (large `NUM_TREES` or
+  `SHINGLE_SIZE`). The dependency check behind §1 and §5 missed it (a `Cargo.lock` pattern that
+  could not match). Those jobs neither block nor take the GIL, and the pool is separate from the
+  shared pool, so waiting on it cannot deadlock or starve module work; it is now documented in
+  the `common::threads` header as a third-party pool. Routing it onto the shared pool was
+  rejected: an `install` would run the whole RCF loop on one shared worker for seconds. Disabling
+  `krcf`'s parallelism is the other option (D6).
+- **D2 reversed: anofox keeps `parallel`.** Its premise was that anofox would be the global
+  pool's only user, which the correction above makes false. Under the lane model the crate's
+  `par_iter` is called from lane workers (plain threads) or inline, so the global pool only ever
+  holds its sub-tasks, never whole analysis jobs, and review §2.1 is resolved without dropping it.
 
 **Goal.** Land on `unstable` the smallest threading substrate that (a) makes the deadlock and
 starvation rules enforceable there, (b) fixes the hazards `unstable` has today, and (c) lets both
@@ -350,7 +363,12 @@ and rename in `promql` during its rebase, rather than shipping `EvalPool`/`Mater
 into a branch that has no evaluator. The rule R2 is about "a pool whose jobs block", and
 `unstable`'s docs should say so in those words. Cost: ~20 renames on `promql`.
 
-**D2. anofox `parallel`.** Drop the feature on the forecasting rebase (recommended) and measure
+**D6. Third-party parallelism on rayon's global pool** (`krcf`, and anofox on forecasting).
+Leave it (current choice: rule-safe, see Status), size it (`rayon::ThreadPoolBuilder::build_global`
+from `ts-num-threads` at load, which only works before either crate first touches it), or turn
+it off (`parallel_enabled: Some(false)` for RCF, anofox without `parallel`) and measure.
+
+**D2. anofox `parallel`** (superseded: kept; see Status and D6). Drop the feature on the forecasting rebase (recommended) and measure
 AUTOFORECAST / BACKTEST wall time single-client; the review's own expectation is that per-job
 parallelism rarely pays under concurrency, and the lane already runs up to 8 jobs at once. If
 measurement says otherwise, the alternative is a sanctioned `run_on_shared_pool(work)` wrapper
