@@ -534,6 +534,14 @@ Detect pattern-based anomalies using a sliding window:
       scored. In `FULL` output they appear with a `nan` score and a `0` signal.
 * **Timestamp preservation:**
     * Output timestamps match original series timestamps
+* **Large ranges run in the background:**
+    * Above 1,000 samples for `rcf` and `esd`, or 5,000 samples for the other methods, the detection runs on the
+      analysis lane, a small pool of worker threads (`ts-num-threads`, clamped to 2–8), so the server keeps serving
+      other clients meanwhile.
+    * The lane queues up to 256 detections. When it is full the command is refused at once with
+      `TSDB: outlier detection: too many queued jobs (limit 256)`; retry later.
+    * Inside `MULTI`, a Lua script or a module call the client cannot be blocked, so the detection runs inline on
+      the main thread instead, whatever its size.
 * **Performance tips:**
     * Use `DIRECTION` to filter results when only interested in one type of anomaly
     * Single seasonality periods are faster than multiple

@@ -19,6 +19,7 @@ use crate::common::encoding::{try_read_u8, try_read_uvarint, write_u8, write_uva
 use crate::common::hash::{BuildNoHashHasher, DeterministicHasher};
 use crate::common::logging::{log_debug, log_notice, log_warning};
 use crate::common::sync::{read_lock, write_lock};
+use crate::common::threads::LockGil;
 use crate::config::is_index_persist_enabled;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesRef, TimeSeries};
@@ -557,7 +558,7 @@ fn verify_and_repair_db(db: i32, loaded_count: u64) {
             return;
         }
         // Lock per scan bucket so the main thread is not starved for the whole scan.
-        let ctx = MODULE_CONTEXT.lock();
+        let ctx = MODULE_CONTEXT.lock_gil();
         let save_db = get_current_db(&ctx);
         set_current_db(&ctx, db);
         more = cursor.scan(&ctx, &scan_callback);
@@ -601,7 +602,7 @@ fn reconcile_db(db: i32) {
 
         let mut missing: Vec<SeriesRef> = Vec::new();
         {
-            let ctx = MODULE_CONTEXT.lock();
+            let ctx = MODULE_CONTEXT.lock_gil();
             let save_db = get_current_db(&ctx);
             set_current_db(&ctx, db);
             for (id, key) in &window {

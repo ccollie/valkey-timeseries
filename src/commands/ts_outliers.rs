@@ -5,15 +5,14 @@ use crate::analysis::outliers::{
     SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::analysis::seasonality::Seasonality;
+use crate::commands::analysis_runner::run_on_analysis_lane;
 use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_timestamp_range,
 };
 use crate::common::Sample;
+use crate::common::context::is_blocking_denied;
 use crate::common::hash::{IntMap, IntSet};
-use crate::common::replies::{
-    ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
-};
-use crate::common::threads::spawn;
+use crate::common::replies::{ReplyContext, reply_with_sample};
 use crate::series::{TimestampRange, get_timeseries};
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -148,7 +147,9 @@ fn process_request(
 
     validate_rcf_options(&options, samples.len())?;
 
-    if !should_run_in_background(samples.len(), options.method()) {
+    // Inline when a deny-blocking client (MULTI, a script, an `RM_Call` without the K flag)
+    // could not be blocked anyway: the server asserts on blocking one.
+    if !should_run_in_background(samples.len(), options.method()) || is_blocking_denied(ctx) {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         let reply_ctx = ReplyContext::new(ctx.ctx);
         return match detect_anomalies(&values, &options) {
@@ -166,10 +167,7 @@ fn process_request(
         };
     }
 
-    let blocked_client = block_client(ctx);
-    spawn(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-
+    run_on_analysis_lane(ctx, "outlier detection", move |thread_ctx| {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         match detect_anomalies(&values, &options) {
             Err(err) => {
@@ -189,10 +187,7 @@ fn process_request(
                 );
             }
         }
-    });
-
-    // Reply will be sent from the background thread
-    Ok(ValkeyValue::NoReply)
+    })
 }
 
 const SPAWN_THRESHOLD_SAMPLES: usize = 1000;

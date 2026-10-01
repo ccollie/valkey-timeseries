@@ -1,23 +1,21 @@
 use crate::common::context::set_current_db;
+use crate::common::threads::{GilGuard, LockGil};
 use crate::fanout::{FanoutAclScope, FanoutIdentity};
 use crate::series::acl::ModuleUser;
 use std::ops::Deref;
 use std::rc::Rc;
-use valkey_module::{
-    Context, DetachedContext, DetachedContextGuard, MODULE_CONTEXT, Status, ValkeyError,
-    ValkeyResult,
-};
+use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The GIL, held for one step of a shard-local fan-out request.
 ///
 /// Dereferences to [`Context`]. While it is alive, the request's database is
 /// selected, and its ACL identity is active on this thread; both are torn down
-/// when it drops, before the GIL is released. Like [`DetachedContextGuard`],
+/// when it drops, before the GIL is released. Like [`GilGuard`],
 /// it has no client behind it and must not be used to send replies.
 pub struct FanoutContextGuard {
     // Declared first so the resolved `ModuleUser` handle is freed under the lock.
     _acl: Option<FanoutAclScope>,
-    ctx: DetachedContextGuard,
+    ctx: GilGuard,
 }
 
 impl Deref for FanoutContextGuard {
@@ -83,7 +81,7 @@ impl FanoutContext {
     /// longer exists, so a request cannot silently run against the wrong
     /// database or without enforcement.
     pub fn lock(&self) -> ValkeyResult<FanoutContextGuard> {
-        let ctx = self.ctx.lock();
+        let ctx = self.ctx.lock_gil();
 
         if set_current_db(&ctx, self.db) == Status::Err {
             return Err(ValkeyError::String(format!(

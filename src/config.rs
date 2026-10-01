@@ -273,12 +273,13 @@ impl ConfigDesc {
 
 pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
 
-/// Size of the rayon-core pool that runs orx-parallel `.par()` computations (`ts-num-threads`).
+/// Size of the module's shared compute pool (`ts-num-threads`): the rayon-core pool that runs
+/// its orx-parallel computations and `threads::join`. Also scales the executor lanes
+/// (`threads::lane_workers`).
 ///
 /// This is the single source of truth for pool size: `init_thread_pool()` reads it directly
-/// when building that pool (capped at the core count), and heuristics that scale work by thread
-/// count (`multi_del.rs`, `rcf_outlier_detector.rs`) read it too. Rayon's own global pool
-/// (`threads::spawn`/`join`) is not sized by it.
+/// when building the shared pool (capped at the core count), and heuristics that scale work by
+/// thread count (`multi_del.rs`, `rcf_outlier_detector.rs`) read it too.
 ///
 /// A rayon pool cannot be resized once built (there is no counterpart to shrink/grow an
 /// already-initialized `Registry`), so this config is
@@ -1024,7 +1025,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         default: ConfigValue::Integer(DEFAULT_THREADS),
         min: Some(ConfigValue::Integer(MIN_THREADS)),
         max: Some(ConfigValue::Integer(MAX_THREADS)),
-        // Sizes the orx-parallel rayon pool, which cannot be resized once built, so this can
+        // Sizes the module's shared compute pool, which cannot be resized once built, so this can
         // only be set at startup; runtime `CONFIG SET` is rejected by the server itself.
         flags: ConfigurationFlags::IMMUTABLE,
         description: "Number of worker threads for parallel query processing",

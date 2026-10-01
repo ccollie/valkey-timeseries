@@ -1,6 +1,7 @@
 use crate::aggregators::{PartialReducer, PartialRowReducer, PartialSampleReducer, PartialState};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::context::key_for_display;
+use crate::common::threads::{IntoParRayon, IterIntoParRayon};
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
 use crate::iterators::{
@@ -16,7 +17,7 @@ use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions, SeriesResultData,
 };
 use ahash::AHashMap;
-use orx_parallel::{IntoParIter, IterIntoParIter, Par};
+use orx_parallel::Par;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 struct MRangeSeriesMeta<'a> {
@@ -118,7 +119,7 @@ pub(crate) fn process_mrange_group_partials(
 
     Ok(grouped
         .into_iter()
-        .iter_into_par()
+        .iter_into_par_rayon()
         .map(|(label_value, group_data)| {
             let mut source_keys: Vec<Vec<u8>> = group_data
                 .series
@@ -317,7 +318,7 @@ fn handle_non_grouped(
         .is_some_and(|a| a.is_multi());
 
     metas
-        .into_par()
+        .into_par_rayon()
         .map(|meta| {
             // Multi-aggregation yields rows, which chunks cannot store. Under
             // aggregation push-down a shard produces these rows too; they ship
@@ -389,7 +390,7 @@ fn handle_grouping(
 
     let items = grouped_series_map
         .into_iter()
-        .iter_into_par()
+        .iter_into_par_rayon()
         .map(|(label_value, group_data)| {
             let grouping = options
                 .grouping

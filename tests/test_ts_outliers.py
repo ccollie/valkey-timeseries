@@ -2,10 +2,10 @@ import math
 from typing import List, Any
 
 import pytest
-from valkey import ResponseError
+from valkey import ResponseError, StrictValkey
 
 from outlier_result import AnomalyEntry, TSOutliersFullResult, TSOutliersCleanedResult
-from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase, ValkeyTimeSeriesTestCaseDebugMode
 from valkeytestframework.conftest import resource_port_tracker
 from valkeytestframework.util.waiters import *
 
@@ -28,6 +28,19 @@ def create_series_with_outliers(client, key, start_time=1000):
             'TS.ADD', key, start_time + i * 1000, val
         )
     return start_time, len(values)
+
+
+# Above the inline limit for lightweight methods, so the detection runs on the analysis lane.
+BACKGROUND_SAMPLE_COUNT = 6000
+
+
+def create_background_sized_series(client, key):
+    """A series large enough for the analysis lane, with one clear outlier in the middle."""
+    pipe = client.pipeline(transaction=False)
+    for i in range(BACKGROUND_SAMPLE_COUNT):
+        value = 50.0 if i == BACKGROUND_SAMPLE_COUNT // 2 else math.sin(i * 0.1)
+        pipe.execute_command('TS.ADD', key, 1000 + i * 1000, value)
+    pipe.execute()
 
 
 def convert_anomaly_entries(result: List[Any]) -> list[AnomalyEntry]:
@@ -64,6 +77,20 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         )
 
         assert len(TSOutliersFullResult.parse(result).samples) == 3
+
+    def test_background_detection_runs_inline_inside_multi(self):
+        """A detection large enough for the analysis lane cannot block a client inside
+        MULTI, so it runs inline there, with the same answer."""
+        key = 'test:outliers:background:multi'
+        create_background_sized_series(self.client, key)
+
+        expected = self.client.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore')
+        assert any(entry.value == 50.0 for entry in convert_anomaly_entries(expected))
+
+        tx = self.client.pipeline(transaction=True)
+        tx.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore')
+        [in_multi] = tx.execute()
+        assert in_multi == expected
 
     def test_outliers_nonexistent_key(self):
         """Test outlier detection on non-existent key."""
@@ -799,3 +826,35 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         # Verify we have both positive and negative detections
         signals = [a.signal for a in anomalies]
         assert 1 in signals  # At least one positive anomaly
+
+
+class TestOutliersLaneFailureStillReplies(ValkeyTimeSeriesTestCaseDebugMode):
+    """A detection that fails unexpectedly on the analysis lane must still answer its client.
+
+    The client is blocked while the lane runs the detection. A panic there used to unblock it
+    without a reply (or, before the lane, abort the server), so the client waited forever or,
+    if it pipelined, read the next command's reply as this one's.
+    """
+
+    def _client(self):
+        # A missing reply shows up as a socket timeout instead of hanging the suite.
+        return StrictValkey(host=self.server.bind_ip, port=self.server.port, socket_timeout=10)
+
+    def test_panicking_detection_answers_with_an_error(self):
+        client = self._client()
+        key = 'test:outliers:lane:panic'
+        create_background_sized_series(client, key)
+
+        assert client.execute_command('TS._DEBUG', 'PANIC_NEXT_ANALYSIS_JOB') in (b'OK', 'OK', True)
+        with pytest.raises(ResponseError, match='internal error'):
+            client.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore')
+
+        # The cause is in the server log, as the error says.
+        wait_for_true(lambda: self.server.verify_string_in_logfile(
+            'job panicked: TS._DEBUG PANIC_NEXT_ANALYSIS_JOB'))
+
+        # The connection is still in step, and the lane still serves the next detection.
+        assert client.ping()
+        result = client.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore')
+        assert any(entry.value == 50.0 for entry in convert_anomaly_entries(result))
+        assert self.server.is_alive()

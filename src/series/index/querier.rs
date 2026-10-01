@@ -27,6 +27,7 @@ use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
 use crate::common::context::{create_key_string, get_current_db};
 use crate::common::hash::IntMap;
+use crate::common::threads::IterIntoParRayon;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
@@ -35,7 +36,7 @@ use crate::series::{
     SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,
 };
 use blart::AsBytes;
-use orx_parallel::{IterIntoParIter, Par};
+use orx_parallel::Par;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -308,7 +309,7 @@ fn count_series_from_postings(
     let count = guards
         .iter()
         .map(|guard| guard.as_ref())
-        .iter_into_par()
+        .iter_into_par_rayon()
         .filter(|ts| matches_date_range(ts, start, end, exclude))
         .count();
 
@@ -409,7 +410,7 @@ fn filter_series_by_date_range<'a>(
     let matching_ids: Vec<u64> = series
         .iter()
         .map(|guard| guard.0.as_ref())
-        .iter_into_par()
+        .iter_into_par_rayon()
         .filter_map(|ts| {
             if matches_date_range(ts, start, end, exclude) {
                 Some(ts.id)

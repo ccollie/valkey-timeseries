@@ -3,7 +3,7 @@ use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::context::get_current_db;
 use crate::common::sync::lock;
-use crate::common::threads::ExecutorBusy;
+use crate::common::threads::Rejected;
 use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::workers::LOCAL_SHARE_EXECUTOR;
@@ -422,14 +422,14 @@ fn spawn_local_request<OP, F>(
     user: Option<String>,
     db: i32,
     deadline: Instant,
-) -> Result<(), ExecutorBusy>
+) -> Result<(), Rejected>
 where
     OP: FanoutCommand,
     OP::Request: Send + 'static,
     OP::Response: Send + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
-    // Off the pool: `get_local_response` takes the module lock (see `spawn_background`).
+    // A blocking thread: `get_local_response` takes the GIL (R1 in `common::threads`).
     LOCAL_SHARE_EXECUTOR.try_spawn(move || {
         // A share that waited in the queue may no longer be wanted: the fanout
         // already completed (an RPC timeout or a fail-fast error), or its
