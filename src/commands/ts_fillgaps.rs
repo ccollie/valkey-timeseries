@@ -170,12 +170,9 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
     }
 
-    let gaps_filled = gap_samples.len();
-
     if let Some(dest) = destination {
-        if gaps_filled == 0 {
-            return Ok(ValkeyValue::from(0_i64));
-        }
+        // Also with no gaps: overwrite mode then empties an existing destination, which must
+        // hold exactly the gaps found.
         let written = dest.write(ctx, &gap_samples)?;
         return Ok(ValkeyValue::from(written));
     }

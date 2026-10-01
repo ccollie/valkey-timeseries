@@ -59,7 +59,9 @@ samples. The source range is rewritten either way.
 
 Without `MERGE` (overwrite mode), the destination is cleared before writing.
 With `MERGE`, sanitized samples are merged into an existing destination series.
-If no samples remain after sanitizing, the destination is left untouched (and not created).
+If no samples remain after sanitizing, nothing is written: without `MERGE` an existing
+destination is still emptied (it holds exactly the sanitized samples, which is none), with
+`MERGE` it is left as it was, and a destination that does not exist is not created.
 
 ## Policies
 

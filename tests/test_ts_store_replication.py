@@ -237,6 +237,87 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
             assert client.execute_command("EXISTS", "dst") == 0
         assert self.command_calls(self.replica, "ts.sanitize") == 0
 
+    def no_output_command(self, command):
+        """Creates `src` so that `command` has nothing to store; returns its argv without STORE.
+
+        FILLGAPS finds no gap and SANITIZE drops every sample. (TREND cannot get here: AutoTrend
+        fails the command when no candidate wins, so a fit is never empty.)
+        """
+        if command == "fillgaps":
+            self.add_series("src", 20)
+            return ["TS.FILLGAPS", "src", "-", "+", "FREQUENCY", STEP_MS]
+        self.client.execute_command("TS.CREATE", "src")
+        self.client.execute_command("TS.MADD", "src", 1000, "nan", "src", 2000, "nan")
+        return ["TS.SANITIZE", "src", "-", "+", "POLICY", "DROP"]
+
+    @pytest.mark.parametrize("command", ["fillgaps", "sanitize"])
+    def test_store_overwrite_with_no_output_clears_destination(self, command):
+        """Overwrite means the destination holds exactly the output, so no output empties it."""
+        argv = self.no_output_command(command)
+        self.add_series("dst", 5)
+        self.sync()
+        assert len(self.replica.execute_command("TS.RANGE", "dst", "-", "+")) == 5
+
+        assert self.client.execute_command(*argv, "STORE", "dst") == 0
+
+        self.sync()
+        for client in (self.client, self.replica):
+            # Emptied, not deleted: the series and its settings stay.
+            assert client.execute_command("EXISTS", "dst") == 1
+            assert client.execute_command("TS.RANGE", "dst", "-", "+") == []
+        if command == "fillgaps":
+            self.assert_replicated_as_store("ts.fillgaps")
+        else:
+            assert self.command_calls(self.replica, "ts.sanitize") == 1
+
+    @pytest.mark.parametrize("command", ["fillgaps", "sanitize"])
+    def test_store_merge_with_no_output_leaves_destination(self, command):
+        argv = self.no_output_command(command)
+        self.add_series("dst", 5)
+        before = self.client.execute_command("TS.RANGE", "dst", "-", "+")
+        self.sync()
+
+        assert self.client.execute_command(*argv, "STORE", "dst", "MERGE") == 0
+
+        self.sync()
+        for client in (self.client, self.replica):
+            assert client.execute_command("TS.RANGE", "dst", "-", "+") == before
+        if command == "fillgaps":
+            assert self.command_calls(self.replica, "ts._store") == 0
+
+    @pytest.mark.parametrize("command", ["fillgaps", "sanitize"])
+    def test_store_with_no_output_does_not_create_destination(self, command):
+        argv = self.no_output_command(command)
+
+        assert self.client.execute_command(*argv, "STORE", "dst") == 0
+
+        self.sync()
+        for client in (self.client, self.replica):
+            assert client.execute_command("EXISTS", "dst") == 0
+        if command == "fillgaps":
+            assert self.command_calls(self.replica, "ts._store") == 0
+
+    def test_store_overwrite_of_an_empty_destination_is_not_replicated(self):
+        """Clearing nothing changes nothing, so there is nothing to send the replica."""
+        argv = self.no_output_command("fillgaps")
+        self.client.execute_command("TS.CREATE", "dst")
+        self.sync()
+
+        assert self.client.execute_command(*argv, "STORE", "dst") == 0
+
+        self.sync()
+        assert self.command_calls(self.replica, "ts._store") == 0
+
+    @pytest.mark.parametrize("command", ["fillgaps", "sanitize"])
+    def test_store_overwrite_with_no_output_rejects_a_destination_of_another_type(self, command):
+        argv = self.no_output_command(command)
+        self.client.execute_command("SET", "dst", "not a series")
+
+        with pytest.raises(Exception, match="WRONGTYPE"):
+            self.client.execute_command(*argv, "STORE", "dst")
+
+        assert self.client.execute_command("GET", "dst") == b"not a series"
+
     def test_background_store_writes_to_the_selected_db(self):
         self.client.select(3)
         try:

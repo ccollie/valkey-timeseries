@@ -48,8 +48,9 @@ TS.FILLGAPS key startTimestamp endTimestamp
 - **Without `STORE`:** An array of `[timestamp, value]` pairs for the computed
   gap-fill samples. The source series is not modified.
 - **With `STORE`:** The number of samples written to the destination key, as
-  an integer. If there are no gaps, the destination key is left untouched
-  (and is not created if it did not already exist).
+  an integer. If there are no gaps, nothing is written: without `MERGE` an existing
+  destination is still emptied (it holds exactly the gaps found, which is none), with `MERGE` it
+  is left as it was, and a destination that does not exist is not created.
 
 ## Behavior
 
@@ -84,7 +85,8 @@ TS.FILLGAPS key startTimestamp endTimestamp
   same creation/write semantics as the other analysis commands' `STORE` clauses (e.g.
   `TS.FORECAST ... STORE`). A
   `ts.add`-style keyspace notification is sent and the written samples are replicated. If there
-  are no gaps, the destination key is left untouched. The series options apply only when the
+  are no gaps, a missing destination is not created and, without `MERGE`, an existing one is
+  emptied (see the return value). The series options apply only when the
   destination is created; as with `TS.ADD`, an existing destination keeps its own settings and
   the options are ignored. `destinationKey` must differ from the
   source key; naming the source fails with

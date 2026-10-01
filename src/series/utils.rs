@@ -276,6 +276,11 @@ pub struct StoreWriteOutcome {
 /// destination series (later samples win); without MERGE (overwrite mode), the destination is
 /// cleared first. `dest_opts` only applies when the destination has to be created.
 ///
+/// Overwrite mode means the destination ends up holding exactly `samples`, so an empty result
+/// still empties an existing destination. It does not create a missing one: there is nothing
+/// to put in it, and an empty series would only appear to be a result. With MERGE an empty
+/// result changes nothing.
+///
 /// Neither checks ACLs nor replicates: callers check the destination on the main thread and
 /// replicate the effect themselves. Given the same keyspace and inputs this produces the same
 /// result on every node, which is what lets a replica apply it from `TS._STORE`.
@@ -287,6 +292,18 @@ pub fn create_or_update_series_with_samples(
     samples: &[Sample],
 ) -> ValkeyResult<StoreWriteOutcome> {
     if samples.is_empty() {
+        if write_mode == DestinationWriteMode::Overwrite
+            && let Some(mut dest_series) = try_get_timeseries_mut(ctx, dest_key, None)?
+        {
+            let deleted = clear_series(&mut dest_series)?;
+            if deleted > 0 {
+                ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
+            }
+            return Ok(StoreWriteOutcome {
+                written: 0,
+                changed: deleted > 0,
+            });
+        }
         return Ok(StoreWriteOutcome::default());
     }
     let (mut dest_series, created) = get_or_create_store_destination(ctx, dest_key, dest_opts)?;
@@ -294,9 +311,7 @@ pub fn create_or_update_series_with_samples(
     let mut delete_count = 0;
     if write_mode == DestinationWriteMode::Overwrite {
         // Clear the destination before writing
-        delete_count = dest_series
-            .remove_range(0, Timestamp::MAX)
-            .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+        delete_count = clear_series(&mut dest_series)?;
     }
 
     let policy_override =
@@ -318,6 +333,13 @@ pub fn create_or_update_series_with_samples(
         written,
         changed: created || delete_count > 0 || written > 0,
     })
+}
+
+/// Removes every sample from a STORE destination, returning how many there were.
+fn clear_series(series: &mut TimeSeries) -> ValkeyResult<usize> {
+    series
+        .remove_range(0, Timestamp::MAX)
+        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))
 }
 
 fn add_default_compactions(
