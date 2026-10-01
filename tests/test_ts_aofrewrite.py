@@ -402,3 +402,33 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         assert new_info['totalSamples'] == 1
 
         client.execute_command('DEL', 'empty_ts')
+
+    def test_sanitize_relative_bounds_replay_resolved_from_aof(self):
+        """TS.SANITIZE is appended to the AOF with its range resolved.
+
+        `-2s *` replayed at restart would be relative to the restart's clock, so a restart
+        later than the window would keep the NaNs the original run dropped.
+        """
+        client = self.client
+        client.config_set('appendonly', 'yes')
+        client.config_set('appendfsync', 'always')
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
+
+        seconds, micros = client.time()
+        now = seconds * 1000 + micros // 1000
+        client.execute_command('TS.CREATE', 'src')
+        client.execute_command(
+            'TS.MADD', 'src',
+            now - 1500, 1, 'src', now - 1200, 'nan', 'src', now - 900, 3,
+            'src', now - 600, 'nan', 'src', now - 300, 5,
+        )
+        client.execute_command('TS.SANITIZE', 'src', '-2s', '*')
+        expected = client.execute_command('TS.RANGE', 'src', '-', '+')
+        assert [ts for ts, _ in expected] == [now - 1500, now - 900, now - 300]
+
+        time.sleep(3)  # past the window, so a relative bound would resolve elsewhere
+
+        self.server.args['appendonly'] = 'yes'
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        assert self.server.is_alive()
+        assert self.client.execute_command('TS.RANGE', 'src', '-', '+') == expected

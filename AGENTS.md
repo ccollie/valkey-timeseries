@@ -117,8 +117,10 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 - A `STORE` clause writes through `StoreTarget` (`src/commands/store_target.rs`): validate it on the
   main thread, write under the lock, and let it replicate the result as `TS._STORE`. Don't
   `replicate_verbatim` a command whose result a replica can't reproduce cheaply and exactly (model
-  fits, pool jobs); `TS.SANITIZE` is the one exception — inline and deterministic, so it replicates
-  itself and uses `write_unreplicated`.
+  fits, pool jobs), or one that takes a range (`*`, `-1h` resolve against the replica's clock —
+  replicate the resolved integers, as `TS.DEL` does). `TS.SANITIZE` is the one exception to
+  replicating the result — inline and deterministic once its range and policy are resolved, so it
+  replicates itself with those resolved and uses `write_unreplicated`.
 - **Key specs do not drive cluster routing.** Valkey's `getNodeByQuery` uses the legacy
   first/last-key range, or the module callback if the command is flagged `GetkeysApi`; key specs
   only feed `COMMAND GETKEYS` and ACLs. A command with a key outside that range (e.g. a `STORE`

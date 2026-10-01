@@ -154,8 +154,11 @@ If no samples remain after sanitizing, the destination is left untouched (and no
   successful call. A `STORE` write sends `ts.del` (when overwrite mode cleared existing samples)
   and `ts.add` for the destination.
 
-- **Replication:** The command itself is replicated to replicas and the AOF, which re-run it
-  (sanitizing is deterministic); this covers the `STORE` write too.
+- **Replication:** The command itself is replicated to replicas and the AOF, which re-run it;
+  this covers the `STORE` write too. It is replicated with its inputs resolved, so a replica
+  (or an AOF replay at restart) sanitizes exactly the window and policy the primary used:
+  `*`, relative offsets (`-1h`) and `-`/`+` become absolute timestamps, `POLICY` is always
+  written out, and `SEASONAL auto` carries the detected period.
 
 ## Errors
 

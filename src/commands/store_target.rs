@@ -64,6 +64,16 @@ impl StoreTarget {
         &self.key
     }
 
+    /// The `STORE key [options...]` clause as the client sent it, for a command that
+    /// replicates itself and so replays the clause on the replica.
+    pub fn replication_clause(&self) -> Vec<&[u8]> {
+        let mut clause: Vec<&[u8]> = Vec::with_capacity(2 + self.raw_options.len());
+        clause.push(b"STORE");
+        clause.push(&self.key);
+        clause.extend(self.raw_options.iter().map(Vec::as_slice));
+        clause
+    }
+
     /// Writes `samples` to the destination and replicates the result as `TS._STORE`.
     /// Returns the number of samples written. `ctx` must hold the GIL.
     pub fn write(&self, ctx: &Context, samples: &[Sample]) -> ValkeyResult<usize> {
@@ -93,7 +103,7 @@ impl StoreTarget {
         try_get_timeseries(ctx, &key, None).map(|_| ())
     }
 
-    /// Writes `samples` without replicating, for a command that replicates itself verbatim
+    /// Writes `samples` without replicating, for a command that replicates itself
     /// (and so re-runs this same write on the replica).
     pub fn write_unreplicated(&self, ctx: &Context, samples: &[Sample]) -> ValkeyResult<usize> {
         let key = ctx.create_string(self.key.as_slice());

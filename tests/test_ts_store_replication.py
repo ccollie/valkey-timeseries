@@ -2,8 +2,11 @@
 
 The analysis runs on the primary only. FORECAST, AUTOFORECAST, TREND and FILLGAPS replicate the
 resulting write as the internal TS._STORE command, so a replica never re-runs the analysis;
-SANITIZE is deterministic and inline, so it replicates itself verbatim, exactly once.
+SANITIZE is inline, so it replicates itself exactly once, with its range and policy resolved.
 """
+import threading
+import time
+
 import pytest
 
 from common import SERVER_PATH, get_module_path
@@ -126,9 +129,87 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
             "TS.SANITIZE", "src", "-", "+", "POLICY", "INTERPOLATE", "STORE", "dst"
         )
         self.assert_replica_matches("src", "dst")
-        # Replicated verbatim exactly once, covering both the in-place and the STORE write.
+        # Replicated exactly once, covering both the in-place and the STORE write.
         assert self.command_calls(self.replica, "ts.sanitize") == 1
         assert self.command_calls(self.replica, "ts._store") == 0
+
+    def server_time_ms(self):
+        seconds, micros = self.client.time()
+        return seconds * 1000 + micros // 1000
+
+    def stall_replica(self, seconds):
+        """Hold the replica off the replication stream; returns the thread to join."""
+        stall = threading.Thread(
+            target=self.replica.execute_command, args=("DEBUG", "SLEEP", seconds)
+        )
+        stall.start()
+        time.sleep(0.3)  # let the replica enter the sleep before the primary writes
+        return stall
+
+    def test_sanitize_relative_bounds_replicate_resolved(self):
+        """A replica applying SANITIZE late must use the window the primary resolved.
+
+        `-2s *` is relative to the clock of whoever runs it. Replayed verbatim after the replica
+        has been held back for longer than the window is wide, the window would have slid past
+        every sample and the replica would keep the NaNs the primary dropped.
+        """
+        now = self.server_time_ms()
+        self.client.execute_command("TS.CREATE", "src")
+        self.client.execute_command(
+            "TS.MADD", "src",
+            now - 1500, 1, "src", now - 1200, "nan", "src", now - 900, 3,
+            "src", now - 600, "nan", "src", now - 300, 5,
+        )
+        self.sync()
+        assert len(self.replica.execute_command("TS.RANGE", "src", "-", "+")) == 5
+
+        stall = self.stall_replica(3)
+        self.client.execute_command("TS.SANITIZE", "src", "-2s", "*")
+        stall.join()
+        self.sync()
+
+        kept = self.client.execute_command("TS.RANGE", "src", "-", "+")
+        assert [ts for ts, _ in kept] == [now - 1500, now - 900, now - 300]
+        assert self.replica.execute_command("TS.RANGE", "src", "-", "+") == kept
+
+    def test_sanitize_relative_bounds_replicate_resolved_store(self):
+        """The STORE clause is replayed with the resolved window, so the destination matches."""
+        now = self.server_time_ms()
+        self.client.execute_command("TS.CREATE", "src")
+        self.client.execute_command(
+            "TS.MADD", "src", now - 1500, 1, "src", now - 1200, "nan", "src", now - 900, 3
+        )
+        self.sync()
+
+        stall = self.stall_replica(3)
+        written = self.client.execute_command(
+            "TS.SANITIZE", "src", "-2s", "*", "POLICY", "INTERPOLATE",
+            "STORE", "dst", "RETENTION", 987654,
+        )
+        stall.join()
+        assert written == 3
+        self.assert_replica_matches("src", "dst")
+        info = self.replica.execute_command("TS.INFO", "dst")
+        assert dict(zip(info[::2], info[1::2]))[b"retentionTime"] == 987654
+
+    def test_sanitize_seasonal_auto_replicates_the_detected_period(self):
+        """`SEASONAL auto` is replicated as the detected period, and the replica accepts it.
+
+        A guard on the rewritten command rather than a failing-before test: on identical data a
+        replica would detect the same period anyway.
+        """
+        self.client.execute_command("TS.CREATE", "src")
+        period = 8
+        args = []
+        for i in range(160):
+            value = "nan" if i % 37 == 5 else float(i % period)
+            args += ["src", (i + 1) * STEP_MS, value]
+        self.client.execute_command("TS.MADD", *args)
+        self.client.execute_command("TS.SANITIZE", "src", "-", "+", "POLICY", "SEASONAL", "auto")
+        self.assert_replica_matches("src")
+        assert all(
+            v != b"nan" for _, v in self.replica.execute_command("TS.RANGE", "src", "-", "+")
+        )
 
     def test_background_store_writes_to_the_selected_db(self):
         self.client.select(3)

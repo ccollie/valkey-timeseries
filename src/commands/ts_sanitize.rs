@@ -119,6 +119,9 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     };
     reject_extra_args(&mut args)?;
 
+    // Resolved before `policy` moves into sanitize(), for the replicated command below.
+    let policy_args = policy_tokens(&policy);
+
     // Capture policy variant before moving `policy` into sanitize().
     // - MA/Seasonal: samples is NOT modified; `sanitized` is the full imputed result.
     // - All others (including Drop): samples is modified in-place.
@@ -159,9 +162,24 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     }
 
-    // Sanitizing is deterministic and runs inline, so the replica re-runs the command. That
-    // covers the STORE write below too, which must therefore not replicate itself.
-    ctx.replicate_verbatim();
+    // Sanitizing runs inline, so the replica re-runs the command rather than replaying its
+    // effect. That covers the STORE write below too, which must therefore not replicate itself.
+    // What it re-runs is the command with its inputs resolved: the range grammar accepts `*` and
+    // relative offsets, and `SEASONAL auto` is detected from the data, so the verbatim command
+    // would resolve differently on a replica (or an AOF replay at restart) than it did here.
+    let (repl_start, repl_end) = replicable_bounds(start_ts, end_ts);
+    let (repl_start, repl_end) = (repl_start.to_string(), repl_end.to_string());
+    let mut repl_args: Vec<&[u8]> = vec![
+        key.as_slice(),
+        repl_start.as_bytes(),
+        repl_end.as_bytes(),
+        b"POLICY",
+    ];
+    repl_args.extend(policy_args.iter().map(String::as_bytes));
+    if let Some(dest) = &destination {
+        repl_args.extend(dest.replication_clause());
+    }
+    ctx.replicate("TS.SANITIZE", repl_args.as_slice());
     ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.sanitize", &key);
     // --- End write-back ---
 
@@ -172,6 +190,41 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     reply_with_samples(ctx, to_return.iter().cloned());
     Ok(ValkeyValue::NoReply)
+}
+
+/// The bounds to replicate for a range already resolved to `[start_ts, end_ts]`.
+///
+/// Plain integers re-parse as absolute timestamps, but only non-negative ones: a negative
+/// operand is rejected, and `-3600000` would not read as an offset either. Samples never sit
+/// below zero, so a negative start clamps to 0 without changing the window, and a window that
+/// ends below zero (a relative end earlier than the start) is replicated as the inverted
+/// range `1 0`, which selects nothing just as it did here.
+fn replicable_bounds(start_ts: i64, end_ts: i64) -> (i64, i64) {
+    if end_ts < 0 {
+        (1, 0)
+    } else {
+        (start_ts.max(0), end_ts)
+    }
+}
+
+/// The `POLICY` operands that make `parse_policy` rebuild exactly `policy`, with any value
+/// the original command left to be inferred (`SEASONAL auto`) already resolved.
+fn policy_tokens(policy: &ImputationPolicy) -> Vec<String> {
+    match policy {
+        ImputationPolicy::Error => vec!["ERROR".into()],
+        ImputationPolicy::Drop => vec!["DROP".into()],
+        // `{:e}` is the shortest form that parses back to the same bits, and keeps a value like
+        // 1e300 from being written out as 301 digits.
+        ImputationPolicy::Fill(value) => vec!["FILL".into(), format!("{value:e}")],
+        ImputationPolicy::ForwardFill => vec!["FORWARDFILL".into()],
+        ImputationPolicy::BackwardFill => vec!["BACKWARDFILL".into()],
+        ImputationPolicy::FillMean => vec!["FILLMEAN".into()],
+        ImputationPolicy::FillMedian => vec!["FILLMEDIAN".into()],
+        ImputationPolicy::Interpolate => vec!["INTERPOLATE".into()],
+        ImputationPolicy::ForwardBackwardFill => vec!["FORWARDBACKWARDFILL".into()],
+        ImputationPolicy::MovingAverage(window) => vec!["MOVINGAVERAGE".into(), window.to_string()],
+        ImputationPolicy::Seasonal(period) => vec!["SEASONAL".into(), period.to_string()],
+    }
 }
 
 /// Parse the imputation policy and any policy-specific arguments.
@@ -237,4 +290,83 @@ fn infer_seasonal_period(samples: &[Sample]) -> ValkeyResult<usize> {
     dominant_period(&values).ok_or(ValkeyError::Str(
         "TSDB: unable to detect dominant period for seasonal imputation",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replicated_policy_names_every_variant_with_its_resolved_operands() {
+        let cases = [
+            (ImputationPolicy::Error, vec!["ERROR"]),
+            (ImputationPolicy::Drop, vec!["DROP"]),
+            (ImputationPolicy::ForwardFill, vec!["FORWARDFILL"]),
+            (ImputationPolicy::BackwardFill, vec!["BACKWARDFILL"]),
+            (ImputationPolicy::FillMean, vec!["FILLMEAN"]),
+            (ImputationPolicy::FillMedian, vec!["FILLMEDIAN"]),
+            (ImputationPolicy::Interpolate, vec!["INTERPOLATE"]),
+            (
+                ImputationPolicy::ForwardBackwardFill,
+                vec!["FORWARDBACKWARDFILL"],
+            ),
+            (
+                ImputationPolicy::MovingAverage(5),
+                vec!["MOVINGAVERAGE", "5"],
+            ),
+            // `SEASONAL auto` reaches here already resolved to the detected period.
+            (ImputationPolicy::Seasonal(24), vec!["SEASONAL", "24"]),
+        ];
+        for (policy, expected) in cases {
+            assert_eq!(policy_tokens(&policy), expected, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn replicated_fill_value_parses_back_to_the_same_bits() {
+        for value in [
+            0.0,
+            -0.0,
+            0.1,
+            -42.5,
+            1e300,
+            f64::MIN_POSITIVE,
+            5e-324,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let tokens = policy_tokens(&ImputationPolicy::Fill(value));
+            assert_eq!(tokens[0], "FILL");
+            let parsed: f64 = tokens[1].parse().unwrap();
+            if value.is_nan() {
+                assert!(parsed.is_nan());
+            } else {
+                assert_eq!(
+                    parsed.to_bits(),
+                    value.to_bits(),
+                    "{value} -> {}",
+                    tokens[1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replicated_bounds_are_absolute_non_negative_integers() {
+        // An ordinary window is replicated as resolved.
+        assert_eq!(replicable_bounds(1_000, 5_000), (1_000, 5_000));
+        // An inverted window stays inverted, and selects nothing on the replica as here.
+        assert_eq!(replicable_bounds(5_000, 1_000), (5_000, 1_000));
+        // Nothing sits below zero, so clamping the start leaves the window as it was.
+        assert_eq!(replicable_bounds(-3_600_000, 5_000), (0, 5_000));
+        // A window ending below zero cannot be written as a timestamp; it becomes `1 0`.
+        assert_eq!(replicable_bounds(0, -3_600_000), (1, 0));
+        assert_eq!(replicable_bounds(i64::MIN, i64::MIN), (1, 0));
+        for (start, end) in [(0, i64::MAX), (i64::MIN, i64::MAX), (7, -1)] {
+            let (s, e) = replicable_bounds(start, end);
+            assert!(s >= 0 && e >= 0);
+        }
+    }
 }
