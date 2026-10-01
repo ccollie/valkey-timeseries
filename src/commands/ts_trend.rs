@@ -1,6 +1,6 @@
 use crate::analysis::forecasting::try_parse_trend_criterion;
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::{
     parse_series_range_samples, parse_store_clause, reject_extra_args,
 };
@@ -136,7 +136,7 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     run_analysis(
         ctx,
         sample_count,
-        INLINE_MAX_SAMPLES,
+        LIMITS,
         timeout,
         move || {
             let fit = fit_trend(&options, &values)?;
@@ -161,9 +161,15 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     )
 }
 
-/// Largest range that runs on the main thread. Fitting is ~20 ms here, ~0.5 s at
-/// 20k and ~21 s at 200k samples (release build), so anything bigger goes to the pool.
-const INLINE_MAX_SAMPLES: usize = 2_000;
+/// Fitting is ~20 ms at 2k samples, ~0.2 s at 20k and ~16 s at 200k (release build): quadratic.
+/// Up to `inline_max` samples it runs on the main thread, anything bigger goes to the pool;
+/// where the client cannot be blocked the pool is not available and `unblockable_max` (about
+/// 0.8 s) is the largest range it will take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 2_000,
+    unblockable_max: 40_000,
+    unit: "samples",
+};
 
 fn build_specific_trend(
     model: &TrendModel,

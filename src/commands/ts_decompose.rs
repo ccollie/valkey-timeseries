@@ -1,6 +1,6 @@
 use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, Seasonality};
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
@@ -71,7 +71,7 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
     run_analysis(
         ctx,
         sample_count,
-        INLINE_MAX_SAMPLES,
+        LIMITS,
         timeout,
         move || {
             let result = decompose(&values, seasonality)?;
@@ -89,9 +89,15 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
     )
 }
 
-/// Largest range that runs on the main thread. STL is ~25 ms here and 1.7–8 s at
-/// 200k samples (release build), so anything bigger goes to the pool.
-const INLINE_MAX_SAMPLES: usize = 2_000;
+/// STL is ~20 ms at 2k samples and ~2 s at 200k (release build): linear, about 10 µs a sample.
+/// Up to `inline_max` samples it runs on the main thread, anything bigger goes to the pool;
+/// where the client cannot be blocked the pool is not available and `unblockable_max` (about
+/// 1 s) is the largest range it will take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 2_000,
+    unblockable_max: 100_000,
+    unit: "samples",
+};
 
 enum Decomposition {
     Stl(STLResult),

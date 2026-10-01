@@ -4,8 +4,8 @@ use crate::analysis::outliers::{
     MethodInfo, RCF_DEFAULT_NUM_TREES, RCF_DEFAULT_SAMPLE_SIZE, RCFOptions, RCFThreshold,
     SmoothedZScoreOptions, detect_anomalies,
 };
-use crate::analysis::seasonality::Seasonality;
-use crate::commands::analysis_runner::run_on_analysis_lane;
+use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, Seasonality};
+use crate::commands::analysis_runner::{WorkLimits, run_on_analysis_lane};
 use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_timestamp_range,
 };
@@ -147,9 +147,14 @@ fn process_request(
 
     validate_rcf_options(&options, samples.len())?;
 
-    // Inline when a deny-blocking client (MULTI, a script, an `RM_Call` without the K flag)
-    // could not be blocked anyway: the server asserts on blocking one.
-    if !should_run_in_background(samples.len(), options.method()) || is_blocking_denied(ctx) {
+    // A client that cannot be blocked (MULTI, Lua, RM_Call) is answered inline, which nothing can
+    // cancel, so a range too large for that is refused instead. The server asserts on blocking
+    // such a client, so it never goes to the lane.
+    let blocking_denied = is_blocking_denied(ctx);
+    if blocking_denied {
+        work_limits(options.method()).check_unblockable(samples.len())?;
+    }
+    if !should_run_in_background(samples.len(), options.method()) || blocking_denied {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         let reply_ctx = ReplyContext::new(ctx.ctx);
         return match detect_anomalies(&values, &options) {
@@ -190,19 +195,37 @@ fn process_request(
     })
 }
 
-const SPAWN_THRESHOLD_SAMPLES: usize = 1000;
-
-fn is_cpu_intensive(method: AnomalyMethod) -> bool {
-    matches!(method, AnomalyMethod::RandomCutForest | AnomalyMethod::Esd)
+/// Detection cost per method (release build): the statistical methods are linear and cheap
+/// (~20 µs a sample at the worst, IQR/MAD sorting); Random Cut Forest is ~90–150 µs a sample;
+/// ESD is quadratic (~0.8 s at 6k samples, ~9 s at 20k).
+///
+/// Up to `inline_max` samples a method runs on the main thread rather than paying for the lane.
+/// Where the client cannot be blocked `unblockable_max` is the most it will take, about 1 s.
+fn work_limits(method: AnomalyMethod) -> WorkLimits {
+    match method {
+        AnomalyMethod::Esd => WorkLimits {
+            inline_max: 1000,
+            unblockable_max: 6_000,
+            unit: "samples",
+        },
+        AnomalyMethod::RandomCutForest => WorkLimits {
+            inline_max: 1000,
+            unblockable_max: 10_000,
+            unit: "samples",
+        },
+        // For lightweight methods, we can allow more samples before spawning.
+        _ => WorkLimits {
+            inline_max: 5_000,
+            unblockable_max: 1_000_000,
+            unit: "samples",
+        },
+    }
 }
 
 /// Just a naive heuristic to decide whether to spawn a background thread for anomaly detection
 /// based on the number of samples and method complexity.
 fn should_run_in_background(samples: usize, method: AnomalyMethod) -> bool {
-    match is_cpu_intensive(method) {
-        true => samples > SPAWN_THRESHOLD_SAMPLES,
-        false => samples > 5_000, // For lightweight methods, we can allow more samples before spawning
-    }
+    samples > work_limits(method).inline_max
 }
 
 fn parse_method_options(

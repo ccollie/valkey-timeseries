@@ -62,7 +62,10 @@ of aligned pairs times `2 × maxLag + 1` exceeds 10,000,000, the correlations ar
 dedicated pool of analysis worker threads (sized by `ts-num-threads`) so they never stall the
 server, and the deadline applies to them; the timestamp alignment itself always runs inline.
 When it elapses the client receives `TSDB: command timed out before the result was ready (see
-TIMEOUT / ts-analysis-timeout)`. `0` disables the deadline for this call. Any argument after
+TIMEOUT / ts-analysis-timeout)`. `0` disables the deadline for this call. Inside `MULTI`, a
+script or a module call, where the client cannot be blocked, the correlations run inline up to
+200,000,000 of that product; a larger one is refused (see the
+[overview](../overview.md#running-the-analysis-commands)). Any argument after
 `maxLag` other than `TIMEOUT` is rejected with `TSDB: invalid argument`.
 </details>
 

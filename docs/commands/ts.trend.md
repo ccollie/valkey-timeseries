@@ -174,7 +174,9 @@ predicted values are skipped with a warning (fitted values are still stored).
 <summary><code>TIMEOUT milliseconds</code></summary>
 
 Deadline for the command, in milliseconds. Ranges of up to 2,000 samples are computed
-inline, as is any call inside `MULTI`, a Lua script or a module call; larger ranges run on a
+inline, as is any call inside `MULTI`, a Lua script or a module call (up to 40,000 samples there;
+a larger range is refused, see the [overview](../overview.md#running-the-analysis-commands));
+larger ranges run on a
 dedicated pool of analysis worker threads (sized by `ts-num-threads`) so they never stall the
 server, and the deadline applies only to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work

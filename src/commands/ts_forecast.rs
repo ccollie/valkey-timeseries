@@ -3,7 +3,7 @@ use crate::analysis::forecasting::{
 };
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
-    AnalysisCtx, AnalysisTimeout, parse_timeout, run_analysis_in_background,
+    AnalysisCtx, AnalysisTimeout, WorkLimits, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
@@ -99,8 +99,14 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         .transpose()?;
 
     let timeout = options.timeout;
+    let work = series
+        .primary_values()
+        .len()
+        .saturating_mul(options.models.len().max(1));
     run_analysis_in_background(
         ctx,
+        work,
+        UNBLOCKABLE,
         timeout,
         move || {
             let results = process_models(&series, &options)?;
@@ -120,6 +126,12 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         },
     )
 }
+
+/// Models always run on the pool where the client can be blocked. Where it cannot, they run on
+/// the main thread, so `samples × models` is held to what the heaviest families (AutoTBATS,
+/// ~75 µs a sample, release build) finish in about 1.5 s; the light ones (SES, ARIMA, Naive) are
+/// ~100 times faster.
+const UNBLOCKABLE: WorkLimits = WorkLimits::background_only(20_000, "sample-models");
 
 /// Persist the predicted values into the STORE destination key; the reply is the number of
 /// samples written.

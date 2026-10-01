@@ -2,7 +2,7 @@ use crate::analysis::forecasting::{is_arima_family, normalize_model_name};
 use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, dominant_period};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
-    AnalysisTimeout, parse_timeout, run_analysis_in_background,
+    AnalysisTimeout, WorkLimits, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value, parse_store_clause,
@@ -116,6 +116,8 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
     let timeout = options.timeout;
     run_analysis_in_background(
         ctx,
+        sample_count,
+        UNBLOCKABLE,
         timeout,
         move || {
             let mut options = options;
@@ -140,6 +142,11 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         },
     )
 }
+
+/// The model search always runs on the pool where the client can be blocked. Where it cannot, it
+/// runs on the main thread, so the range is held to what takes about 1 s there: the search is
+/// ~75–100 µs a sample whichever families are enabled (release build).
+const UNBLOCKABLE: WorkLimits = WorkLimits::background_only(10_000, "samples");
 
 fn parse_autoforecast_args(
     ctx: &Context,

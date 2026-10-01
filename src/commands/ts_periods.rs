@@ -1,5 +1,5 @@
 use crate::analysis::seasonality::MAX_REPORTED_PERIODS;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
@@ -100,7 +100,7 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     run_analysis(
         ctx,
         sample_count,
-        INLINE_MAX_SAMPLES,
+        LIMITS,
         timeout,
         move || Ok(detect_periods(&values, &config)),
         move |actx, periods| {
@@ -131,6 +131,12 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     )
 }
 
-/// Largest range that runs on the main thread. Period detection is ~7 ms at this
-/// size and ~200 ms at 20k (release build), so anything bigger goes to the pool.
-const INLINE_MAX_SAMPLES: usize = 5_000;
+/// Period detection is ~3 ms at 6k samples and ~130 ms at 200k (release build): linear. Up to
+/// `inline_max` samples it runs on the main thread, anything bigger goes to the pool; where the
+/// client cannot be blocked the pool is not available and `unblockable_max` (about 0.6 s) is
+/// the largest range it will take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 5_000,
+    unblockable_max: 1_000_000,
+    unit: "samples",
+};

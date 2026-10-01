@@ -1,5 +1,5 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use anofox_forecast::features::autocorrelation;
@@ -128,7 +128,7 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     run_analysis(
         ctx,
         work,
-        INLINE_MAX_SAMPLES,
+        LIMITS,
         timeout,
         move || {
             let result = match &kind {
@@ -156,7 +156,14 @@ enum Kind {
     Aggregated(String),
 }
 
-/// Largest amount of work that runs on the main thread, in samples (× (lag + 1) for PARTIAL and
-/// AGGREGATED, which revisit the series once per lag). Plain and TRA are linear in the range
-/// (~100 ms at 200k samples, release build), so the bar is high.
-const INLINE_MAX_SAMPLES: usize = 50_000;
+/// Work is counted in samples (× (lag + 1) for PARTIAL and AGGREGATED, which revisit the series
+/// once per lag). Plain and TRA are linear in the range, and PARTIAL is ~2 ns a sample-lag
+/// (~46 ms for 200k samples at lag 100, release build), so the bars are high. Up to `inline_max`
+/// it runs on the main thread, anything bigger goes to the pool; where the client cannot be
+/// blocked the pool is not available and `unblockable_max` (about 0.25 s) is the most it will
+/// take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 50_000,
+    unblockable_max: 100_000_000,
+    unit: "sample-lags",
+};

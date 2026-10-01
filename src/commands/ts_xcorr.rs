@@ -1,5 +1,5 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_timestamp_range;
 use crate::common::replies::{
     ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_statistic,
@@ -131,7 +131,7 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     run_analysis(
         ctx,
         work,
-        INLINE_MAX_WORK,
+        LIMITS,
         timeout,
         move || Ok(cross_correlate(&x, &y, maxlag as i64)),
         |actx, result| {
@@ -141,8 +141,15 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     )
 }
 
-/// Largest `pairs × lags` product computed on the main thread: about 10 ms (release build).
-const INLINE_MAX_WORK: usize = 10_000_000;
+/// Work is the `pairs × lags` product, ~3 ns each (about 120 ms for 200k pairs at `MAXLAG` 100,
+/// release build). Up to `inline_max` it runs on the main thread (about 10 ms), anything bigger
+/// goes to the pool; where the client cannot be blocked the pool is not available and
+/// `unblockable_max` (about 0.6 s) is the most it will take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 10_000_000,
+    unblockable_max: 200_000_000,
+    unit: "sample-lags",
+};
 
 struct CrossCorrelation {
     lags: Vec<i64>,

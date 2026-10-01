@@ -355,6 +355,12 @@ O(N × M) where:
 
 * O(N × P × I) where P = number of periods, I = decomposition iterations (default: 2)
 
+**Where the client cannot be blocked** (`MULTI`/`EXEC`, a Lua script, a module call) detection
+runs on the main thread, so the range is capped: 1,000,000 samples for the statistical methods,
+10,000 for `rcf` (about 100 µs a sample) and 6,000 for `esd` (quadratic: about 0.8 s at 6,000
+samples and 9 s at 20,000). A larger range fails with
+`TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`; run it outside the transaction.
+
 ## Examples
 
 <details open>

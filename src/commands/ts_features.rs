@@ -1,8 +1,8 @@
 use crate::analysis::forecasting::features::{
-    FeatureCategory, compute_features_map, parse_feature,
+    FeatureCategory, check_fourier_entropy_size, compute_features_map, features_work, parse_feature,
 };
 use crate::commands::analysis_runner::{
-    AnalysisTimeout, parse_timeout, run_analysis_in_background,
+    AnalysisTimeout, WorkLimits, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::parse_timestamp_range;
 use crate::common::replies::{reply_with_double, reply_with_map, reply_with_null, reply_with_str};
@@ -146,8 +146,15 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
+    // Refused in every context: the quadratic feature pins a pool worker as surely as it would
+    // the main thread, and nothing cancels it once started.
+    check_fourier_entropy_size(&unique_features, values.len()).map_err(ValkeyError::String)?;
+
+    let work = features_work(values.len(), &unique_features);
     run_analysis_in_background(
         ctx,
+        work,
+        UNBLOCKABLE,
         timeout,
         move || Ok(compute_features_map(&values, &unique_features)),
         |actx, result_map| {
@@ -165,6 +172,12 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         },
     )
 }
+
+/// Features always run on the pool where the client can be blocked. Where it cannot, they run on
+/// the main thread, so the work (see `features_work`: roughly one visit per sample per feature,
+/// a pass per lag for `pacf`, every pair of samples for `fourier_entropy`) is held to what takes
+/// about 0.3 s there (release build).
+const UNBLOCKABLE: WorkLimits = WorkLimits::background_only(100_000_000, "feature-samples");
 
 /// Parse a comma-separated list of category names, rejecting duplicates.
 fn parse_categories(input: &str) -> Result<Vec<FeatureCategory>, ValkeyError> {

@@ -162,7 +162,9 @@ When omitted, the `ts-analysis-timeout` configuration parameter applies (default
 Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
 they do not block the server's main thread; requests beyond the worker count wait in a queue.
 The exception is a call that cannot block — inside `MULTI`/`EXEC`, a Lua script, or a module's
-`RM_Call` — which runs inline on the main thread, where no deadline applies.
+`RM_Call` — which runs inline on the main thread, where no deadline applies. There the range is
+held to 10,000 samples, whichever families are enabled; a larger request fails with
+`TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`.
 </details>
 
 <details open>

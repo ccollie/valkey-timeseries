@@ -219,6 +219,8 @@ Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-
 they do not block the server's main thread; requests beyond the worker count wait in a queue.
 The exception is a call that cannot block — inside `MULTI`/`EXEC`, a Lua script, or a module's
 `RM_Call` — which runs inline on the main thread (folds sequentially), where no deadline applies.
+There the work is held to 60,000 samples × models × folds; a larger request fails with
+`TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`.
 </details>
 
 ## How Backtesting Works

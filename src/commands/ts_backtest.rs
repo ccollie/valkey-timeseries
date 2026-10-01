@@ -1,7 +1,7 @@
 use crate::analysis::forecasting::{PreparedModelSpec, prepare_model_specs};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
-    AnalysisTimeout, parse_timeout, run_analysis_in_background,
+    AnalysisTimeout, WorkLimits, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::command_parser::parse_forecast_horizon_value;
 use crate::commands::forecast_utils::{parse_timeseries_for_forecast, reply_with_metrics_entry};
@@ -122,8 +122,15 @@ pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     let options = parse_backtest_args(&mut args)?;
 
     let timeout = options.timeout;
+    let work = series
+        .primary_values()
+        .len()
+        .saturating_mul(options.models.len().max(1))
+        .saturating_mul(options.n_folds.max(1));
     run_analysis_in_background(
         ctx,
+        work,
+        UNBLOCKABLE,
         timeout,
         move || {
             let results = run_backtest(&series, &options)?;
@@ -139,6 +146,11 @@ pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         },
     )
 }
+
+/// Backtests always run on the pool where the client can be blocked. Where it cannot, they run
+/// on the main thread, so `samples × models × folds` is held to what takes about 1 s there
+/// (AutoARIMA over 5 folds is ~17 µs a unit, release build; light models are far cheaper).
+const UNBLOCKABLE: WorkLimits = WorkLimits::background_only(60_000, "sample-model-folds");
 
 fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOptions> {
     let mut options = BacktestOptions::default();

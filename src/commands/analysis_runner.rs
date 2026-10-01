@@ -64,9 +64,12 @@ where
 }
 
 /// [`run_analysis`] for work that is never cheap enough to run inline by choice, such as model
-/// fitting: always on the analysis pool, except where the client cannot be blocked.
+/// fitting: always on the analysis pool, except where the client cannot be blocked, where
+/// `work` is held to `unblockable_max`.
 pub(super) fn run_analysis_in_background<T, C, R>(
     ctx: &Context,
+    work: usize,
+    unblockable: WorkLimits,
     timeout: AnalysisTimeout,
     compute: C,
     reply: R,
@@ -76,5 +79,50 @@ where
     C: FnOnce() -> ValkeyResult<T> + Send + 'static,
     R: FnOnce(&AnalysisCtx<'_>, T) -> ValkeyResult + Send + 'static,
 {
-    run_analysis(ctx, 1, 0, timeout, compute, reply)
+    debug_assert_eq!(unblockable.inline_max, 0, "use WorkLimits::background_only");
+    // `max(1)`: an empty measure must still take the pool path, not the inline one.
+    run_analysis(ctx, work.max(1), unblockable, timeout, compute, reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LIMITS: WorkLimits = WorkLimits {
+        inline_max: 10,
+        unblockable_max: 1_000,
+        unit: "samples",
+    };
+
+    #[test]
+    fn work_up_to_the_limit_is_allowed_where_blocking_is_denied() {
+        assert!(LIMITS.check_unblockable(0).is_ok());
+        assert!(LIMITS.check_unblockable(LIMITS.inline_max + 1).is_ok());
+        assert!(LIMITS.check_unblockable(LIMITS.unblockable_max).is_ok());
+    }
+
+    #[test]
+    fn work_over_the_limit_is_refused_with_its_size_and_unit() {
+        let err = LIMITS.check_unblockable(1_001).unwrap_err().to_string();
+        assert!(err.contains("too large to run inside MULTI"), "{err}");
+        assert!(
+            err.contains("1001 samples exceeds the limit of 1000"),
+            "{err}"
+        );
+        assert!(err.contains("outside"), "{err}");
+    }
+
+    #[test]
+    fn a_background_only_command_has_no_inline_threshold() {
+        let limits = WorkLimits::background_only(500, "sample-models");
+        assert_eq!(limits.inline_max, 0);
+        assert!(limits.check_unblockable(500).is_ok());
+        assert!(limits.check_unblockable(501).is_err());
+    }
+
+    #[test]
+    fn the_limit_does_not_overflow_on_saturated_work() {
+        // Commands compute work with saturating products.
+        assert!(LIMITS.check_unblockable(usize::MAX).is_err());
+    }
 }

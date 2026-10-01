@@ -78,7 +78,9 @@ each containing: `[period, power, strength, acf, n_cycles]`.
 <summary><code>TIMEOUT milliseconds</code></summary>
 
 Deadline for the command, in milliseconds. Ranges of up to 5,000 samples are computed
-inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
+inline (inside `MULTI`, a script or a module call, where the client cannot be blocked, up to
+1,000,000 samples; a larger range is refused, see the
+[overview](../overview.md#running-the-analysis-commands)); larger ranges run on a dedicated pool of analysis worker threads (sized by
 `ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work
 counts. When it elapses the client receives `TSDB: command timed out before the result was

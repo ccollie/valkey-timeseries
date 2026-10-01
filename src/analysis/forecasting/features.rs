@@ -249,6 +249,41 @@ fn compute_feature(feature: &Feature, data: &[f64]) -> f64 {
     }
 }
 
+/// Most samples `fourier_entropy` is computed over. The crate's implementation is a naive DFT,
+/// quadratic in the number of samples (~1.2 s at 20k, ~11 s at 60k, hours at a million) on a
+/// worker that nothing can cancel, so a larger range is refused rather than started.
+pub const FOURIER_ENTROPY_MAX_SAMPLES: usize = 20_000;
+
+/// Fails if `features` includes `fourier_entropy` and `sample_count` is past
+/// [`FOURIER_ENTROPY_MAX_SAMPLES`].
+pub fn check_fourier_entropy_size(features: &[Feature], sample_count: usize) -> Result<(), String> {
+    if sample_count > FOURIER_ENTROPY_MAX_SAMPLES
+        && features
+            .iter()
+            .any(|f| matches!(f, Feature::FourierEntropy))
+    {
+        return Err(format!(
+            "TSDB: fourier_entropy is quadratic in the number of samples and is limited to \
+             {FOURIER_ENTROPY_MAX_SAMPLES}; the range has {sample_count}"
+        ));
+    }
+    Ok(())
+}
+
+/// The cost of computing `features` over `sample_count` values, as the sum of what each visits:
+/// the samples once, once per lag for `partial_autocorrelation`, and every pair of samples for
+/// `fourier_entropy`. A saturating sum, so an absurd range cannot wrap into looking cheap.
+pub fn features_work(sample_count: usize, features: &[Feature]) -> usize {
+    features
+        .iter()
+        .map(|feature| match feature {
+            Feature::FourierEntropy => sample_count.saturating_mul(sample_count),
+            Feature::PartialAutocorrelation { lag } => sample_count.saturating_mul(*lag),
+            _ => sample_count,
+        })
+        .fold(0, usize::saturating_add)
+}
+
 /// Compute features and return a map of feature name → value.
 ///
 /// Features are deduplicated by their canonical name before computation.
@@ -266,4 +301,45 @@ pub fn compute_features_map(data: &[f64], features: &[Feature]) -> BTreeMap<Stri
     })
     .into_iter()
     .collect()
+}
+
+#[cfg(test)]
+mod work_tests {
+    use super::*;
+
+    #[test]
+    fn linear_features_cost_one_visit_per_sample_each() {
+        let features = [Feature::Mean, Feature::Median, Feature::Variance];
+        assert_eq!(features_work(1_000, &features), 3_000);
+        assert_eq!(features_work(1_000, &[]), 0);
+    }
+
+    #[test]
+    fn partial_autocorrelation_costs_a_pass_per_lag() {
+        let features = [Feature::PartialAutocorrelation { lag: 100 }];
+        assert_eq!(features_work(2_000, &features), 200_000);
+    }
+
+    #[test]
+    fn fourier_entropy_costs_every_pair_of_samples() {
+        assert_eq!(features_work(3_000, &[Feature::FourierEntropy]), 9_000_000);
+    }
+
+    #[test]
+    fn the_cost_of_an_absurd_range_saturates_instead_of_wrapping() {
+        let features = [Feature::FourierEntropy, Feature::Mean];
+        assert_eq!(features_work(usize::MAX, &features), usize::MAX);
+    }
+
+    #[test]
+    fn fourier_entropy_is_limited_to_a_documented_size() {
+        let with = [Feature::Mean, Feature::FourierEntropy];
+        let without = [Feature::Mean];
+        assert!(check_fourier_entropy_size(&with, FOURIER_ENTROPY_MAX_SAMPLES).is_ok());
+        let err = check_fourier_entropy_size(&with, FOURIER_ENTROPY_MAX_SAMPLES + 1).unwrap_err();
+        assert!(err.contains("limited to 20000"), "{err}");
+        assert!(err.contains("the range has 20001"), "{err}");
+        // Other features have no such limit.
+        assert!(check_fourier_entropy_size(&without, 10_000_000).is_ok());
+    }
 }

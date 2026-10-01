@@ -1,5 +1,5 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
+use crate::commands::analysis_runner::{AnalysisTimeout, WorkLimits, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
@@ -128,7 +128,7 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     run_analysis(
         ctx,
         sample_count,
-        INLINE_MAX_SAMPLES,
+        LIMITS,
         timeout,
         move || Ok(run_tests(&values, test_type, lags)),
         move |actx, outcome| {
@@ -147,9 +147,15 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     )
 }
 
-/// Largest range that runs on the main thread. ADF/KPSS are linear in the range
-/// (~60 ms at 200k samples, release build), so the bar is high.
-const INLINE_MAX_SAMPLES: usize = 50_000;
+/// ADF/KPSS are linear in the range (~50 ms at 200k samples, release build), so the bars are
+/// high. Up to `inline_max` samples it runs on the main thread, anything bigger goes to the
+/// pool; where the client cannot be blocked the pool is not available and `unblockable_max`
+/// (about 0.5 s) is the largest range it will take.
+const LIMITS: WorkLimits = WorkLimits {
+    inline_max: 50_000,
+    unblockable_max: 2_000_000,
+    unit: "samples",
+};
 
 enum Outcome {
     Combined {

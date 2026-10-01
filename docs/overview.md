@@ -100,9 +100,31 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 Small inputs are processed on the main thread. Larger ones, and all model fitting, run on a
 dedicated pool of analysis threads with the client blocked, bounded by the command's `TIMEOUT`
 or the `ts-analysis-timeout` configuration. Inside `MULTI` or a script, where a client cannot be
-blocked, they run inline. User-supplied sizes are capped (lags at 1,000, horizons at
+blocked, they run inline on the main thread, which nothing can cancel, so a range past a
+per-command ceiling is refused with
+`TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`
+instead of stalling the server (see below). User-supplied sizes are capped (lags at 1,000, horizons at
 `ts-forecast-max-horizon`, model orders and iteration counts) so a single call cannot exhaust
 memory or stall the server.
+
+Where a client cannot be blocked (`MULTI`/`EXEC`, a Lua script, a module's `RM_Call`) the
+largest range each command accepts is below. The ceilings are far above the sizes the commands
+run inline by choice, and are set so the worst case stalls the server for about a second; run
+the command outside the transaction for anything larger.
+
+| Command             | Counted in                       | Ceiling                              |
+|---------------------|----------------------------------|--------------------------------------|
+| `TS.TREND`          | samples                          | 40,000                               |
+| `TS.DECOMPOSE`      | samples                          | 100,000                              |
+| `TS.PERIODS`        | samples                          | 1,000,000                            |
+| `TS.STATIONARITY`   | samples                          | 2,000,000                            |
+| `TS.AUTOCORRELATION`| samples (× (lag + 1) for `PARTIAL`/`AGGREGATED`) | 100,000,000          |
+| `TS.XCORR`          | pairs × (2 × `maxLag` + 1)       | 200,000,000                          |
+| `TS.FEATURES`       | per feature: samples; samples × lag for `pacf`; samples² for `fourier_entropy` | 100,000,000 |
+| `TS.FORECAST`       | samples × models                 | 20,000                               |
+| `TS.AUTOFORECAST`   | samples                          | 10,000                               |
+| `TS.BACKTEST`       | samples × models × folds         | 60,000                               |
+| `TS.OUTLIERS`       | samples                          | 1,000,000; 10,000 for `rcf`; 6,000 for `esd` |
 
 `TS.FORECAST`, `TS.AUTOFORECAST`, `TS.TREND`, `TS.FILLGAPS` and `TS.SANITIZE` accept a `STORE`
 clause that writes the result to a destination series instead of, or in addition to, replying

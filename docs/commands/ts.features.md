@@ -116,7 +116,9 @@ never stall the server. The deadline counts from when the request is accepted, i
 spent queued behind other analysis work. When it elapses the client receives `TSDB: command
 timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and the request is
 abandoned. `0` disables the deadline for this call. Inside `MULTI` or a script, where a client
-cannot be blocked, the command runs inline instead.
+cannot be blocked, the command runs inline instead, up to 100,000,000 of the work described under
+[Complexity](#complexity); a larger request is refused with
+`TSDB: range too large to run inside MULTI, a script or a module call: …; run the command outside of it`.
 </details>
 
 ## Return
@@ -154,7 +156,17 @@ Returns an error if:
 
 `TS.FEATURES` reads the samples in the specified time range and computes each
 requested feature. Computation always runs on the analysis pool (see `TIMEOUT`). Most features
-are linear in the number of samples; `pacf:<lag>` is O(n × lag).
+are linear in the number of samples; `pacf:<lag>` is O(n × lag), and `fourier_entropy` is O(n²):
+it is a direct DFT, about 1 s at 20,000 samples and 11 s at 60,000. Because nothing can cancel
+a computation once it has started, `fourier_entropy` is refused above 20,000 finite samples in
+every context (`TSDB: fourier_entropy is quadratic in the number of samples and is limited to
+20000; the range has <n>`).
+
+Where the client cannot be blocked (`MULTI`, a script, a module call) the command runs on the
+main thread, so the work is capped: one visit per sample for each feature, samples × lag for
+each `pacf`, and samples² for `fourier_entropy`, summed, may not exceed 100,000,000. In practice
+only `fourier_entropy` over about 10,000 samples or more, and `pacf:<lag>` with a large lag over
+a very large range, reach it.
 
 ## Examples
 
