@@ -23,8 +23,8 @@ itertools = "0.15.0"
 linkme = "0.3"
 logos = "0.16"
 # `persistent-pool-rayon`: run `.par()` on a dedicated rayon-core pool that orx builds lazily
-# (not rayon's global pool used by `common::threads`; sized to `ORX_NUM_THREADS`, capped at the
-# core count). 4.0's default persistent pool blocks callers without helping, so the nested
+# (the module's shared pool: `common::threads` sends `join` and the `*_rayon` adapters there too;
+# sized to `ORX_NUM_THREADS` from `ts-num-threads`, capped at the core count). 4.0's default persistent pool blocks callers without helping, so the nested
 # parallel iterators here (per-series inside per-query) could deadlock it once every worker
 # waits on an inner scope; a rayon worker steals work while it waits, and threads are reused
 # rather than spawned per call as with `transient-pool`. There is no plain `rayon` feature.
