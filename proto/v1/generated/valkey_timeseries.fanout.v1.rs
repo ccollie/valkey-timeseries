@@ -1054,6 +1054,7 @@ pub enum RollupKind {
     Changes = 24,
     StateDurationOverTime = 25,
     StateCountOverTime = 26,
+    RangeOverTime = 27,
 }
 impl RollupKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1089,6 +1090,7 @@ impl RollupKind {
             Self::Changes => "ROLLUP_KIND_CHANGES",
             Self::StateDurationOverTime => "ROLLUP_KIND_STATE_DURATION_OVER_TIME",
             Self::StateCountOverTime => "ROLLUP_KIND_STATE_COUNT_OVER_TIME",
+            Self::RangeOverTime => "ROLLUP_KIND_RANGE_OVER_TIME",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1121,6 +1123,7 @@ impl RollupKind {
             "ROLLUP_KIND_CHANGES" => Some(Self::Changes),
             "ROLLUP_KIND_STATE_DURATION_OVER_TIME" => Some(Self::StateDurationOverTime),
             "ROLLUP_KIND_STATE_COUNT_OVER_TIME" => Some(Self::StateCountOverTime),
+            "ROLLUP_KIND_RANGE_OVER_TIME" => Some(Self::RangeOverTime),
             _ => None,
         }
     }
