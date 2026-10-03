@@ -221,36 +221,17 @@ where
     if selectors.is_empty() {
         return Ok(());
     }
-    let db = src.db();
-
-    // Planning needs only the postings read lock. Owned, because the bitmap a single
-    // selector yields may be borrowed from the postings, and their lock cannot be held
-    // across batches.
-    let ids = {
-        let index = get_db_index(db);
-        let postings = index.get_postings();
-        postings.postings_for_selectors(selectors)?.into_owned()
-    };
-    if ids.is_empty() {
-        return Ok(());
-    }
-
+    let mut cursor = SeriesCursor::plan(src.db(), selectors, range)?;
     let batch_size = if src.can_release() {
         batch_size.get()
     } else {
         usize::MAX
     };
-    let mut pending = ids.iter().peekable();
-    let mut batch_ids: Vec<SeriesRef> =
-        Vec::with_capacity(batch_size.min(ids.cardinality() as usize));
-
-    while pending.peek().is_some() {
-        batch_ids.clear();
-        batch_ids.extend(pending.by_ref().take(batch_size));
+    while !cursor.is_done() {
         let copied = {
             let ctx = src.lock()?;
-            visit_batch(&ctx, db, &batch_ids, range.as_ref(), &mut visit)?
-            // The batch's keys were freed inside `visit_batch`; the lock goes here.
+            cursor.next_batch(&ctx, batch_size, &mut visit)?
+            // The batch's keys were freed inside `next_batch`; the lock goes here.
         };
         // A batch whose every id was gone, filtered, or stale has nothing to process.
         if let Some(copied) = copied
@@ -258,13 +239,87 @@ where
         {
             break;
         }
-        if pending.peek().is_some() {
+        if !cursor.is_done() {
             // The main thread waiting on the lock is woken by the release above, but this
             // thread can take it straight back before the main thread runs. Step aside.
             std::thread::yield_now();
         }
     }
     Ok(())
+}
+
+/// A batched read driven by its caller a batch at a time, for interleaving several reads
+/// within each lock hold — the PromQL selector executor shares one hold among the tasks it
+/// has queued, so a burst of small selectors pays one lock acquisition, not one each.
+///
+/// Planned with no lock; each [`Self::next_batch`] then runs under a lock the caller holds.
+/// The entry points above are this, driven one lock per batch.
+pub struct SeriesCursor {
+    db: i32,
+    range: Option<MetaDateRangeFilter>,
+    ids: Vec<SeriesRef>,
+    next: usize,
+}
+
+impl SeriesCursor {
+    /// Plan a read of `selectors` in database `db`: only the postings read lock is taken.
+    pub fn plan(
+        db: i32,
+        selectors: &[SeriesSelector],
+        range: Option<MetaDateRangeFilter>,
+    ) -> ValkeyResult<Self> {
+        let ids = if selectors.is_empty() {
+            Vec::new()
+        } else {
+            let index = get_db_index(db);
+            let postings = index.get_postings();
+            postings.postings_for_selectors(selectors)?.iter().collect()
+        };
+        Ok(Self {
+            db,
+            range,
+            ids,
+            next: 0,
+        })
+    }
+
+    /// The database the read runs against: the caller selects it before each batch.
+    pub fn db(&self) -> i32 {
+        self.db
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.next >= self.ids.len()
+    }
+
+    /// Abandon the rest of the read: [`Self::is_done`] from here on.
+    pub fn finish(&mut self) {
+        self.next = self.ids.len();
+    }
+
+    /// Ids planned and not yet read: an upper bound on the series still to come.
+    pub fn remaining(&self) -> usize {
+        self.ids.len() - self.next.min(self.ids.len())
+    }
+
+    /// Read up to `max` more of the planned series and visit those that survive, under the
+    /// lock `ctx` holds — with [`Self::db`] selected and, for an ACL-checked read, the
+    /// caller's identity installed. `None` when none survived. See the module docs for what
+    /// is resolved, skipped and marked stale.
+    pub fn next_batch<B, F>(
+        &mut self,
+        ctx: &Context,
+        max: usize,
+        visit: &mut F,
+    ) -> ValkeyResult<Option<B>>
+    where
+        F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
+    {
+        let end = self.ids.len().min(self.next.saturating_add(max.max(1)));
+        let ids = &self.ids[self.next..end];
+        self.next = end;
+        visit_batch(ctx, self.db, ids, self.range.as_ref(), visit)
+    }
 }
 
 /// One batch, under the lock: resolve, open, filter, visit, and record the stale ids.
