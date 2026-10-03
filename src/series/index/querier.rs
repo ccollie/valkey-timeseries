@@ -45,7 +45,7 @@ use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeySt
 /// Series IDs found to have no backing key during a query, accumulated under the postings
 /// read lock and flushed once the guard is released. Stale IDs are rare, so the inline
 /// capacity keeps the common (empty) case off the heap.
-type StaleIds = SmallVec<[SeriesRef; 8]>;
+pub(super) type StaleIds = SmallVec<[SeriesRef; 8]>;
 
 /// Series ids paired with the key each resolved to, captured under the postings read lock.
 type ResolvedKeys = Vec<(SeriesRef, ValkeyString)>;
@@ -374,7 +374,7 @@ fn get_multi_series_by_id<'a>(
 }
 
 #[inline(always)]
-fn matches_date_range(
+pub(super) fn matches_date_range(
     series: &TimeSeries,
     start: Timestamp,
     end: Timestamp,
