@@ -126,14 +126,21 @@ where
     S: GilSource + ?Sized,
     F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
 {
-    visit_batches(src, selectors, range, batch_size, |ctx, batch| {
-        for (guard, key) in batch.drain(..) {
-            if f(ctx, guard, &key)?.is_break() {
-                return Ok(ControlFlow::Break(()));
+    visit_batches(
+        src,
+        selectors,
+        range,
+        batch_size,
+        |ctx, batch| {
+            for (guard, key) in batch.drain(..) {
+                if f(ctx, guard, &key)?.is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
-        }
-        Ok(ControlFlow::Continue(()))
-    })
+            Ok(ControlFlow::Continue(()))
+        },
+        Ok,
+    )
 }
 
 /// [`for_each_series`] a batch at a time, for a caller that fans each batch out across a
@@ -152,27 +159,64 @@ where
         &[(SeriesGuard<'g>, ValkeyString)],
     ) -> ValkeyResult<ControlFlow<()>>,
 {
-    visit_batches(src, selectors, range, batch_size, |ctx, batch| {
-        f(ctx, batch)
-    })
+    visit_batches(
+        src,
+        selectors,
+        range,
+        batch_size,
+        |ctx, batch| f(ctx, batch),
+        Ok,
+    )
 }
 
-/// The engine of both entry points. `visit` gets the batch by `&mut Vec` so the per-series
-/// entry point can move each guard out; it is private because that would also let a caller
-/// move a `ValkeyString` out from under the lock.
-fn visit_batches<S, F>(
+/// [`for_each_series_batch`] in two halves: `copy` runs under the batch's lock and returns
+/// what it copied out, and `process` gets that value once the lock is released, before the
+/// next batch takes it again.
+///
+/// For a read whose per-series work outweighs the copy — decoding a `RangeSnapshot`,
+/// evaluating it — this bounds what the read holds to one batch's worth of that work's
+/// input, rather than the whole match's, and the work itself is the gap that lets the main
+/// thread take the lock between batches. `T` cannot borrow the batch: it is chosen by the
+/// caller, outside the `for<'g>` bound.
+pub fn for_each_series_batch_then<S, T, F, G>(
+    src: &S,
+    selectors: &[SeriesSelector],
+    range: Option<MetaDateRangeFilter>,
+    batch_size: NonZeroUsize,
+    mut copy: F,
+    process: G,
+) -> ValkeyResult<()>
+where
+    S: GilSource + ?Sized,
+    F: for<'g> FnMut(&'g Context, &[(SeriesGuard<'g>, ValkeyString)]) -> ValkeyResult<T>,
+    G: FnMut(T) -> ValkeyResult<ControlFlow<()>>,
+{
+    visit_batches(
+        src,
+        selectors,
+        range,
+        batch_size,
+        |ctx, batch| copy(ctx, batch),
+        process,
+    )
+}
+
+/// The engine of every entry point. `visit` runs under each batch's lock and `after` gets
+/// its result once the lock is released. `visit` gets the batch by `&mut Vec` so the
+/// per-series entry point can move each guard out; this is private because that would also
+/// let a caller move a `ValkeyString` out from under the lock.
+fn visit_batches<S, B, F, G>(
     src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
     batch_size: NonZeroUsize,
     mut visit: F,
+    mut after: G,
 ) -> ValkeyResult<()>
 where
     S: GilSource + ?Sized,
-    F: for<'g> FnMut(
-        &'g Context,
-        &mut Vec<(SeriesGuard<'g>, ValkeyString)>,
-    ) -> ValkeyResult<ControlFlow<()>>,
+    F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
+    G: FnMut(B) -> ValkeyResult<ControlFlow<()>>,
 {
     if selectors.is_empty() {
         return Ok(());
@@ -203,12 +247,15 @@ where
     while pending.peek().is_some() {
         batch_ids.clear();
         batch_ids.extend(pending.by_ref().take(batch_size));
-        let flow = {
+        let copied = {
             let ctx = src.lock()?;
             visit_batch(&ctx, db, &batch_ids, range.as_ref(), &mut visit)?
             // The batch's keys were freed inside `visit_batch`; the lock goes here.
         };
-        if flow.is_break() {
+        // A batch whose every id was gone, filtered, or stale has nothing to process.
+        if let Some(copied) = copied
+            && after(copied)?.is_break()
+        {
             break;
         }
         if pending.peek().is_some() {
@@ -221,18 +268,16 @@ where
 }
 
 /// One batch, under the lock: resolve, open, filter, visit, and record the stale ids.
-fn visit_batch<'g, F>(
+/// `None` when no series of the batch survived to be visited.
+fn visit_batch<'g, B, F>(
     ctx: &'g Context,
     db: i32,
     ids: &[SeriesRef],
     range: Option<&MetaDateRangeFilter>,
     visit: &mut F,
-) -> ValkeyResult<ControlFlow<()>>
+) -> ValkeyResult<Option<B>>
 where
-    F: for<'x> FnMut(
-        &'x Context,
-        &mut Vec<(SeriesGuard<'x>, ValkeyString)>,
-    ) -> ValkeyResult<ControlFlow<()>>,
+    F: for<'x> FnMut(&'x Context, &mut Vec<(SeriesGuard<'x>, ValkeyString)>) -> ValkeyResult<B>,
 {
     // Looked up per batch rather than held: the guard pins the index map's reclamation.
     let index = get_db_index(db);
@@ -247,7 +292,7 @@ where
     let access = KeyAccess::new(ctx, AclPermissions::ACCESS);
     // Per batch, not reused across them: its guards borrow this lock hold.
     let mut batch: Vec<(SeriesGuard<'g>, ValkeyString)> = Vec::with_capacity(resolved.len());
-    let mut result = Ok(ControlFlow::Continue(()));
+    let mut opened = Ok(());
     for (id, key) in resolved {
         match try_get_timeseries_as(ctx, &key, &access) {
             Ok(Some(guard)) => {
@@ -267,14 +312,16 @@ where
             }
             Ok(None) => stale.push(id),
             Err(err) => {
-                result = Err(err);
+                opened = Err(err);
                 break;
             }
         }
     }
-    if result.is_ok() && !batch.is_empty() {
-        result = visit(ctx, &mut batch);
-    }
+    let result = match opened {
+        Ok(()) if batch.is_empty() => Ok(None),
+        Ok(()) => visit(ctx, &mut batch).map(Some),
+        Err(err) => Err(err),
+    };
     // Whatever `visit` left is dropped here, under the lock: `ValkeyString`s need it.
     drop(batch);
     index.mark_ids_as_stale(&stale);
