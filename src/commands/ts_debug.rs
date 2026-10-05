@@ -45,13 +45,13 @@ fn dump_top_k_entry(ctx: &Context, entry: &StringPoolTopKEntry) {
     reply_with_simple_string(ctx, "value");
     reply_with_bulk_string(ctx, &entry.value);
 
-    reply_with_str(ctx, "refCount");
+    reply_with_simple_string(ctx, "refCount");
     reply_with_usize(ctx, entry.ref_count as usize);
 
-    reply_with_str(ctx, "bytes");
+    reply_with_simple_string(ctx, "bytes");
     reply_with_usize(ctx, entry.bytes as usize);
 
-    reply_with_str(ctx, "allocated");
+    reply_with_simple_string(ctx, "allocated");
     reply_with_usize(ctx, entry.allocated as usize);
 }
 
@@ -125,18 +125,18 @@ pub(super) fn reply_with_string_pool_stats(
     reply_with_array(ctx, 12);
     reply_with_simple_string(ctx, "memorySavedBytes");
     reply_with_usize(ctx, stats.memory_saved_bytes);
-    reply_with_str(ctx, "memorySavedPct");
+    reply_with_simple_string(ctx, "memorySavedPct");
     reply_with_double(
         ctx.ctx,
         saved_pct(stats.memory_saved_bytes, stats.total.allocated),
     );
-    reply_with_str(ctx, "holders");
+    reply_with_simple_string(ctx, "holders");
     reply_with_usize(ctx, stats.holder_count);
     reply_with_simple_string(ctx, "holderSlotBytes");
     reply_with_usize(ctx, stats.holder_slot_bytes);
-    reply_with_str(ctx, "totalStorageBytes");
+    reply_with_simple_string(ctx, "totalStorageBytes");
     reply_with_usize(ctx, total_storage_bytes);
-    reply_with_str(ctx, "storageSavedPct");
+    reply_with_simple_string(ctx, "storageSavedPct");
     reply_with_double(
         ctx.ctx,
         saved_pct(stats.memory_saved_bytes, total_storage_bytes),
