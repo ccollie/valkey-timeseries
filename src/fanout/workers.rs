@@ -15,13 +15,6 @@ use crate::common::threads::{BoundedExecutor, Capacity, lane_workers};
 /// peers' coordinators) at once.
 const QUEUE_CAPACITY: usize = 1024;
 
-/// Runs this node's share of fan-outs it coordinates (`FanoutCommand::get_local_response`).
-pub(super) static LOCAL_SHARE_EXECUTOR: BoundedExecutor = BoundedExecutor::new(
-    "ts-fanout-local",
-    lane_workers,
-    Capacity::Fixed(QUEUE_CAPACITY),
-);
-
 /// Runs requests received from peer coordinators.
 pub(super) static PEER_REQUEST_EXECUTOR: BoundedExecutor = BoundedExecutor::new(
     "ts-fanout-request",

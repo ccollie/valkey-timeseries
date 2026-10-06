@@ -6,7 +6,7 @@ use crate::common::sync::lock;
 use crate::common::threads::Rejected;
 use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::serialization::{Deserialized, Serializable};
-use crate::fanout::workers::LOCAL_SHARE_EXECUTOR;
+use crate::fanout::workers::PEER_REQUEST_EXECUTOR;
 use crate::fanout::{
     FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_mode, get_fanout_targets,
 };
@@ -430,7 +430,7 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     // A blocking thread: `get_local_response` takes the GIL (R1 in `common::threads`).
-    LOCAL_SHARE_EXECUTOR.try_spawn(move || {
+    PEER_REQUEST_EXECUTOR.try_spawn(move || {
         // A share that waited in the queue may no longer be wanted: the fanout
         // already completed (an RPC timeout or a fail-fast error), or its
         // deadline passed and the blocked client has had the timeout error.
