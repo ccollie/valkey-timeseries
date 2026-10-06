@@ -7,10 +7,12 @@
 //!
 //! 1. **Plan** the postings with no lock at all — only the postings read lock. Planning
 //!    takes no `Context`, and a regex-heavy selector is the slowest part of a small read.
-//! 2. For each batch of `batch_size` ids: take the lock, **resolve** the batch's ids to keys
-//!    (postings read lock, released before any key is opened, as in
+//! 2. For each batch of up to `batch_size` ids: take the lock, **resolve** the batch's ids to
+//!    keys (postings read lock, released before any key is opened, as in
 //!    `querier::resolve_series_keys`), **open** them, hand them to the caller, and release
-//!    the lock before the next batch.
+//!    the lock before the next batch. A read whose series vary in cost — a range read copies
+//!    every chunk its window touches — also ends a batch once the series opened reach a
+//!    weight ([`BatchLimit::weighed`]); the ids after that point go to the next batch.
 //!
 //! # What a batched read sees
 //! It is not a point-in-time view of the database: writes made between batches are visible
@@ -34,7 +36,7 @@ use crate::fanout::{FanoutContext, FanoutContextGuard};
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
 use crate::series::request_types::MetaDateRangeFilter;
-use crate::series::{SeriesGuard, SeriesRef, try_get_timeseries_as};
+use crate::series::{SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries_as};
 use blart::AsBytes;
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Deref};
@@ -47,6 +49,49 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 /// lock comes on top. Each batch pays one lock acquisition, a database select, the ACL
 /// identity's resolution, and a postings read lock.
 pub const DEFAULT_SERIES_BATCH_SIZE: NonZeroUsize = NonZeroUsize::new(512).unwrap();
+
+/// Bytes of chunks a range read may copy under one lock hold, on top of its series count.
+///
+/// [`DEFAULT_SERIES_BATCH_SIZE`] counts series, but a range read copies every chunk its
+/// window touches ([`TimeSeries::range_copy_bytes`]): a chunk or two for a short window, and
+/// hundreds per series for a long window over dense series, which at 512 series would hold
+/// the lock for the whole copy. 4 MiB is about a thousand full default-size chunks, and an
+/// allocation and memcpy each: a fraction of a millisecond. A short-window read stays under
+/// it and is batched by series alone.
+pub const DEFAULT_BATCH_COPY_BYTES: usize = 4 << 20;
+
+/// How much one batch reads under its lock hold: at most `series` series and, for a read
+/// whose series vary in cost, no more once their combined `weigh` reaches `weight`. The
+/// series that reaches `weight` is still read, so every batch makes progress, however heavy
+/// one series is.
+#[derive(Clone, Copy)]
+pub struct BatchLimit<W = fn(&TimeSeries) -> usize> {
+    series: usize,
+    weight: usize,
+    weigh: W,
+}
+
+impl BatchLimit {
+    /// At most `series` series, however heavy each is.
+    pub fn series(series: usize) -> Self {
+        Self {
+            series,
+            weight: usize::MAX,
+            weigh: |_| 0,
+        }
+    }
+}
+
+impl<W: Fn(&TimeSeries) -> usize> BatchLimit<W> {
+    /// At most `series` series, and no more once their `weigh` sums to `weight`.
+    pub fn weighed(series: usize, weight: usize, weigh: W) -> Self {
+        Self {
+            series,
+            weight,
+            weigh,
+        }
+    }
+}
 
 /// Where a multi-step read gets the module lock from, one batch at a time.
 pub trait GilSource {
@@ -130,7 +175,7 @@ where
         src,
         selectors,
         range,
-        batch_size,
+        BatchLimit::series(batch_size.get()),
         |ctx, batch| {
             for (guard, key) in batch.drain(..) {
                 if f(ctx, guard, &key)?.is_break() {
@@ -163,7 +208,7 @@ where
         src,
         selectors,
         range,
-        batch_size,
+        BatchLimit::series(batch_size.get()),
         |ctx, batch| f(ctx, batch),
         Ok,
     )
@@ -178,16 +223,19 @@ where
 /// input, rather than the whole match's, and the work itself is the gap that lets the main
 /// thread take the lock between batches. `T` cannot borrow the batch: it is chosen by the
 /// caller, outside the `for<'g>` bound.
-pub fn for_each_series_batch_then<S, T, F, G>(
+///
+/// `limit` sizes each batch; weigh it by what `copy` copies when that varies by series.
+pub fn for_each_series_batch_then<S, T, W, F, G>(
     src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
-    batch_size: NonZeroUsize,
+    limit: BatchLimit<W>,
     mut copy: F,
     process: G,
 ) -> ValkeyResult<()>
 where
     S: GilSource + ?Sized,
+    W: Fn(&TimeSeries) -> usize,
     F: for<'g> FnMut(&'g Context, &[(SeriesGuard<'g>, ValkeyString)]) -> ValkeyResult<T>,
     G: FnMut(T) -> ValkeyResult<ControlFlow<()>>,
 {
@@ -195,7 +243,7 @@ where
         src,
         selectors,
         range,
-        batch_size,
+        limit,
         |ctx, batch| copy(ctx, batch),
         process,
     )
@@ -205,16 +253,17 @@ where
 /// its result once the lock is released. `visit` gets the batch by `&mut Vec` so the
 /// per-series entry point can move each guard out; this is private because that would also
 /// let a caller move a `ValkeyString` out from under the lock.
-fn visit_batches<S, B, F, G>(
+fn visit_batches<S, B, W, F, G>(
     src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
-    batch_size: NonZeroUsize,
+    limit: BatchLimit<W>,
     mut visit: F,
     mut after: G,
 ) -> ValkeyResult<()>
 where
     S: GilSource + ?Sized,
+    W: Fn(&TimeSeries) -> usize,
     F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
     G: FnMut(B) -> ValkeyResult<ControlFlow<()>>,
 {
@@ -222,15 +271,15 @@ where
         return Ok(());
     }
     let mut cursor = SeriesCursor::plan(src.db(), selectors, range)?;
-    let batch_size = if src.can_release() {
-        batch_size.get()
+    let limit = if src.can_release() {
+        limit
     } else {
-        usize::MAX
+        BatchLimit::weighed(usize::MAX, usize::MAX, limit.weigh)
     };
     while !cursor.is_done() {
         let copied = {
             let ctx = src.lock()?;
-            cursor.next_batch(&ctx, batch_size, &mut visit)?
+            cursor.next_batch_within(&ctx, &limit, &mut visit)?
             // The batch's keys were freed inside `next_batch`; the lock goes here.
         };
         // A batch whose every id was gone, filtered, or stale has nothing to process.
@@ -315,23 +364,48 @@ impl SeriesCursor {
     where
         F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
     {
-        let end = self.ids.len().min(self.next.saturating_add(max.max(1)));
-        let ids = &self.ids[self.next..end];
+        self.next_batch_within(ctx, &BatchLimit::series(max), visit)
+    }
+
+    /// [`Self::next_batch`] sized by `limit`: when the series opened reach its weight, the
+    /// batch ends there and the ids after it are left for the next one.
+    pub fn next_batch_within<B, W, F>(
+        &mut self,
+        ctx: &Context,
+        limit: &BatchLimit<W>,
+        visit: &mut F,
+    ) -> ValkeyResult<Option<B>>
+    where
+        W: Fn(&TimeSeries) -> usize,
+        F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
+    {
+        let start = self.next;
+        let end = self
+            .ids
+            .len()
+            .min(start.saturating_add(limit.series.max(1)));
+        // Taken in full unless the batch reports otherwise: a failed read stays consumed.
         self.next = end;
-        visit_batch(ctx, self.db, ids, self.range.as_ref(), visit)
+        let ids = &self.ids[start..end];
+        let (visited, read) = visit_batch(ctx, self.db, ids, self.range.as_ref(), limit, visit)?;
+        self.next = start + read;
+        Ok(visited)
     }
 }
 
 /// One batch, under the lock: resolve, open, filter, visit, and record the stale ids.
-/// `None` when no series of the batch survived to be visited.
-fn visit_batch<'g, B, F>(
+/// `None` when no series of the batch survived to be visited. Also returns how many of `ids`
+/// the batch took: fewer than all when the series opened reached `limit`'s weight first.
+fn visit_batch<'g, B, W, F>(
     ctx: &'g Context,
     db: i32,
     ids: &[SeriesRef],
     range: Option<&MetaDateRangeFilter>,
+    limit: &BatchLimit<W>,
     visit: &mut F,
-) -> ValkeyResult<Option<B>>
+) -> ValkeyResult<(Option<B>, usize)>
 where
+    W: Fn(&TimeSeries) -> usize,
     F: for<'x> FnMut(&'x Context, &mut Vec<(SeriesGuard<'x>, ValkeyString)>) -> ValkeyResult<B>,
 {
     // Looked up per batch rather than held: the guard pins the index map's reclamation.
@@ -348,6 +422,11 @@ where
     // Per batch, not reused across them: its guards borrow this lock hold.
     let mut batch: Vec<(SeriesGuard<'g>, ValkeyString)> = Vec::with_capacity(resolved.len());
     let mut opened = Ok(());
+    let mut read = ids.len();
+    let mut weight = 0usize;
+    // The keys left unopened when the weight runs out are dropped with the loop, under the
+    // lock. Their ids are resolved afresh by the batch that reads them; any stale id among
+    // them was found stale under this lock, and is recorded below either way.
     for (id, key) in resolved {
         match try_get_timeseries_as(ctx, &key, &access) {
             Ok(Some(guard)) => {
@@ -363,7 +442,15 @@ where
                         continue;
                     }
                 }
+                weight = weight.saturating_add((limit.weigh)(&guard));
                 batch.push((guard, key));
+                if weight >= limit.weight {
+                    read = ids
+                        .iter()
+                        .position(|&i| i == id)
+                        .map_or(ids.len(), |p| p + 1);
+                    break;
+                }
             }
             Ok(None) => stale.push(id),
             Err(err) => {
@@ -380,7 +467,7 @@ where
     // Whatever `visit` left is dropped here, under the lock: `ValkeyString`s need it.
     drop(batch);
     index.mark_ids_as_stale(&stale);
-    result
+    result.map(|visited| (visited, read))
 }
 
 /// `querier::resolve_series_keys` for a batch planned under an earlier lock hold.
