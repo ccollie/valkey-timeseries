@@ -58,6 +58,13 @@ pub enum ErrorKind {
     /// A peer too old to know this kind reports it as an invalid message.
     Busy = 12,
 
+    /// A node refused its share for exceeding a PromQL query limit (max series, max points
+    /// per series, max samples per query). Its own kind so the coordinator can surface the
+    /// node's message verbatim: the message names the limit and both numbers, which is the
+    /// whole point of the error, and the generic aggregate error would discard them. A peer
+    /// too old to know this kind reports it as an invalid message.
+    QueryLimit = 13,
+
     Custom = 255,
 }
 
@@ -77,6 +84,14 @@ pub(super) const UNSUPPORTED_FEATURES_ERROR: &str = "A multi-shard command faile
 pub(super) const INVALID_DB_ERROR: &str = "Invalid database";
 pub(super) const BUSY_ERROR: &str =
     "A multi-shard command failed because a node has too many fanout requests queued; retry later";
+pub(super) const QUERY_LIMIT_ERROR: &str = "Query resource limit exceeded";
+/// The texts every query-limit refusal starts with. They carry the observed count and the
+/// limit after the text, so they are matched by prefix rather than by equality.
+const QUERY_LIMIT_ERROR_PREFIXES: [&str; 3] = [
+    error_consts::PROMQL_MAX_SERIES_ERROR,
+    error_consts::PROMQL_MAX_POINTS_PER_SERIES_ERROR,
+    error_consts::PROMQL_TOO_MANY_SAMPLES_ERROR,
+];
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
@@ -94,6 +109,7 @@ impl ErrorKind {
             Self::UnsupportedFeatures => UNSUPPORTED_FEATURES_ERROR,
             Self::InvalidDb => INVALID_DB_ERROR,
             Self::Busy => BUSY_ERROR,
+            Self::QueryLimit => QUERY_LIMIT_ERROR,
             Self::Custom => "Custom error",
         }
     }
@@ -139,6 +155,13 @@ impl FanoutError {
 
     pub fn busy() -> Self {
         ErrorKind::Busy.into()
+    }
+
+    pub fn query_limit<S: Into<String>>(description: S) -> Self {
+        Self {
+            message: description.into(),
+            kind: ErrorKind::QueryLimit,
+        }
     }
 
     pub fn custom<S: Into<String>>(description: S) -> Self {
@@ -216,6 +239,7 @@ impl TryFrom<u8> for ErrorKind {
             10 => Ok(ErrorKind::UnsupportedFeatures),
             11 => Ok(ErrorKind::InvalidDb),
             12 => Ok(ErrorKind::Busy),
+            13 => Ok(ErrorKind::QueryLimit),
             255 => Ok(ErrorKind::Custom),
             _ => {
                 let msg = format!("Invalid error kind: {value}");
@@ -314,6 +338,13 @@ fn convert_from_string(err: &str) -> FanoutError {
         // instead of a generic aggregate error.
         error_consts::PERMISSION_DENIED => FanoutError::key_permissions(err.to_string()),
         NO_CLUSTER_NODES_AVAILABLE => ErrorKind::NodeUnreachable.into(),
+        QUERY_LIMIT_ERROR => ErrorKind::QueryLimit.into(),
+        _ if QUERY_LIMIT_ERROR_PREFIXES
+            .iter()
+            .any(|prefix| err.starts_with(prefix)) =>
+        {
+            FanoutError::query_limit(err)
+        }
         _ => FanoutError::custom(err.to_string()),
     }
 }
@@ -430,6 +461,7 @@ mod tests {
             ErrorKind::UnsupportedFeatures,
             ErrorKind::InvalidDb,
             ErrorKind::Busy,
+            ErrorKind::QueryLimit,
             ErrorKind::Custom,
         ];
 
@@ -586,6 +618,28 @@ mod tests {
         assert_eq!(ErrorKind::ClusterMapMismatch as u8, 9);
         assert_eq!(ErrorKind::UnsupportedFeatures as u8, 10);
         assert_eq!(ErrorKind::InvalidDb as u8, 11);
+        assert_eq!(ErrorKind::Busy as u8, 12);
+        assert_eq!(ErrorKind::QueryLimit as u8, 13);
         assert_eq!(ErrorKind::Custom as u8, 255);
+    }
+
+    /// A limit refusal carries its count and limit inline, so it is classified by prefix.
+    /// Getting this wrong is invisible in a test of the limit itself: the shard still
+    /// refuses, but the coordinator replaces the message with "Internal error in fanout
+    /// operation", and the operator loses the two numbers that say what to change.
+    #[test]
+    fn query_limit_errors_are_classified_and_keep_their_message() {
+        for prefix in QUERY_LIMIT_ERROR_PREFIXES {
+            let message = format!("{prefix}: 12 > 10");
+            for raw in [message.clone(), format!("ERR {message}")] {
+                let error = FanoutError::from(raw.as_str());
+                assert_eq!(error.kind, ErrorKind::QueryLimit, "{raw}");
+                assert_eq!(error.message, message);
+                assert_eq!(error.to_string(), message);
+            }
+        }
+        // Only at the start: a message that merely quotes one is someone else's error.
+        let quoted = format!("failed: {}", error_consts::PROMQL_MAX_SERIES_ERROR);
+        assert_eq!(FanoutError::from(quoted.as_str()).kind, ErrorKind::Custom);
     }
 }
