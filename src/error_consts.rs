@@ -170,6 +170,16 @@ pub const PROMQL_BLOCKING_NOT_ALLOWED: &str = "TSDB: TS.QUERY and TS.QUERYRANGE 
 // INVALID_COMPARISON_OPERATOR, which `ComparisonOperator::try_from` already returns.
 pub const READ_CONDITION_VALUE_MUST_BE_A_NUMBER: &str = "TSDB: CONDITION value must be a number";
 
+// PromQL query limits. Each carries the observed count and the limit after the text, so a
+// shard's refusal is recognised across the fan-out by prefix (see `fanout_error.rs`) and reaches
+// the client verbatim instead of as a generic fan-out failure.
+pub const PROMQL_MAX_SERIES_ERROR: &str =
+    "the query returns more than the configured max series limit";
+pub const PROMQL_MAX_POINTS_PER_SERIES_ERROR: &str =
+    "the query returns a series with more points than the configured max points per series limit";
+pub const PROMQL_TOO_MANY_SAMPLES_ERROR: &str =
+    "query processing would load too many samples into memory";
+
 // TS.QUERYLABELS
 pub const UNKNOWN_QUERY_LABELS_SUBTYPE: &str =
     "TSDB: unknown subtype, must be one of LABELS|VALUES";

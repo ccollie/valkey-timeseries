@@ -288,10 +288,15 @@ where
         // error to the client verbatim (bypassing the generic aggregate error) and
         // stop waiting on the remaining shards. A shard that was too busy to take
         // its share likewise leaves the result incomplete, and the client should
-        // see that it can retry.
+        // see that it can retry. A query limit a shard enforced on its share is
+        // surfaced the same way: its message names the limit and both numbers, and
+        // the other shards' answers cannot rescue a read that is already refused.
         if matches!(
             error.kind,
-            ErrorKind::KeyPermissions | ErrorKind::Permissions | ErrorKind::Busy
+            ErrorKind::KeyPermissions
+                | ErrorKind::Permissions
+                | ErrorKind::Busy
+                | ErrorKind::QueryLimit
         ) {
             self.abort_error = Some(error);
             self.on_completion();
