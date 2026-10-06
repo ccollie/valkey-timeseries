@@ -1,5 +1,6 @@
 use super::raw_replies::{
     IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_bulk_string,
+    reply_with_sample, reply_with_simple_string,
 };
 use std::marker::PhantomData;
 use std::ops::Deref;
