@@ -6,7 +6,7 @@
 
 use crate::common::context::is_blocking_denied;
 use crate::common::replies::{ThreadSafeReplyContext, block_client};
-use crate::common::threads::{BoundedExecutor, Capacity, lane_workers};
+use crate::common::threads::{BoundedExecutor, Capacity, ExecutorStats, lane_workers};
 use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
@@ -22,6 +22,11 @@ static ANALYSIS_EXECUTOR: BoundedExecutor = BoundedExecutor::new(
 /// Set by `TS._DEBUG PANIC_NEXT_ANALYSIS_JOB` (debug mode only): the next analysis job panics.
 /// Integration tests use it to check that a failed job still answers its client.
 static PANIC_NEXT_ANALYSIS_JOB: AtomicBool = AtomicBool::new(false);
+
+/// The load on the analysis lane, for `TS._DEBUG STATS`. Never starts the workers.
+pub(crate) fn analysis_lane_stats() -> ExecutorStats {
+    ANALYSIS_EXECUTOR.stats()
+}
 
 /// Makes the next job on the analysis lane panic. For tests; see [`PANIC_NEXT_ANALYSIS_JOB`].
 pub(crate) fn panic_next_analysis_job() {
