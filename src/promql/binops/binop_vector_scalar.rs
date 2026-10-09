@@ -35,49 +35,17 @@ pub(super) fn eval_binop_vector_scalar(
 
 // ------------------------- Benchmark helpers -------------------------------
 // Compiled only under the `bench` feature, for the external Criterion crate
-// (`benches/fast_path.rs`). `run_legacy` preserves the pre-split `retain_mut`
-// implementation so both variants are measured in a single run, with no
-// rebuild skew between them.
+// (`benches/fast_path.rs`).
 
 #[cfg(feature = "bench")]
 mod bench_support {
     use super::eval_binop_vector_scalar;
     use crate::labels::Label;
-    use crate::promql::binops::binary_op_fn;
     use crate::promql::binops::binop_scalar_vector::eval_binop_scalar_vector;
-    use crate::promql::binops::labels::changes_metric_schema;
     use crate::promql::exec::types::EvalLabels;
-    use crate::promql::{EvalResult, EvalSample, ExprResult};
+    use crate::promql::{EvalSample, ExprResult};
     use promql_parser::parser::token::{T_ADD, T_GTR, TokenType};
     use promql_parser::parser::{BinModifier, BinaryExpr, Expr, NumberLiteral};
-
-    /// The pre-split loop structure: one `retain_mut` for every operator, with
-    /// the comparison/`bool` flags tested per element. Filtering semantics are
-    /// the corrected ones (passing samples keep their value) so the A/B
-    /// isolates loop structure rather than the bug the split fixed.
-    fn legacy_eval_binop_vector_scalar(
-        expr: &BinaryExpr,
-        vector: Vec<EvalSample>,
-        scalar: f64,
-    ) -> EvalResult<ExprResult> {
-        let return_bool = expr.return_bool();
-        let is_comparison = expr.op.is_comparison_operator();
-        let should_drop_name = changes_metric_schema(expr.op) || return_bool;
-        let apply = binary_op_fn(expr.op)?;
-
-        let mut result = vector;
-        result.retain_mut(|sample| {
-            let value = apply(sample.value, scalar);
-            if is_comparison && !return_bool {
-                value != 0.0
-            } else {
-                sample.value = value;
-                sample.drop_name |= should_drop_name;
-                true
-            }
-        });
-        Ok(ExprResult::InstantVector(result))
-    }
 
     /// Which operator shape to exercise.
     #[derive(Clone, Copy)]
@@ -128,14 +96,6 @@ mod bench_support {
 
         pub fn is_empty(&self) -> bool {
             self.0.is_empty()
-        }
-
-        /// `(timestamp, value, drop_name)` per sample, for equivalence checks.
-        pub fn samples(&self) -> Vec<(i64, u64, bool)> {
-            self.0
-                .iter()
-                .map(|s| (s.timestamp_ms, s.value.to_bits(), s.drop_name))
-                .collect()
         }
     }
 
@@ -232,7 +192,7 @@ mod bench_support {
             VectorScalarInput(vector)
         }
 
-        /// The current implementation (branch split out of the loop).
+        /// Runs the operation under test.
         ///
         /// Returns the result vector rather than its length: freeing ~3 heap
         /// allocations per sample costs far more than the loop under test, so
@@ -250,14 +210,6 @@ mod bench_support {
                 _ => VectorScalarInput(Vec::new()),
             }
         }
-
-        /// The pre-split implementation, for A/B comparison.
-        pub fn run_legacy(&self, input: VectorScalarInput) -> VectorScalarInput {
-            match legacy_eval_binop_vector_scalar(&self.expr, input.0, self.scalar) {
-                Ok(ExprResult::InstantVector(v)) => VectorScalarInput(v),
-                _ => VectorScalarInput(Vec::new()),
-            }
-        }
     }
 }
 
@@ -267,22 +219,6 @@ pub use bench_support::{BenchOp, LabelMode, VectorScalarCase, VectorScalarInput}
 #[cfg(all(test, feature = "bench"))]
 mod bench_support_tests {
     use super::bench_support::{BenchOp, VectorScalarCase};
-
-    /// The split implementation must agree with the pre-split one it replaced,
-    /// otherwise the A/B benchmark is comparing two different computations.
-    #[test]
-    fn split_matches_legacy() {
-        for op in [BenchOp::Add, BenchOp::GreaterBool, BenchOp::Greater] {
-            for pass_ratio in [1.0, 0.9, 0.5, 0.1] {
-                let case = VectorScalarCase::new(op, 1000, pass_ratio, false);
-                assert_eq!(
-                    case.run(case.input()).samples(),
-                    case.run_legacy(case.input()).samples(),
-                    "split and legacy diverged at pass_ratio {pass_ratio}"
-                );
-            }
-        }
-    }
 
     /// Guards the benchmark inputs themselves: a filtering case that silently
     /// kept every sample would make the filtering measurements meaningless.
