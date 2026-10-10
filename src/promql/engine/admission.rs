@@ -125,6 +125,16 @@ pub(crate) fn estimate_reply_bytes(value: &QueryValue) -> usize {
         }
 }
 
+/// A floor on [`estimate_range_reply_bytes`] for a range result of `series`
+/// series holding `points` samples in all, leaving out their labels: for
+/// checking the reply's size while the result is still being built, without
+/// ever refusing a result the final estimate would admit.
+pub(crate) fn range_reply_bytes_floor(series: usize, points: usize) -> usize {
+    REPLY_OVERHEAD
+        .saturating_add(series.saturating_mul(SERIES_REPLY_OVERHEAD))
+        .saturating_add(points.saturating_mul(SAMPLE_REPLY_BYTES))
+}
+
 /// About how many bytes the reply to a range query's `series` takes.
 pub(crate) fn estimate_range_reply_bytes(series: &[RangeSample]) -> usize {
     REPLY_OVERHEAD + series.iter().map(series_reply_bytes).sum::<usize>()

@@ -1078,6 +1078,98 @@ mod tests {
         assert!(run(0).is_ok(), "0 is unlimited");
     }
 
+    /// An expression that reads nothing still returns samples, and a range
+    /// query keeps every step's: the result is charged for what it holds past
+    /// what the query loaded, so a generator cannot get past the budget.
+    #[test]
+    fn generated_range_results_are_charged() {
+        let (_, reader) = build_reader();
+        for query in [
+            "1",
+            "vector(1)",
+            "absent(nonexistent)",
+            "sum_over_time(vector(1)[1h:1s])",
+        ] {
+            let err = try_range(reader.clone(), query, 1).expect_err(query);
+            assert!(
+                err.to_string().contains("too many samples"),
+                "{query}: {err}"
+            );
+            try_range(reader.clone(), query, RANGE_STEPS)
+                .unwrap_or_else(|err| panic!("{query}: one sample per step fits: {err}"));
+            try_range(reader.clone(), query, RANGE_STEPS - 1).expect_err(query);
+        }
+        try_range(reader, "vector(1)", 0).expect("0 is unlimited");
+    }
+
+    /// An instant query returning a subquery returns its whole grid.
+    #[test]
+    fn a_generated_instant_result_is_charged() {
+        let (_, reader) = build_reader();
+        let run = |max_samples: usize| {
+            let stmt = EvalStmt {
+                expr: promql_parser::parser::parse("vector(1)[1m:1s]").unwrap(),
+                start: ms(RANGE_END_MS),
+                end: ms(RANGE_END_MS),
+                interval: Duration::ZERO,
+                lookback_delta: options().lookback_delta,
+            };
+            let options = QueryOptions {
+                max_samples,
+                ..options()
+            };
+            evaluate_instant(reader.clone(), stmt, ms(RANGE_END_MS), options)
+        };
+        let Ok(crate::promql::QueryValue::Matrix(series)) = run(0) else {
+            panic!("a subquery answers a matrix");
+        };
+        let points: usize = series.iter().map(|s| s.samples.len()).sum();
+        assert!(points >= 60, "{points}");
+        run(points).expect("exactly the grid fits");
+        let err = run(points - 1).expect_err("one sample short of the grid");
+        assert!(err.to_string().contains("too many samples"), "{err}");
+    }
+
+    /// The reply's size is checked as the range result grows, from a floor on
+    /// the final estimate: a result that will be refused stops early, and one
+    /// the final check admits is never refused by the floor.
+    #[test]
+    fn a_range_reply_too_large_stops_while_it_is_built() {
+        use crate::promql::engine::admission::{
+            estimate_range_reply_bytes, range_reply_bytes_floor,
+        };
+        let (_, reader) = build_reader();
+        let run = |end_ms: i64, max_reply_bytes: usize| {
+            let stmt = EvalStmt {
+                expr: promql_parser::parser::parse("vector(1)").unwrap(),
+                start: ms(0),
+                end: ms(end_ms),
+                interval: Duration::from_secs(1),
+                lookback_delta: options().lookback_delta,
+            };
+            let options = QueryOptions {
+                max_reply_bytes,
+                ..options()
+            };
+            evaluate_range(reader.clone(), stmt, options)
+        };
+
+        const STEPS: usize = 100_000;
+        let err = run((STEPS as i64 - 1) * 1_000, 64 * 1024).expect_err("past the limit");
+        let crate::promql::QueryError::ReplyTooLarge { bytes, limit } = err else {
+            panic!("refused for its reply size: {err}");
+        };
+        assert_eq!(limit, 64 * 1024);
+        assert!(
+            bytes < range_reply_bytes_floor(1, STEPS) / 10,
+            "stopped near the limit, not after the whole result: {bytes}"
+        );
+
+        let small = run(9_000, 0).expect("unlimited");
+        let exact = estimate_range_reply_bytes(&small);
+        run(9_000, exact).expect("the floor never refuses what the final estimate admits");
+    }
+
     /// `ts-promql-max-response-series` bounds what the query returns, not only
     /// each read: an `or` of two three-series reads returns six.
     #[test]

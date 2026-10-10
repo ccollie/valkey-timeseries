@@ -1,6 +1,7 @@
 use crate::common::threads::IntoParRayon;
 use crate::common::time::{current_time_millis, system_time_to_millis};
 use crate::common::{Sample, Timestamp};
+use crate::promql::engine::admission::{check_reply_size, range_reply_bytes_floor};
 use crate::promql::engine::derived_filters::derive_filters_in_place;
 use crate::promql::engine::validate_max_series;
 use crate::promql::engine::{QueryOptions, QueryReader};
@@ -164,6 +165,14 @@ pub fn evaluate_instant(
         ExprResult::Scalar(_) | ExprResult::String(_) => 0,
     };
     validate_max_series(returned, opts.max_series).map_err(QueryError::Execution)?;
+    // What the query returns, past what it loaded: see `charge_result_points`.
+    let points = match &result {
+        ExprResult::InstantVector(samples) => samples.len(),
+        ExprResult::RangeVector(series) => series.iter().map(|s| s.values.len()).sum(),
+        ExprResult::Scalar(_) => 1,
+        ExprResult::String(_) => 0,
+    };
+    evaluator.charge_result_points(points)?;
 
     match result {
         ExprResult::Scalar(value) => {
@@ -301,6 +310,8 @@ pub fn evaluate_range(
     // sample vectors stay chronologically sorted without an extra sort.
     let mut step_ts = step_times(start_ms, end_ms, step_ms);
     let mut series_map = SeriesMap::default();
+    // Samples merged into the result so far: what the query returns.
+    let mut points = 0usize;
 
     loop {
         let chunk: Vec<Timestamp> = step_ts.by_ref().take(STEP_MERGE_CHUNK_SIZE).collect();
@@ -313,6 +324,19 @@ pub fn evaluate_range(
             .map(eval_step)
             .into_fallible()
             .collect()?;
+
+        // Charged before it is merged: the result holds every step's samples
+        // until the reply, and an expression that reads nothing (`vector(1)`,
+        // a literal) generates them uncharged by any read.
+        points += chunk_results
+            .iter()
+            .map(|(_, result)| match result {
+                ExprResult::InstantVector(samples) => samples.len(),
+                ExprResult::Scalar(_) => 1,
+                ExprResult::RangeVector(_) | ExprResult::String(_) => 0,
+            })
+            .sum::<usize>();
+        evaluator.charge_result_points(points)?;
 
         for (current_time, result) in chunk_results {
             match result {
@@ -343,6 +367,13 @@ pub fn evaluate_range(
         // series makes one per distinct value per step. Checked per chunk, so a
         // query past it stops evaluating instead of finishing first.
         validate_max_series(series_map.len(), opts.max_series).map_err(QueryError::Execution)?;
+        // The reply's size is checked once more, exactly, when the result is
+        // whole; this floor stops a result that will be refused then from
+        // being built to the end first.
+        check_reply_size(
+            range_reply_bytes_floor(series_map.len(), points),
+            opts.max_reply_bytes,
+        )?;
     }
 
     let mut result: Vec<RangeSample> = series_map

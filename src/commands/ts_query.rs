@@ -40,7 +40,6 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     options.db = get_current_db(ctx);
 
     let eval_ts = statement.start();
-    let max_reply_bytes = promql_config.max_reply_bytes;
     let querier = get_promql_querier(ctx, hash_tags);
     // The query text is parsed on the query worker, not here: see `submit_evaluation`.
     submit_evaluation(
@@ -51,7 +50,10 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             let options = QueryOptions { cancel, ..options };
             let value = evaluate_instant(querier, eval_stmt, eval_ts, options)?;
             // Before any of it is written: the server buffers a client's reply whatever its size.
-            admission::check_reply_size(admission::estimate_reply_bytes(&value), max_reply_bytes)?;
+            admission::check_reply_size(
+                admission::estimate_reply_bytes(&value),
+                options.max_reply_bytes,
+            )?;
             Ok(value)
         },
         move |ctx, result| {

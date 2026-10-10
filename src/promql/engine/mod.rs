@@ -81,6 +81,9 @@ pub struct QueryOptions {
     /// The most subquery steps the query may evaluate in all
     /// (`ts-promql-max-subquery-steps`); see `check_subquery_cost`. 0 = unlimited.
     pub max_subquery_steps: u64,
+    /// The largest reply the query may produce, as `admission::estimate_reply_bytes`
+    /// sizes it (`ts-promql-max-reply-bytes`). 0 = unlimited.
+    pub max_reply_bytes: usize,
 }
 
 impl Default for QueryOptions {
@@ -110,6 +113,7 @@ impl Default for QueryOptions {
             max_samples_in_flight: config.max_samples_in_flight,
             max_memory_percent: config.max_memory_percent,
             max_subquery_steps: config.max_subquery_steps,
+            max_reply_bytes: config.max_reply_bytes,
         }
     }
 }

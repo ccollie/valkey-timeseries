@@ -348,6 +348,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         self.charge_samples(series.iter().map(|s| s.samples.len()).sum())
     }
 
+    /// Charge a result of `points` samples for what it holds past everything
+    /// the query has already charged, so the query costs the larger of what it
+    /// loaded and what it returns.
+    ///
+    /// Reads alone are not enough: an expression that reads nothing — a
+    /// literal, `vector(1)`, `absent(m)`, a subquery over either — generates
+    /// its samples, and a range query keeps every step's. A result built from
+    /// reads is no larger than they were, so it costs nothing more here and
+    /// every read-backed budget boundary stays where it was. Called with a
+    /// running total as the result grows; each call charges only the new
+    /// excess, since what earlier calls charged is part of what was loaded.
+    pub(crate) fn charge_result_points(&self, points: usize) -> EvalResult<()> {
+        self.charge_samples(points.saturating_sub(self.budget.loaded()))
+    }
+
     /// Charge what a live (non-preloaded) selector read materialized.
     fn charge_result(&self, result: &ExprResult) -> EvalResult<()> {
         match result {
