@@ -22,6 +22,22 @@ pub struct PromqlConfig {
     /// (Prometheus' `--query.max-samples`). 0 = unlimited.
     pub max_samples_per_query: usize,
 
+    /// The samples all running queries, and the shard reads this node serves, may hold
+    /// together (`ts-promql-max-samples-in-flight`). 0 = unlimited.
+    pub max_samples_in_flight: usize,
+
+    /// Refuse, and stop, queries while used memory is at or past this percentage of
+    /// `maxmemory` (`ts-promql-max-memory-percent`). 0 = never.
+    pub max_memory_percent: u32,
+
+    /// The largest reply, estimated in bytes, a query may send (`ts-promql-max-reply-bytes`).
+    /// 0 = unlimited.
+    pub max_reply_bytes: usize,
+
+    /// The most subquery steps one query may evaluate in all, nesting multiplied through
+    /// (`ts-promql-max-subquery-steps`). 0 = unlimited.
+    pub max_subquery_steps: u64,
+
     /// The maximum number of unique time series to be returned from instant or range queries
     /// This option allows limiting memory usage
     pub max_response_series: usize,
@@ -62,6 +78,10 @@ impl Default for PromqlConfig {
             max_query_len: DEFAULT_MAX_QUERY_LEN,
             max_points_per_timeseries: 0,
             max_samples_per_query: crate::config::PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT as usize,
+            max_samples_in_flight: crate::config::PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT as usize,
+            max_memory_percent: crate::config::PROMQL_MAX_MEMORY_PERCENT_DEFAULT as u32,
+            max_reply_bytes: crate::config::PROMQL_MAX_REPLY_BYTES_DEFAULT as usize,
+            max_subquery_steps: crate::config::PROMQL_MAX_SUBQUERY_STEPS_DEFAULT as u64,
             max_response_series: DEFAULT_MAX_UNIQUE_TIMESERIES,
             max_lookback: Duration::from_secs(60 * 60),
             set_lookback_to_step: false,

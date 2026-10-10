@@ -187,6 +187,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     request.param.as_ref().map(AggregationParam::to_expr_result),
                     to_eval_samples(samples),
                     ctx.evaluation_ts,
+                    &ctx.deadline,
                 )?
             }
         };

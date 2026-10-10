@@ -1,3 +1,4 @@
+pub(crate) mod admission;
 #[cfg(test)]
 mod counting_query_reader;
 pub mod derived_filters;
@@ -71,6 +72,15 @@ pub struct QueryOptions {
     pub db: i32,
     /// Set once the client that sent the query disconnects; checked wherever the deadline is.
     pub cancel: CancelToken,
+    /// The process-wide sample limit this query's budget also counts toward
+    /// (`ts-promql-max-samples-in-flight`). 0 = unlimited.
+    pub max_samples_in_flight: usize,
+    /// Stop the query while memory use is at or past this percentage of `maxmemory`
+    /// (`ts-promql-max-memory-percent`); checked wherever the deadline is. 0 = never.
+    pub max_memory_percent: u32,
+    /// The most subquery steps the query may evaluate in all
+    /// (`ts-promql-max-subquery-steps`); see `check_subquery_cost`. 0 = unlimited.
+    pub max_subquery_steps: u64,
 }
 
 impl Default for QueryOptions {
@@ -97,6 +107,9 @@ impl Default for QueryOptions {
             derived_filter_pushdown: config.derived_filter_pushdown,
             db: 0,
             cancel: CancelToken::default(),
+            max_samples_in_flight: config.max_samples_in_flight,
+            max_memory_percent: config.max_memory_percent,
+            max_subquery_steps: config.max_subquery_steps,
         }
     }
 }

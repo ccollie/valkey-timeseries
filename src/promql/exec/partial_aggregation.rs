@@ -23,6 +23,7 @@
 use crate::common::math::kahan_inc;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::{AggregationParam, GridAggregation};
 use crate::promql::exec::aggregations::{
     AggregationKind, PushdownStrategy, apply_aggregation, max_ignore_nan, min_ignore_nan,
@@ -503,6 +504,10 @@ impl SteppedSelection {
                 .map(AggregationParam::to_expr_result),
             samples,
             step_ts,
+            // Shared by a shard's push-down and the coordinator's merge of it: the
+            // shard's reads stop at its requester's budget, the coordinator's query
+            // at its own deadline checks.
+            &Deadline::default(),
         )
     }
 
@@ -574,7 +579,10 @@ mod tests {
         modifier: Option<&LabelModifier>,
         samples: Vec<EvalSample>,
     ) -> Vec<(EvalLabels, f64)> {
-        sorted(apply_aggregation(kind, modifier, None, samples, EVAL_TS).unwrap())
+        sorted(
+            apply_aggregation(kind, modifier, None, samples, EVAL_TS, &Deadline::default())
+                .unwrap(),
+        )
     }
 
     fn sorted(samples: Vec<EvalSample>) -> Vec<(EvalLabels, f64)> {

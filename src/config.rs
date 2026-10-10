@@ -173,6 +173,13 @@ const PROMQL_MAX_SAMPLES_PER_QUERY_MIN: i64 = 0;
 const PROMQL_MAX_SAMPLES_PER_QUERY_MAX: i64 = i64::MAX;
 /// Prometheus' `--query.max-samples` default. 0 = unlimited.
 pub const PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT: i64 = 50_000_000;
+// Four queries at the per-query default: two would leave six of the eight workers unable to
+// run a large query at all. 0 = unlimited.
+pub const PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT: i64 = 4 * PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT;
+pub const PROMQL_MAX_MEMORY_PERCENT_DEFAULT: i64 = 90;
+pub const PROMQL_MAX_REPLY_BYTES_DEFAULT: i64 = 256 * 1024 * 1024;
+// See `check_subquery_cost` for why 20 million. 0 = unlimited.
+pub const PROMQL_MAX_SUBQUERY_STEPS_DEFAULT: i64 = 20_000_000;
 const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
 const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
@@ -581,6 +588,11 @@ static PROMQL_MAX_POINTS_PER_TIMESERIES: AtomicI64 =
     AtomicI64::new(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT);
 static PROMQL_MAX_SAMPLES_PER_QUERY: AtomicI64 =
     AtomicI64::new(PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT);
+static PROMQL_MAX_SAMPLES_IN_FLIGHT: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT);
+static PROMQL_MAX_MEMORY_PERCENT: AtomicI64 = AtomicI64::new(PROMQL_MAX_MEMORY_PERCENT_DEFAULT);
+static PROMQL_MAX_REPLY_BYTES: AtomicI64 = AtomicI64::new(PROMQL_MAX_REPLY_BYTES_DEFAULT);
+static PROMQL_MAX_SUBQUERY_STEPS: AtomicI64 = AtomicI64::new(PROMQL_MAX_SUBQUERY_STEPS_DEFAULT);
 static PROMQL_SET_LOOKBACK_TO_STEP: AtomicBool = AtomicBool::new(false);
 static PROMQL_OPTIMIZE_QUERIES: AtomicBool = AtomicBool::new(false);
 static PROMQL_DERIVED_FILTER_PUSHDOWN: AtomicBool = AtomicBool::new(true);
@@ -997,6 +1009,22 @@ fn read_promql_max_points_per_timeseries() -> ConfigValue {
 
 fn read_promql_max_samples_per_query() -> ConfigValue {
     ConfigValue::Integer(PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed))
+}
+
+fn read_promql_max_samples_in_flight() -> ConfigValue {
+    ConfigValue::Integer(PROMQL_MAX_SAMPLES_IN_FLIGHT.load(Ordering::Relaxed))
+}
+
+fn read_promql_max_memory_percent() -> ConfigValue {
+    ConfigValue::Integer(PROMQL_MAX_MEMORY_PERCENT.load(Ordering::Relaxed))
+}
+
+fn read_promql_max_subquery_steps() -> ConfigValue {
+    ConfigValue::Integer(PROMQL_MAX_SUBQUERY_STEPS.load(Ordering::Relaxed))
+}
+
+fn read_promql_max_reply_bytes() -> ConfigValue {
+    ConfigValue::Integer(PROMQL_MAX_REPLY_BYTES.load(Ordering::Relaxed))
 }
 
 fn read_promql_set_lookback_to_step() -> ConfigValue {
@@ -1448,6 +1476,62 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
+        name: "ts-promql-max-samples-in-flight",
+        read: read_promql_max_samples_in_flight,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT),
+        min: Some(ConfigValue::Integer(0)),
+        max: Some(ConfigValue::Integer(i64::MAX)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Maximum samples all running PromQL queries, and the shard reads this node serves for them, may hold together (0 = unlimited)",
+        storage: ConfigStorage::I64 {
+            cell: || &PROMQL_MAX_SAMPLES_IN_FLIGHT,
+            validate: None,
+        },
+    },
+    ConfigDesc {
+        name: "ts-promql-max-memory-percent",
+        read: read_promql_max_memory_percent,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(PROMQL_MAX_MEMORY_PERCENT_DEFAULT),
+        min: Some(ConfigValue::Integer(0)),
+        max: Some(ConfigValue::Integer(100)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Refuse and stop PromQL queries while used memory is at or past this percentage of maxmemory (0 = never; no effect without maxmemory)",
+        storage: ConfigStorage::I64 {
+            cell: || &PROMQL_MAX_MEMORY_PERCENT,
+            validate: None,
+        },
+    },
+    ConfigDesc {
+        name: "ts-promql-max-reply-bytes",
+        read: read_promql_max_reply_bytes,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(PROMQL_MAX_REPLY_BYTES_DEFAULT),
+        min: Some(ConfigValue::Integer(0)),
+        max: Some(ConfigValue::Integer(i64::MAX)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Maximum estimated size, in bytes, of a PromQL query's reply (0 = unlimited)",
+        storage: ConfigStorage::I64 {
+            cell: || &PROMQL_MAX_REPLY_BYTES,
+            validate: None,
+        },
+    },
+    ConfigDesc {
+        name: "ts-promql-max-subquery-steps",
+        read: read_promql_max_subquery_steps,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(PROMQL_MAX_SUBQUERY_STEPS_DEFAULT),
+        min: Some(ConfigValue::Integer(0)),
+        max: Some(ConfigValue::Integer(i64::MAX)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Maximum subquery steps one PromQL query may evaluate in all, nesting multiplied through (0 = unlimited)",
+        storage: ConfigStorage::I64 {
+            cell: || &PROMQL_MAX_SUBQUERY_STEPS,
+            validate: None,
+        },
+    },
+    ConfigDesc {
         name: "ts-promql-lookback-delta",
         read: read_promql_lookback_delta,
         kind: ConfigType::Duration,
@@ -1704,6 +1788,10 @@ fn sync_promql_config() {
         cfg.max_points_per_timeseries =
             PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
         cfg.max_samples_per_query = PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed) as usize;
+        cfg.max_samples_in_flight = PROMQL_MAX_SAMPLES_IN_FLIGHT.load(Ordering::Relaxed) as usize;
+        cfg.max_memory_percent = PROMQL_MAX_MEMORY_PERCENT.load(Ordering::Relaxed) as u32;
+        cfg.max_reply_bytes = PROMQL_MAX_REPLY_BYTES.load(Ordering::Relaxed) as usize;
+        cfg.max_subquery_steps = PROMQL_MAX_SUBQUERY_STEPS.load(Ordering::Relaxed) as u64;
         cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
         cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
         cfg.derived_filter_pushdown = PROMQL_DERIVED_FILTER_PUSHDOWN.load(Ordering::Relaxed);
@@ -1787,6 +1875,10 @@ mod tests {
         ("ts-promql-max-response-series", "1000"),
         ("ts-promql-max-points-per-timeseries", "0"),
         ("ts-promql-max-samples-per-query", "50000000"),
+        ("ts-promql-max-samples-in-flight", "200000000"),
+        ("ts-promql-max-memory-percent", "90"),
+        ("ts-promql-max-reply-bytes", "268435456"),
+        ("ts-promql-max-subquery-steps", "20000000"),
         ("ts-promql-lookback-delta", "300000"),
         ("ts-promql-max-lookback", "3600000"),
         ("ts-promql-max-query-duration", "30000"),

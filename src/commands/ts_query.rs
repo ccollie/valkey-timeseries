@@ -3,7 +3,7 @@ use crate::commands::promql_utils::{get_promql_querier, reply_with_query_value};
 use crate::common::context::get_current_db;
 use crate::common::time::system_time_to_millis;
 use crate::promql::engine::query_workers::submit_evaluation;
-use crate::promql::engine::{QueryOptions, evaluate_instant, promql_config};
+use crate::promql::engine::{QueryOptions, admission, evaluate_instant, promql_config};
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
@@ -40,6 +40,7 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     options.db = get_current_db(ctx);
 
     let eval_ts = statement.start();
+    let max_reply_bytes = promql_config.max_reply_bytes;
     let querier = get_promql_querier(ctx, hash_tags);
     // The query text is parsed on the query worker, not here: see `submit_evaluation`.
     submit_evaluation(
@@ -48,7 +49,10 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         move || statement.parse(),
         move |eval_stmt, cancel| {
             let options = QueryOptions { cancel, ..options };
-            evaluate_instant(querier, eval_stmt, eval_ts, options)
+            let value = evaluate_instant(querier, eval_stmt, eval_ts, options)?;
+            // Before any of it is written: the server buffers a client's reply whatever its size.
+            admission::check_reply_size(admission::estimate_reply_bytes(&value), max_reply_bytes)?;
+            Ok(value)
         },
         move |ctx, result| {
             reply_with_query_value(ctx, result, system_time_to_millis(eval_ts));

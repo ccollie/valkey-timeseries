@@ -5,10 +5,11 @@ use crate::common::Timestamp;
 use crate::common::logging::log_debug;
 use crate::common::threads::join;
 use crate::common::threads::{IntoParRayon, ParCollectionRayon};
-use crate::common::time::{current_time_millis, system_time_to_millis};
+use crate::common::time::system_time_to_millis;
 use crate::promql::binops::{
     can_push_down_common_filters, ensure_unique_labelsets, eval_binary_expr, push_down_filters,
 };
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationParam, AggregationRequest, GridAggregation, GridOutcome,
     GridRequest, GridRollup,
@@ -45,7 +46,6 @@ use crate::promql::types::{PreloadedInstantData, PreloadedInstantSeries};
 use crate::promql::utils::{check_subquery_steps, subquery_step_ms};
 use crate::promql::{
     EvalResult, EvalSample, EvalSamples, EvaluationError, ExprResult, InstantSample, PreloadMap,
-    QueryError,
 };
 use ahash::AHashSet;
 use orx_parallel::Par;
@@ -144,14 +144,10 @@ fn node_addr<T>(node: &T) -> usize {
     node as *const T as usize
 }
 
-/// Errors that end the query rather than downgrade a best-effort preload: a
-/// passed deadline, or a sample budget already spent (it only grows, so every
-/// later read would be refused too).
+/// Errors that end the query rather than downgrade a best-effort preload: see
+/// [`QueryError::ends_query`].
 fn is_query_ending(err: &EvaluationError) -> bool {
-    matches!(
-        err,
-        EvaluationError::Query(QueryError::Timeout | QueryError::TooManySamples { .. })
-    )
+    matches!(err, EvaluationError::Query(err) if err.ends_query())
 }
 
 pub(crate) struct Evaluator<'reader, R: QueryReader + ?Sized> {
@@ -190,7 +186,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Self::with_prepared(
             reader,
             options,
-            PreparedQuery::sharing(Arc::new(SampleBudget::new(options.max_samples))),
+            PreparedQuery::sharing(Arc::new(SampleBudget::counted(
+                options.max_samples,
+                options.max_samples_in_flight,
+            ))),
         )
     }
 
@@ -360,20 +359,16 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
     }
 
-    /// Fail fast once the query deadline has passed, or its client has gone,
-    /// so a preload phase that issues several requests stops scheduling more
-    /// of them.
+    /// Fail fast once the query deadline has passed, its client has gone, or the
+    /// server's memory use is past `ts-promql-max-memory-percent`, so a preload
+    /// phase that issues several requests stops scheduling more of them.
     fn check_deadline(&self) -> EvalResult<()> {
-        if self.options.cancel.is_cancelled() {
-            return Err(EvaluationError::Query(QueryError::Cancelled));
-        }
-        if let Some(deadline) = self.options.deadline
-            && deadline > 0
-            && current_time_millis() > deadline
-        {
-            return Err(EvaluationError::Query(QueryError::Timeout));
-        }
-        Ok(())
+        Ok(self.deadline().check()?)
+    }
+
+    /// The query's [`Deadline`], as the kernels see it through their context.
+    fn deadline(&self) -> Deadline {
+        Deadline::from_options(&self.options)
     }
 
     pub(crate) fn evaluate(&self, stmt: EvalStmt) -> EvalResult<ExprResult> {
@@ -390,6 +385,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             evaluation_ts: system_time_to_millis(stmt.end),
             lookback_delta_ms: duration_ms(stmt.lookback_delta),
             step_ms: duration_ms(stmt.interval),
+            deadline: Default::default(),
         };
 
         self.evaluate_with_context(&stmt.expr, ctx)
@@ -400,6 +396,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         expr: &Expr,
         ctx: EvalContext,
     ) -> EvalResult<ExprResult> {
+        // Every evaluation passes through here — each step, each subquery step — so
+        // this is where the context picks up the deadline its kernels check.
+        let ctx = EvalContext {
+            deadline: self.deadline(),
+            ..ctx
+        };
         let mut result = self.evaluate_expr(expr, &ctx, true)?;
 
         // Deferred __name__ cleanup (mirrors Prometheus cleanupMetricLabels)
@@ -904,7 +906,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // Use the evaluation_ts time as the timestamp for the aggregated result
         let timestamp_ms = ctx.evaluation_ts;
 
-        eval_aggregation(aggregate, samples, param, timestamp_ms)
+        eval_aggregation(aggregate, samples, param, timestamp_ms, &ctx.deadline)
     }
 }
 

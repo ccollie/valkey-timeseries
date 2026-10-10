@@ -5,6 +5,7 @@ use crate::common::threads::IntoParRayon;
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::EvalSample;
+use crate::promql::engine::admission;
 use crate::promql::engine::label_profile::{LabelProfile, LabelProfileBuilder};
 use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
@@ -39,6 +40,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
     max_series: u64,
     _max_points_per_series: u64,
 ) -> ValkeyResult<InstantQueryResponse> {
+    check_local_memory()?;
     // in prometheus, given a timestamp and delta, we select the latest sample in the range
     // (ts - delta, ts], so we need to adjust the timestamp accordingly
     let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
@@ -97,6 +99,7 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
     lookback_delta: u64,
     max_series: u64,
 ) -> ValkeyResult<Vec<EvalSample>> {
+    check_local_memory()?;
     // Prometheus selects the latest sample in (ts - delta, ts].
     let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
 
@@ -145,6 +148,7 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
     selector: SeriesSelector,
     max_series: usize,
 ) -> ValkeyResult<Option<LabelProfile>> {
+    check_local_memory()?;
     let mut builder = LabelProfileBuilder::new();
     let mut matched = 0usize;
     let mut overflow = false;
@@ -268,11 +272,12 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     max_points_per_series: u64,
     mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>),
 ) -> ValkeyResult<()> {
+    check_local_memory()?;
     let Some((start_time, end_time)) = grid_fetch_bounds(window_ends, backward_ms) else {
         return Ok(());
     };
 
-    let budget = SampleBudget::new(local_max_samples());
+    let budget = local_budget();
     let mut bounds = WindowBounds::new(max_series, max_points_per_series);
     for_each_snapshot_batch(
         src,
@@ -315,12 +320,20 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     bounds.finish().map_err(valkey_module::ValkeyError::String)
 }
 
-/// This node's `ts-promql-max-samples-per-query`, applied to the reads it
-/// performs on another node's behalf.
-fn local_max_samples() -> usize {
-    // Not `unwrap_or(0)` on a poisoned lock: 0 means unlimited, so a poisoned
-    // lock would have lifted this node's sample budget.
-    promql_config().max_samples_per_query
+/// The sample budget for a read this node performs on another node's behalf: this node's
+/// `ts-promql-max-samples-per-query`, counted toward its `ts-promql-max-samples-in-flight`,
+/// since the read's samples are held here for as long as it runs.
+fn local_budget() -> SampleBudget {
+    let config = promql_config();
+    SampleBudget::counted(config.max_samples_per_query, config.max_samples_in_flight)
+}
+
+/// Fail if this node's memory use is at or past its `ts-promql-max-memory-percent`, before
+/// a read on another node's behalf starts.
+fn check_local_memory() -> ValkeyResult<()> {
+    let limit = promql_config().max_memory_percent;
+    admission::check_memory(limit)
+        .map_err(|err| valkey_module::ValkeyError::String(err.to_string()))
 }
 
 /// The query limits on a shard's grid windows, applied as batches of them are
@@ -405,11 +418,12 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
     max_series: u64,
     max_points_per_series: u64,
 ) -> ValkeyResult<RangeQueryResponse> {
+    check_local_memory()?;
     let max_points = points_limit(max_points_per_series);
     // This shard's own `ts-promql-max-samples-per-query`: the request does not
     // carry the coordinator's budget, and one node's share of a query should
     // not exceed what that node would allow a query of its own.
-    let budget = SampleBudget::new(local_max_samples());
+    let budget = local_budget();
     let mut ranges = Vec::new();
     // The storage label set itself, not an evaluator copy: the symbol table
     // below interns by identity.

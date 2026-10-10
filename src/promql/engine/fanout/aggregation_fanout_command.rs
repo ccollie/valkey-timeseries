@@ -25,6 +25,7 @@ use crate::fanout::{
     get_cluster_command_timeout, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::query_utils::local_instant_eval_samples;
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
@@ -183,6 +184,8 @@ impl AggregationFanoutCommand {
                     param.as_ref().map(AggregationParam::to_expr_result),
                     candidates,
                     eval_time,
+                    // The coordinator's merge: its query checks its own deadline.
+                    &Deadline::default(),
                 )
             }
             PushdownStrategy::CountValues => {
@@ -195,6 +198,7 @@ impl AggregationFanoutCommand {
                         param.as_ref().map(AggregationParam::to_expr_result),
                         raw,
                         eval_time,
+                        &Deadline::default(),
                     )?);
                 }
                 Ok(merge_count_values(counts))
@@ -277,9 +281,16 @@ impl FanoutCommand for AggregationFanoutCommand {
                 let param = aggregation_param_from_wire(req.scalar_param, req.label_param)
                     .as_ref()
                     .map(AggregationParam::to_expr_result);
-                let aggregated =
-                    apply_aggregation(kind, modifier.as_ref(), param, samples, req.eval_timestamp)
-                        .map_err(|e| ValkeyError::String(e.to_string()))?;
+                let aggregated = apply_aggregation(
+                    kind,
+                    modifier.as_ref(),
+                    param,
+                    samples,
+                    req.eval_timestamp,
+                    // A shard's share: its reads already stop at the requester's budget.
+                    &Deadline::default(),
+                )
+                .map_err(|e| ValkeyError::String(e.to_string()))?;
                 Ok(samples_response(aggregated, true))
             }
         }
@@ -481,8 +492,15 @@ mod tests {
                     .param
                     .as_ref()
                     .map(AggregationParam::to_expr_result);
-                let aggregated =
-                    apply_aggregation(kind, modifier, param, samples, EVAL_TS).unwrap();
+                let aggregated = apply_aggregation(
+                    kind,
+                    modifier,
+                    param,
+                    samples,
+                    EVAL_TS,
+                    &Deadline::default(),
+                )
+                .unwrap();
                 samples_response(aggregated, true)
             }
         }
@@ -515,6 +533,7 @@ mod tests {
                 param,
                 samples,
                 EVAL_TS,
+                &Deadline::default(),
             )
             .unwrap(),
         )

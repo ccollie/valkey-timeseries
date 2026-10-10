@@ -183,6 +183,11 @@ pub const PROMQL_MAX_POINTS_PER_SERIES_ERROR: &str =
     "the query returns a series with more points than the configured max points per series limit";
 pub const PROMQL_TOO_MANY_SAMPLES_ERROR: &str =
     "query processing would load too many samples into memory";
+/// The node refuses PromQL work for load, not for anything the query asked: all running
+/// queries together hold `ts-promql-max-samples-in-flight` samples, or the server's memory
+/// use is past `ts-promql-max-memory-percent` of `maxmemory`. Retrying later can succeed.
+pub const PROMQL_OVERLOADED_ERROR: &str = "PromQL query refused while the node is overloaded";
+pub const PROMQL_REPLY_TOO_LARGE_ERROR: &str = "the query's reply would be too large";
 
 // TS.QUERYLABELS
 pub const UNKNOWN_QUERY_LABELS_SUBTYPE: &str =

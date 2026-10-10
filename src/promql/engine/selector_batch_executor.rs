@@ -1013,6 +1013,13 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
                 read.fail(QueryError::Cancelled);
                 return false;
             }
+            // Memory past the limit: the next hold would add to it.
+            if let Err(err) =
+                crate::promql::engine::admission::check_memory(read.options.max_memory_percent)
+            {
+                read.fail(err);
+                return false;
+            }
             true
         });
         if !reads.is_empty() {

@@ -31,6 +31,13 @@ impl From<FanoutError> for QueryError {
             // evaluator ends the query at once, as for a local read, instead of falling back
             // to per-step reads that the shards would refuse one by one.
             ErrorKind::QueryLimit => too_many_samples_from_message(&value.message)
+                .or_else(|| {
+                    // A shard refusing for load ends the query too, with the shard's words.
+                    value
+                        .message
+                        .starts_with(error_consts::PROMQL_OVERLOADED_ERROR)
+                        .then(|| QueryError::Overloaded(value.message.clone()))
+                })
                 .unwrap_or_else(|| QueryError::Execution(value.to_string())),
             _ => QueryError::Execution(value.to_string()),
         }

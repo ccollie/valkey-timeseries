@@ -5,7 +5,7 @@
 //! memory section to walk the term dictionary.
 
 use crate::common::string_interner::InternedString;
-use crate::promql::engine::query_workers;
+use crate::promql::engine::{admission, query_workers};
 use crate::series::index::index_memory_usage;
 use valkey_module::{InfoContext, ValkeyResult};
 use valkey_module_macros::info_command_handler;
@@ -59,7 +59,9 @@ fn memory_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
 /// `queries_running` is at most `ts-promql-max-concurrent-queries`; `queries_queued` is
 /// at most `ts-promql-max-queued-queries`. `queries_rejected` counts, since startup, the
 /// queries refused on arrival because the backlog was full, and `queries_cancelled` those
-/// abandoned, queued or running, because their client disconnected. A non-zero, growing
+/// abandoned, queued or running, because their client disconnected. `samples_in_flight` is
+/// what running queries and the shard reads served for them hold against
+/// `ts-promql-max-samples-in-flight`. A non-zero, growing
 /// `queries_queued` with `queries_rejected` climbing is the pool being overrun: either the
 /// queries are too slow or there are too few workers for the load.
 #[info_command_handler]
@@ -72,6 +74,7 @@ fn promql_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
         .field("queries_queued", pool.queued as u64)?
         .field("queries_rejected", pool.rejected)?
         .field("queries_cancelled", query_workers::cancelled_count())?
+        .field("samples_in_flight", admission::samples_in_flight() as u64)?
         .build_section()?
         .build_info()?;
 

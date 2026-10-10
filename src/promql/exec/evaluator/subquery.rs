@@ -234,6 +234,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // evaluation, not the grid — the grid lives in the preloaded data,
             // which carries its own `eval_start_ms`/`step_ms`.
             step_ms: 0,
+            deadline: ctx.deadline,
         };
 
         // Preload-eligible against *this* evaluator's maps, which cover the

@@ -35,6 +35,7 @@ use crate::common::threads::{
 use crate::common::time::current_time_millis;
 use crate::config::{max_concurrent_queries, max_queued_queries};
 use crate::error_consts;
+use crate::promql::engine::{admission, promql_config};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
@@ -114,6 +115,10 @@ where
     if is_blocking_denied(ctx) {
         return Err(ValkeyError::Str(error_consts::PROMQL_BLOCKING_NOT_ALLOWED));
     }
+    // A fresh sample: this is the main thread, and the cron's may be a tick old.
+    admission::sample_memory();
+    admission::check_memory(promql_config().max_memory_percent)
+        .map_err(|err| ValkeyError::String(err.to_string()))?;
     let slot = QUERY_WORKERS
         .try_reserve()
         .map_err(|rejected| ValkeyError::String(format!("TSDB: {}", rejection(rejected))))?;

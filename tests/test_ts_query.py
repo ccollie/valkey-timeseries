@@ -809,7 +809,8 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
 
 
 # About 22 s on an Apple M2 (release build), under the 30 s maximum query duration: three
-# nested one-second subquery grids of 421 steps each, 75 million evaluations of the leaf.
+# nested one-second subquery grids of 421 steps each, 75 million evaluations of the leaf. Over
+# the default ts-promql-max-subquery-steps, so the class that runs it lifts that limit.
 SLOW_QUERY = ('max_over_time(max_over_time(max_over_time('
               '(label_replace(vector(1), "a", "b", "", ""))[7m:1s])[7m:1s])[7m:1s])')
 
@@ -820,7 +821,9 @@ class TestQueryCancellation(ValkeyTimeSeriesTestCaseBase):
     reply the server then discarded, holding a worker the whole time. One worker, so a
     second query really queues."""
 
-    MODULE_ARGS = "ts-promql-max-concurrent-queries 1"
+    # The slow query is 75 million subquery steps, past ts-promql-max-subquery-steps' default:
+    # these tests need it to run, not to be refused up front.
+    MODULE_ARGS = "ts-promql-max-concurrent-queries 1 ts-promql-max-subquery-steps 0"
 
     def _pool(self) -> dict:
         info = self.client.info('ts_promql')
@@ -866,3 +869,88 @@ class TestQueryCancellation(ValkeyTimeSeriesTestCaseBase):
         pool = self._wait_for(lambda p: p['running'] == 0 and p['queued'] == 0, 3,
                               "a query outlived its client")
         assert pool['cancelled'] == 2, pool
+
+
+class TestQueryAdmission(ValkeyTimeSeriesTestCaseBase):
+    """Limits on what all PromQL queries on a node may take together, which no per-query
+    limit sees: the samples running queries hold, the server's memory use against
+    maxmemory, and the size of a reply before any of it is written."""
+
+    def _set(self, name, value):
+        self.client.execute_command('CONFIG', 'SET', name, value)
+
+    def _series(self, count: int, samples: int):
+        pipe = self.client.pipeline(transaction=False)
+        for i in range(count):
+            for t in range(samples):
+                pipe.execute_command('TS.ADD', f'adm:{i}', 1000 + t * 1000, t,
+                                     'LABELS', '__name__', 'adm', 'i', str(i))
+        pipe.execute()
+
+    def _in_flight(self) -> int:
+        return self.client.info('ts_promql')['ts_samples_in_flight']
+
+    def test_samples_held_by_all_queries_are_bounded(self):
+        self._series(1, 2000)
+        query = ('TS.QUERY', 'adm[1h]', 'TIME', '2000')
+        try:
+            self._set('ts.ts-promql-max-samples-in-flight', '100')
+            with pytest.raises(ResponseError, match='ts-promql-max-samples-in-flight'):
+                self.client.execute_command(*query)
+            assert self._in_flight() == 0, "a refused query gives back what it charged"
+
+            self._set('ts.ts-promql-max-samples-in-flight', '0')
+            result = QueryResult.from_raw(self.client.execute_command(*query))
+            assert len(result.result[0].values) == 2000
+            assert self._in_flight() == 0, "a finished query gives back what it charged"
+        finally:
+            self._set('ts.ts-promql-max-samples-in-flight', '200000000')
+
+    def test_queries_are_refused_while_memory_is_past_the_limit(self):
+        self._series(1, 10)
+        query = ('TS.QUERY', 'adm', 'TIME', '5')
+        try:
+            # Without maxmemory the ratio is 0: the limit never refuses.
+            self._set('ts.ts-promql-max-memory-percent', '1')
+            assert self.client.execute_command(*query)
+
+            # A fresh server uses well over 1 % of 64 MB.
+            self._set('maxmemory', str(64 * 1024 * 1024))
+            with pytest.raises(ResponseError, match='% of maxmemory'):
+                self.client.execute_command(*query)
+
+            self._set('ts.ts-promql-max-memory-percent', '0')
+            assert self.client.execute_command(*query)
+        finally:
+            self._set('maxmemory', '0')
+            self._set('ts.ts-promql-max-memory-percent', '90')
+
+    def test_a_reply_past_the_size_limit_is_refused_before_it_is_written(self):
+        self._series(50, 1)
+        try:
+            self._set('ts.ts-promql-max-reply-bytes', '1000')
+            with pytest.raises(ResponseError, match='ts-promql-max-reply-bytes'):
+                self.client.execute_command('TS.QUERY', 'adm', 'TIME', '1')
+            # One series is well under it.
+            assert self.client.execute_command('TS.QUERY', 'adm{i="7"}', 'TIME', '1')
+            with pytest.raises(ResponseError, match='ts-promql-max-reply-bytes'):
+                self.client.execute_command('TS.QUERYRANGE', 'adm', 'START', '1000',
+                                            'END', '1000', 'STEP', '1s')
+        finally:
+            self._set('ts.ts-promql-max-reply-bytes', '268435456')
+
+    def test_subquery_steps_are_bounded_by_the_parameter(self):
+        """ts-promql-max-subquery-steps bounds the subquery steps a query evaluates, nesting
+        multiplied through, before any of them run. This one is 601 x 3,601 = 2.2 million."""
+        query = ('TS.QUERY', 'max_over_time(max_over_time(vector(1)[1h:1s])[10m:1s])', 'TIME', '100000')
+        try:
+            assert self.client.execute_command(*query), "under the 20 million default"
+
+            self._set('ts.ts-promql-max-subquery-steps', '1000000')
+            with pytest.raises(ResponseError, match='ts-promql-max-subquery-steps'):
+                self.client.execute_command(*query)
+
+            self._set('ts.ts-promql-max-subquery-steps', '0')
+            assert self.client.execute_command(*query), "0 lifts the limit"
+        finally:
+            self._set('ts.ts-promql-max-subquery-steps', '20000000')

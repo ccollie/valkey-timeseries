@@ -351,7 +351,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     .insert(key, PreloadedMatrixData { series });
                 self.note_preloaded();
             }
-            Err(err @ QueryError::TooManySamples { .. }) => return Err(err.into()),
+            Err(err) if err.ends_query() => return Err(err.into()),
             Err(err) => {
                 log_debug(format!(
                     "matrix preload failed; falling back to per-step windows: {err}"
@@ -521,7 +521,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let outcome = match outcome {
             GridOutcome::Raw(series) => {
                 self.charge_range_samples(&series)?;
-                request.evaluate(series)?
+                request.evaluate(series, &self.deadline())?
             }
             GridOutcome::Rolled(series) => {
                 if charge_points {

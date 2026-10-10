@@ -138,7 +138,7 @@ pub fn evaluate_instant(
     opts: QueryOptions,
 ) -> Result<QueryValue, QueryError> {
     optimize_statement(&mut stmt, &opts, true)?;
-    check_subquery_cost(&stmt.expr, 1).map_err(QueryError::from)?;
+    check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = resolve_deadline_ms(opts);
     let evaluator = Evaluator::new(&reader, opts);
 
@@ -238,7 +238,8 @@ pub fn evaluate_range(
 
     let step_ms = duration_ms(step);
     // Every outer step evaluates each subquery in full.
-    check_subquery_cost(&stmt.expr, grid_step_count(start_ms, end_ms, step_ms))
+    let outer_steps = grid_step_count(start_ms, end_ms, step_ms);
+    check_subquery_cost(&stmt.expr, outer_steps, opts.max_subquery_steps)
         .map_err(QueryError::from)?;
     let lookback_delta_ms = duration_ms(lookback_delta);
     let range_ctx = crate::promql::EvalContext {
@@ -247,6 +248,7 @@ pub fn evaluate_range(
         evaluation_ts: end_ms,
         lookback_delta_ms,
         step_ms,
+        deadline: Default::default(),
     };
     // Before planning, so the tree that is preloaded and the tree that is
     // stepped over are the same narrowed one: see `derived_filters`.
@@ -272,6 +274,7 @@ pub fn evaluate_range(
         if opts.cancel.is_cancelled() {
             return Err(QueryError::Cancelled);
         }
+        crate::promql::engine::admission::check_memory(opts.max_memory_percent)?;
 
         let ctx = crate::promql::EvalContext {
             query_start: start_ms,
@@ -279,6 +282,7 @@ pub fn evaluate_range(
             evaluation_ts: t,
             lookback_delta_ms,
             step_ms,
+            deadline: Default::default(),
         };
 
         let result = evaluator

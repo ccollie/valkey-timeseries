@@ -3,6 +3,7 @@ use super::transport::*;
 use super::*;
 use crate::common::Timestamp;
 use crate::labels::{Label, Labels};
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::AggregationParam;
 use crate::promql::exec::aggregations::AggregationKind;
 use crate::promql::exec::pipeline::for_each_step_sample;
@@ -387,7 +388,7 @@ fn test_fanout_matches_single_node() {
     for shards in [test_shards(), dense_shards()] {
         let all: Vec<RangeSample<EvalLabels>> = shards.iter().flatten().cloned().collect();
         for (shape, request) in request_shapes() {
-            let want = rendered(request.evaluate(all.clone()).unwrap());
+            let want = rendered(request.evaluate(all.clone(), &Deadline::default()).unwrap());
 
             assert_eq!(want, rendered(fan_out(&request, &shards)), "{shape}");
 
@@ -458,7 +459,7 @@ fn test_stepped_selection_matches_the_step_loop_rule() {
         ]
     );
 
-    let got = rendered(request.evaluate(vec![input]).unwrap());
+    let got = rendered(request.evaluate(vec![input], &Deadline::default()).unwrap());
     assert_eq!(got, vec![("m{instance=\"0\"}".to_string(), want)]);
 }
 
@@ -500,7 +501,7 @@ fn test_modifiers_are_geometry() {
 }
 
 fn request_points(request: &GridRequest, input: RangeSample<EvalLabels>) -> Vec<Point> {
-    rendered(request.evaluate(vec![input]).unwrap())
+    rendered(request.evaluate(vec![input], &Deadline::default()).unwrap())
         .pop()
         .map(|(_, points)| points)
         .unwrap_or_default()
@@ -531,7 +532,7 @@ fn test_size_rule_ships_the_smaller_form() {
         rendered(cmd.into_result().unwrap()),
         rendered(
             request
-                .evaluate(vec![sparse.clone(), dense.clone()])
+                .evaluate(vec![sparse.clone(), dense.clone()], &Deadline::default())
                 .unwrap()
         ),
     );
@@ -552,7 +553,11 @@ fn test_size_rule_ships_the_smaller_form() {
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
         rendered(cmd.into_result().unwrap()),
-        rendered(fused.evaluate(vec![sparse, dense]).unwrap()),
+        rendered(
+            fused
+                .evaluate(vec![sparse, dense], &Deadline::default())
+                .unwrap()
+        ),
     );
 }
 
@@ -683,7 +688,11 @@ fn test_reduction_folds_a_sparse_group() {
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
             rendered(cmd.into_result().unwrap()),
-            rendered(request.evaluate(windows.clone()).unwrap()),
+            rendered(
+                request
+                    .evaluate(windows.clone(), &Deadline::default())
+                    .unwrap()
+            ),
             "{what}"
         );
     }
@@ -715,7 +724,11 @@ fn test_reduction_keeps_a_lone_sparse_series_raw() {
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
             rendered(cmd.into_result().unwrap()),
-            rendered(request.evaluate(vec![lone.clone()]).unwrap()),
+            rendered(
+                request
+                    .evaluate(vec![lone.clone()], &Deadline::default())
+                    .unwrap()
+            ),
             "{what}"
         );
     }
@@ -779,7 +792,7 @@ fn test_groups_decide_independently() {
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
         rendered(cmd.into_result().unwrap()),
-        rendered(request.evaluate(windows).unwrap()),
+        rendered(request.evaluate(windows, &Deadline::default()).unwrap()),
     );
 }
 
@@ -877,7 +890,7 @@ fn test_every_reduction_folds_sparse_groups_like_single_node() {
                     base.rollup.as_ref().map(|r| r.kind)
                 );
                 let request = fused_modifier(base.clone(), kind, modifier);
-                let want = rendered(request.evaluate(all.clone()).unwrap());
+                let want = rendered(request.evaluate(all.clone(), &Deadline::default()).unwrap());
 
                 let mut cmd = command(request.clone());
                 for (index, shard) in shards.iter().enumerate() {
@@ -1569,7 +1582,11 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
             assert!(split.raw.len() <= 1, "{what}: the sparse groups are folded");
         }
 
-        let want = rendered(request.evaluate(windows.clone()).unwrap());
+        let want = rendered(
+            request
+                .evaluate(windows.clone(), &Deadline::default())
+                .unwrap(),
+        );
         let mut cmd = command(request.clone());
         cmd.on_response(split, &node(7000)).unwrap();
         let got = rendered(cmd.into_result().unwrap());

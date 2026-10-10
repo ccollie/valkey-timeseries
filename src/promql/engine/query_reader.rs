@@ -1,6 +1,7 @@
 use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
 use crate::promql::EvalLabels;
+use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::label_profile::LabelProfile;
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSelection};
@@ -342,11 +343,41 @@ impl GridRequest {
     /// — a single node, which has nothing to push down to, or the series a
     /// shard chose to ship raw. It runs the same kernels a shard would, so the
     /// answer does not depend on who did the work.
+    ///
+    /// The series go through the per-series stage a chunk at a time, `deadline` checked
+    /// between chunks: one call over a whole span can be every series of a range query at
+    /// every step. A chunk is still evaluated in parallel, and the stage's loops over one
+    /// series' windows are left alone.
     pub(in crate::promql) fn evaluate(
         &self,
         series: Vec<RangeSample<EvalLabels>>,
+        deadline: &Deadline,
     ) -> PromqlResult<GridOutcome> {
-        let per_series = self.per_series(&self.window_ends(), series);
+        let window_ends = self.window_ends();
+        let mut per_series: Option<GridSeries> = None;
+        let mut pending = series.into_iter();
+        loop {
+            // Never `take_while`: it consumes, and drops, the series that ends a chunk.
+            let mut chunk = Vec::new();
+            let mut work = 0usize;
+            while work < EVALUATE_CHUNK_WORK {
+                let Some(s) = pending.next() else {
+                    break;
+                };
+                work += s.samples.len() + SERIES_WORK;
+                chunk.push(s);
+            }
+            if chunk.is_empty() {
+                break;
+            }
+            deadline.check()?;
+            let output = self.per_series(&window_ends, chunk);
+            match &mut per_series {
+                Some(done) => done.append(output),
+                None => per_series = Some(output),
+            }
+        }
+        let per_series = per_series.unwrap_or_else(|| self.per_series(&window_ends, Vec::new()));
         if self.aggregation.is_some() {
             return self
                 .group(per_series.into_step_values())
@@ -358,6 +389,10 @@ impl GridRequest {
         })
     }
 }
+
+/// Work, in samples (a series counting [`SERIES_WORK`]), that [`GridRequest::evaluate`] runs
+/// between two deadline checks: a few milliseconds of the per-series stage.
+const EVALUATE_CHUNK_WORK: usize = 1 << 20;
 
 /// The window ends a grid request describes, in ascending order.
 ///
@@ -603,5 +638,82 @@ pub(crate) mod test_utils {
         pub(crate) fn build(self) -> MemorySeriesQuerier {
             self.reader
         }
+    }
+}
+
+#[cfg(test)]
+mod evaluate_chunk_tests {
+    use super::*;
+    use crate::common::Sample;
+    use crate::common::time::current_time_millis;
+    use crate::promql::QueryOptions;
+
+    fn stepped_request() -> GridRequest {
+        GridRequest {
+            step_ms: 1_000,
+            query_start: 0,
+            query_end: 9_000,
+            range_end_ms: 9_000,
+            lookback_delta_ms: 300_000,
+            rollup: None,
+            aggregation: None,
+            sample_timestamps: false,
+        }
+    }
+
+    /// Enough series for two chunks: each costs `SERIES_WORK + 1`.
+    fn many_series() -> Vec<RangeSample<EvalLabels>> {
+        let count = EVALUATE_CHUNK_WORK / (SERIES_WORK + 1) + 10_000;
+        (0..count)
+            .map(|i| RangeSample {
+                labels: EvalLabels::from_pairs(&[("i", &i.to_string())]),
+                samples: vec![Sample::new(0, i as f64)],
+            })
+            .collect()
+    }
+
+    fn picks(outcome: GridOutcome) -> Vec<(String, usize)> {
+        let GridOutcome::Stepped(series) = outcome else {
+            panic!("a stepped request answers stepped");
+        };
+        series
+            .into_iter()
+            .map(|s| (s.labels.to_string(), s.points.len()))
+            .collect()
+    }
+
+    /// Chunking is invisible: every series comes out once, in order, exactly as from
+    /// one call over all of them.
+    #[test]
+    fn a_chunked_evaluation_matches_one_over_every_series() {
+        let request = stepped_request();
+        let series = many_series();
+        let whole = match request.per_series(&request.window_ends(), series.clone()) {
+            GridSeries::Stepped(series) => GridOutcome::Stepped(series),
+            GridSeries::Rolled(_) => unreachable!(),
+        };
+        let chunked = request
+            .evaluate(series.clone(), &Deadline::default())
+            .unwrap();
+        let (whole, chunked) = (picks(whole), picks(chunked));
+        assert_eq!(
+            chunked.len(),
+            series.len(),
+            "no series lost at a chunk boundary"
+        );
+        assert_eq!(chunked, whole);
+    }
+
+    #[test]
+    fn a_passed_deadline_stops_the_evaluation_between_chunks() {
+        let options = QueryOptions {
+            deadline: Some(current_time_millis() - 1),
+            ..QueryOptions::default()
+        };
+        let err = stepped_request()
+            .evaluate(many_series(), &Deadline::from_options(&options))
+            .err()
+            .expect("stopped at the first chunk");
+        assert!(matches!(err, crate::promql::QueryError::Timeout), "{err}");
     }
 }

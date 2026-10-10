@@ -195,6 +195,7 @@ query that would load more than `ts-promql-max-samples-per-query` samples (defau
 | `END` is before `START` | `TSDB: END must not be before START` |
 | `START` is in the future and `END` is omitted | `TSDB: START must not be after the current time (the default END)` |
 | The grid has more than 1,000,000 points | `execution error: PromQL argument error: too many points for the given step=..., start=... and end=...: <n>; cannot exceed 1000000` |
+| All subqueries together would evaluate more than `ts-promql-max-subquery-steps` steps | `execution error: PromQL argument error: subqueries would evaluate more than <limit> steps (ts-promql-max-subquery-steps); ...` |
 | The expression is a range vector or a string | `execution error: range vectors not supported in range query evaluation` (or `string expressions ...`) |
 | The expression does not parse | `TSDB: the query string could not be parsed or is otherwise invalid.` |
 | The expression is longer than `ts-promql-max-query-len` | `TSDB: query too long` |
@@ -203,6 +204,9 @@ query that would load more than `ts-promql-max-samples-per-query` samples (defau
 | Called inside `MULTI`, a script, or a context that cannot block | `TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context` |
 | More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>`, where `<n>` is the count at which the read stopped, not the total the selector matches |
 | The query ran past its `TIMEOUT` | `query timed out` |
+| All running queries would hold more than `ts-promql-max-samples-in-flight` samples | `PromQL query refused while the node is overloaded: PromQL queries would hold <n> > <limit> samples (ts-promql-max-samples-in-flight)` |
+| Memory use is at or past `ts-promql-max-memory-percent` of `maxmemory` | `PromQL query refused while the node is overloaded: memory use is <n>% of maxmemory, at or past ts-promql-max-memory-percent (<limit>%)` |
+| The reply would be larger than `ts-promql-max-reply-bytes` | `the query's reply would be too large: about <n> bytes > <limit> (ts-promql-max-reply-bytes)` |
 
 ---
 

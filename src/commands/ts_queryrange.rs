@@ -4,7 +4,7 @@ use crate::common::context::get_current_db;
 use crate::common::time::current_time_millis;
 use crate::promql::QueryValue;
 use crate::promql::engine::query_workers::submit_evaluation;
-use crate::promql::engine::{QueryOptions, evaluate_range, promql_config};
+use crate::promql::engine::{QueryOptions, admission, evaluate_range, promql_config};
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
@@ -43,6 +43,7 @@ pub fn ts_queryrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     // happens to have selected at the time the worker thread runs.
     options.db = get_current_db(ctx);
 
+    let max_reply_bytes = promql_config.max_reply_bytes;
     let querier = get_promql_querier(ctx, hash_tags);
     // The query text is parsed on the query worker, not here: see `submit_evaluation`.
     submit_evaluation(
@@ -51,7 +52,11 @@ pub fn ts_queryrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         move || statement.parse(),
         move |eval_stmt, cancel| {
             let options = QueryOptions { cancel, ..options };
-            evaluate_range(querier, eval_stmt, options)
+            let series = evaluate_range(querier, eval_stmt, options)?;
+            // Before any of it is written: the server buffers a client's reply whatever its size.
+            let bytes = admission::estimate_range_reply_bytes(&series);
+            admission::check_reply_size(bytes, max_reply_bytes)?;
+            Ok(series)
         },
         |ctx, result| {
             reply_with_query_value(ctx, QueryValue::Matrix(result), current_time_millis());

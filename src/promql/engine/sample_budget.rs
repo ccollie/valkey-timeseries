@@ -21,6 +21,7 @@
 //! no charge of its own: it ships a series raw whenever the grid would be the
 //! larger, so the expansion happens, and is charged, on the coordinator.
 
+use crate::promql::engine::admission::{charge_in_flight, release_in_flight};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,13 +30,29 @@ pub struct SampleBudget {
     /// 0 means unlimited.
     limit: usize,
     loaded: AtomicUsize,
+    /// The process-wide limit this budget also counts toward, if it does
+    /// ([`Self::counted`]); 0 for a budget that does not.
+    in_flight_limit: usize,
+    /// What this budget added to the process-wide count, given back when it is dropped.
+    in_flight: AtomicUsize,
 }
 
 impl SampleBudget {
+    /// A budget for one read or one query, counted against nothing else.
     pub fn new(limit: usize) -> Self {
+        Self::counted(limit, 0)
+    }
+
+    /// A budget that also counts toward the process-wide `ts-promql-max-samples-in-flight`
+    /// (`in_flight_limit`; 0 counts nothing). For a query's own budget and a shard read's:
+    /// the ones whose samples are held for the work's whole length. Not for a read whose
+    /// samples go on to a query budget that charges them again.
+    pub fn counted(limit: usize, in_flight_limit: usize) -> Self {
         Self {
             limit,
             loaded: AtomicUsize::new(0),
+            in_flight_limit,
+            in_flight: AtomicUsize::new(0),
         }
     }
 
@@ -47,7 +64,8 @@ impl SampleBudget {
         self.loaded.load(Ordering::Relaxed)
     }
 
-    /// Account for `samples` more; fails once the total exceeds the limit.
+    /// Account for `samples` more; fails once the total exceeds the limit, or, for a
+    /// counted budget, once every counted budget together exceeds the process-wide one.
     pub fn charge(&self, samples: usize) -> QueryResult<()> {
         let total = self
             .loaded
@@ -55,6 +73,11 @@ impl SampleBudget {
             .saturating_add(samples);
         if self.limit > 0 && total > self.limit {
             return Err(too_many_samples(total, self.limit));
+        }
+        if self.in_flight_limit > 0 && samples > 0 {
+            // Recorded before the check, so `Drop` gives back exactly what was added.
+            self.in_flight.fetch_add(samples, Ordering::Relaxed);
+            charge_in_flight(samples, self.in_flight_limit)?;
         }
         Ok(())
     }
@@ -71,6 +94,15 @@ impl SampleBudget {
     /// read that [`Self::charge`] would have admitted.
     pub fn check_ahead(&self, pending: usize) -> QueryResult<()> {
         validate_max_samples(self.loaded().saturating_add(pending), self.limit)
+    }
+}
+
+impl Drop for SampleBudget {
+    fn drop(&mut self) {
+        let held = *self.in_flight.get_mut();
+        if held > 0 {
+            release_in_flight(held);
+        }
     }
 }
 
@@ -120,6 +152,44 @@ mod tests {
         assert!(err.contains("11 > 10"), "{err}");
         assert_eq!(b.loaded(), 6, "a check charges nothing");
         assert!(SampleBudget::new(0).check_ahead(usize::MAX).is_ok());
+    }
+
+    /// Counted budgets share one process-wide total: two queries that each fit their own
+    /// budget are refused together, and a finished one gives its samples back.
+    #[test]
+    fn counted_budgets_share_the_process_wide_limit() {
+        use crate::promql::engine::admission::samples_in_flight;
+        // Unit tests share the process-wide count, so this checks what it adds and leaves
+        // behind rather than absolute values, and uses a limit far above anything else's.
+        let base = samples_in_flight();
+        let limit = base + 1_000_000_000;
+        let first = SampleBudget::counted(0, limit);
+        first.charge(700_000_000).unwrap();
+        let second = SampleBudget::counted(0, limit);
+        let err = second
+            .charge(400_000_000)
+            .expect_err("together past the limit");
+        assert!(matches!(err, QueryError::Overloaded(_)), "{err}");
+        assert!(
+            err.to_string().contains("ts-promql-max-samples-in-flight"),
+            "{err}"
+        );
+        assert!(err.ends_query());
+
+        drop(second);
+        drop(first);
+        assert!(
+            samples_in_flight() < base + 1_000,
+            "dropped budgets give their samples back"
+        );
+
+        let uncounted = SampleBudget::new(0);
+        uncounted.charge(5).unwrap();
+        assert_eq!(
+            uncounted.in_flight.load(Ordering::Relaxed),
+            0,
+            "a plain budget counts nothing"
+        );
     }
 
     #[test]
