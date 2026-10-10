@@ -427,7 +427,7 @@ impl GridRequest {
 
     /// The per-series stage's output over no series, of the kind this request
     /// produces.
-    fn empty_output(&self) -> GridSeries {
+    pub(in crate::promql) fn empty_output(&self) -> GridSeries {
         match self.rollup {
             Some(_) => GridSeries::Rolled(Vec::new()),
             None => GridSeries::Stepped(Vec::new()),

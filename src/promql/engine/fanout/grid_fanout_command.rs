@@ -30,6 +30,7 @@
 
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
+use crate::error_consts;
 use crate::fanout::{
     FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo,
     get_cluster_command_timeout, log_fanout_failure,
@@ -361,7 +362,7 @@ impl FanoutCommand for GridFanoutCommand {
             req.max_points_per_series,
             |windows| grid.add(windows),
         )?;
-        grid.finish()
+        grid.finish(|| ctx.expired())
     }
 
     fn get_timeout(&self) -> Duration {
@@ -591,7 +592,7 @@ fn shard_response(
 ) -> ValkeyResult<GridQueryResponse> {
     let mut grid = ShardGrid::new(request, window_ends);
     grid.add(windows);
-    grid.finish()
+    grid.finish(|| false)
 }
 
 /// A shard's grid response, built one batch of windows at a time so that the
@@ -604,6 +605,15 @@ fn shard_response(
 /// fused reduction decides per *group* whether they travel raw or join their
 /// group's partials, and a group is only complete once every batch is in.
 ///
+/// A promoted span is sparse, so its stage output can dwarf it: one sample in
+/// a long window answers at every step, and promotion is decided on wire
+/// bytes, which a group of many sparse members wins however much they expand.
+/// That output is never kept: under a fused reduction every staged series is
+/// folded into its group's partials as it is staged ([`Staged::Partials`]),
+/// promoted spans a chunk at a time ([`GridRequest::per_series_chunked`]). What
+/// outlives a chunk is the partials, which are the response itself, so nothing
+/// here needs charging beyond the raw samples the read charged.
+///
 /// Promoted spans are folded after the group's other members rather than in
 /// match order. Under a fused reduction that can move a sum in its last bits,
 /// as merging the shards' partials in arrival order already does.
@@ -611,17 +621,35 @@ pub(super) struct ShardGrid<'a> {
     request: &'a GridRequest,
     window_ends: &'a [i64],
     raw: Vec<RangeSample<EvalLabels>>,
-    staged: Option<GridSeries>,
+    staged: Staged,
     staged_groups: FingerprintHashSet,
+}
+
+/// What a shard keeps of the series it stages.
+enum Staged {
+    /// Their per-series output, which is what the response carries: for an
+    /// unfused request, or one fused with a selecting or counting operator
+    /// (which [`respond`] runs over all of it at once). Only series that
+    /// [`ships_raw`] keeps land here, so it is never larger than their spans.
+    Series(GridSeries),
+    /// The per-`(group, step)` partials of a fused reduction, folded into as
+    /// each series is staged: the per-series output is dropped once folded.
+    Partials(SteppedPartialGroups),
 }
 
 impl<'a> ShardGrid<'a> {
     pub(super) fn new(request: &'a GridRequest, window_ends: &'a [i64]) -> Self {
+        let staged = match request.aggregation.as_ref() {
+            Some(agg) if agg.strategy() == PushdownStrategy::Reduce => {
+                Staged::Partials(SteppedPartialGroups::new(agg.kind))
+            }
+            _ => Staged::Series(request.empty_output()),
+        };
         Self {
             request,
             window_ends,
             raw: Vec::new(),
-            staged: None,
+            staged,
             staged_groups: FingerprintHashSet::default(),
         }
     }
@@ -632,7 +660,7 @@ impl<'a> ShardGrid<'a> {
     /// samples the read already charged: a series is staged only when its span
     /// holds at least as many samples as there are steps ([`ships_raw`]), so
     /// its stage output is never the larger. A sparse series that would expand
-    /// travels raw, and the coordinator charges the grid it builds from it.
+    /// waits for [`Self::finish`], which ships it raw or folds it.
     pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) {
         let (raw, staged): (Vec<_>, Vec<_>) = windows
             .into_iter()
@@ -642,21 +670,20 @@ impl<'a> ShardGrid<'a> {
             self.request,
             staged.iter().map(|series| (series, &false)),
         ));
-        self.stage(staged);
-    }
-
-    fn stage(&mut self, series: Vec<RangeSample<EvalLabels>>) {
-        if series.is_empty() {
-            return;
-        }
-        let output = self.request.per_series(self.window_ends, series);
-        match &mut self.staged {
-            Some(staged) => staged.append(output),
-            None => self.staged = Some(output),
+        if !staged.is_empty() {
+            let output = self.request.per_series(self.window_ends, staged);
+            self.staged.take(self.request, output);
         }
     }
 
-    pub(super) fn finish(mut self) -> ValkeyResult<GridQueryResponse> {
+    /// The response, once every batch is in: the raw spans that stay raw, and
+    /// the promoted ones folded into their groups' partials.
+    ///
+    /// The promoted spans are staged a chunk at a time, `expired` asked after
+    /// each — whether the requester has stopped waiting, as between the read's
+    /// batches — so a large promotion neither holds its whole expansion nor
+    /// runs on for nobody.
+    pub(super) fn finish(mut self, expired: impl Fn() -> bool) -> ValkeyResult<GridQueryResponse> {
         let request = self.request;
         let window_ends = self.window_ends;
         let candidates = std::mem::take(&mut self.raw);
@@ -673,20 +700,43 @@ impl<'a> ShardGrid<'a> {
                 raw.push(series);
             }
         }
-        self.stage(folded);
-        let staged = self
-            .staged
-            .unwrap_or_else(|| request.per_series(window_ends, Vec::new()));
-        respond(request, window_ends, raw, staged)
+        let staged = &mut self.staged;
+        request
+            .per_series_chunked(window_ends, folded, &Deadline::default(), |output, _| {
+                staged.take(request, output);
+                if expired() {
+                    return Err(QueryError::Timeout);
+                }
+                Ok(())
+            })
+            .map_err(|_| ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP))?;
+        respond(request, window_ends, raw, self.staged)
     }
 }
 
-/// The wire response from a shard's raw spans and per-series stage output.
+impl Staged {
+    /// Keep one batch of per-series output: append it, or fold it into the
+    /// partials and drop it.
+    fn take(&mut self, request: &GridRequest, output: GridSeries) {
+        match self {
+            Staged::Series(series) => series.append(output),
+            Staged::Partials(partials) => {
+                let modifier = request
+                    .aggregation
+                    .as_ref()
+                    .and_then(|agg| agg.modifier.as_ref());
+                partials.accumulate(modifier, output.into_step_values());
+            }
+        }
+    }
+}
+
+/// The wire response from a shard's raw spans and what it staged.
 fn respond(
     request: &GridRequest,
     window_ends: &[i64],
     raw: Vec<RangeSample<EvalLabels>>,
-    staged: GridSeries,
+    staged: Staged,
 ) -> ValkeyResult<GridQueryResponse> {
     // One symbol table for every labelled element of the response.
     let mut symbols = SymbolTableBuilder::default();
@@ -694,6 +744,32 @@ fn respond(
         .into_iter()
         .map(|series| range_sample_to_proto(series, &mut symbols))
         .collect::<ValkeyResult<Vec<_>>>()?;
+
+    let staged = match staged {
+        Staged::Series(series) => series,
+        // A fused reduction: the partials were folded as the series were staged.
+        Staged::Partials(groups) => {
+            let partials = groups
+                .into_partials()
+                .map(|(step_ts, labels, state)| {
+                    let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
+                    GridGroupPartial {
+                        labels: Vec::new(),
+                        step_ts,
+                        state: Some(state.into()),
+                        label_name_refs,
+                        label_value_refs,
+                    }
+                })
+                .collect();
+            return Ok(GridQueryResponse {
+                series: Vec::new(),
+                partials,
+                raw,
+                labels: Some(symbols.finish()),
+            });
+        }
+    };
 
     if let Some(aggregation) = request.aggregation.as_ref()
         && aggregation.strategy() != PushdownStrategy::Reduce
@@ -712,30 +788,6 @@ fn respond(
                 raw,
                 labels: Some(symbols.finish()),
             });
-    }
-
-    if let Some(aggregation) = request.aggregation.as_ref() {
-        let mut groups = SteppedPartialGroups::new(aggregation.kind);
-        groups.accumulate(aggregation.modifier.as_ref(), staged.into_step_values());
-        let partials = groups
-            .into_partials()
-            .map(|(step_ts, labels, state)| {
-                let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
-                GridGroupPartial {
-                    labels: Vec::new(),
-                    step_ts,
-                    state: Some(state.into()),
-                    label_name_refs,
-                    label_value_refs,
-                }
-            })
-            .collect();
-        return Ok(GridQueryResponse {
-            series: Vec::new(),
-            partials,
-            raw,
-            labels: Some(symbols.finish()),
-        });
     }
 
     let series = match staged {

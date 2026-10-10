@@ -1145,6 +1145,77 @@ fn expanding_arrivals() -> (GridRequest, Vec<RangeSample<EvalLabels>>) {
     (request, sparse)
 }
 
+/// A fused `sum` over the expanding arrivals plus one dense member in the
+/// same group: the dense member stages, so its group ships partials and every
+/// sparse member is promoted into them on the shard.
+fn promoted_expansion() -> (GridRequest, Vec<RangeSample<EvalLabels>>) {
+    let (request, mut windows) = expanding_arrivals();
+    let steps = request.window_ends().len() as i64;
+    let dense: Vec<(i64, f64)> = (0..steps).map(|i| (i * 1_000, 1.0)).collect();
+    windows.push(series("dense", &dense));
+    (fused(request, AggregationKind::Sum, &[]), windows)
+}
+
+/// Each promoted member expands to a point per step; folded a chunk at a
+/// time, never all at once, and to the answer the coordinator would give.
+#[test]
+fn test_promoted_members_fold_a_chunk_at_a_time() {
+    let (request, windows) = promoted_expansion();
+    let ends = request.window_ends();
+    let mut grid = ShardGrid::new(&request, &ends);
+    grid.add(windows.clone());
+    assert!(
+        matches!(grid.staged, Staged::Partials(_)),
+        "a fused reduction keeps partials, never per-series output"
+    );
+    let chunks = std::cell::Cell::new(0);
+    let shard = grid
+        .finish(|| {
+            chunks.set(chunks.get() + 1);
+            false
+        })
+        .unwrap();
+    assert!(shard.raw.is_empty(), "every sparse member was promoted");
+    assert_eq!(
+        shard.partials.len(),
+        ends.len(),
+        "one group, a partial per step"
+    );
+    // 300 members x 10,000 steps is about three chunks of output.
+    assert!(chunks.get() >= 3, "folded in chunks: {}", chunks.get());
+
+    let mut cmd = command(request.clone());
+    cmd.on_response(shard, &node(7000)).unwrap();
+    let want = rendered(
+        request
+            .evaluate(windows, &Deadline::default(), &mut |_| Ok(()))
+            .unwrap(),
+    );
+    let got = rendered(cmd.into_result(&Deadline::default(), 0).unwrap());
+    assert_rendered_close(&want, &got, "promoted sum");
+}
+
+#[test]
+fn test_promotion_stops_when_the_requester_gives_up() {
+    let (request, windows) = promoted_expansion();
+    let ends = request.window_ends();
+    let mut grid = ShardGrid::new(&request, &ends);
+    grid.add(windows);
+    let err = grid.finish(|| true).expect_err("the requester gave up");
+    assert!(
+        err.to_string()
+            .contains(crate::error_consts::FANOUT_REQUESTER_GAVE_UP),
+        "{err}"
+    );
+
+    // With nothing to fold, there is nothing to stop.
+    let (request, mut windows) = promoted_expansion();
+    windows.retain(|s| s.samples.len() > 1);
+    let mut grid = ShardGrid::new(&request, &ends);
+    grid.add(windows);
+    assert!(grid.finish(|| true).is_ok());
+}
+
 #[test]
 fn test_raw_expansion_is_refused_past_max_samples() {
     let (request, sparse) = expanding_arrivals();
@@ -1668,7 +1739,7 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
         for batch in windows.chunks(7) {
             grid.add(batch.to_vec());
         }
-        let split = grid.finish().unwrap();
+        let split = grid.finish(|| false).unwrap();
 
         assert_eq!(split.raw.len(), whole.raw.len(), "{what}: raw spans");
         assert_eq!(split.series.len(), whole.series.len(), "{what}: series");
