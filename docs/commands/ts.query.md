@@ -69,6 +69,9 @@ Accepts a duration string (e.g., `30s`, `5m`, `1h30m`) or an integer number of m
 
 **Default:** `ts-promql-lookback-delta` (5m).
 
+**Limit:** at most `ts-promql-max-lookback` (1h by default; `0` lifts it). A lookback no longer than
+`ts-promql-lookback-delta` is always allowed.
+
 </details>
 
 <details open><summary><code>TIMEOUT duration</code></summary>
@@ -168,6 +171,7 @@ At most `ts-promql-max-concurrent-queries` (default 8) queries run at once; up t
 | An unknown option | `TSDB: invalid query argument '<arg>'` |
 | `TIME` cannot be parsed | `TSDB: invalid TIME timestamp` |
 | `LOOKBACK_DELTA` or `TIMEOUT` cannot be parsed | `TSDB: couldn't parse <OPTION> duration` |
+| `LOOKBACK_DELTA` is longer than `ts-promql-max-lookback` | `TSDB: LOOKBACK_DELTA <lookback> exceeds the <limit> allowed by ts-promql-max-lookback` |
 | `HASHTAG` is missing or has an empty tag | `TSDB: missing HASHTAG argument` |
 | Called inside `MULTI`, a script, or a context that cannot block | `TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context` |
 | More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>` |

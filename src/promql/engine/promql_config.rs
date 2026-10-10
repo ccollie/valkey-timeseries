@@ -29,14 +29,14 @@ pub struct PromqlConfig {
     /// Default lookback delta
     pub lookback_delta: Duration,
 
-    /// Synonym to `-provider.lookback-delta` from Prometheus.
-    /// It can be overridden on a per-query basis via max_lookback arg.
-    /// See also the `max_staleness_interval` flag, which has the same meaning due to historical reasons
+    /// The longest `LOOKBACK_DELTA` a query may request (`ts-promql-max-lookback`); zero means
+    /// no limit. `lookback_delta`, and for a range query a lookback no longer than its step,
+    /// are always allowed.
     pub max_lookback: Duration,
 
     /// Whether to fix lookback interval to `step` query arg value.
-    /// If set to true, the query model becomes closer to the InfluxDB data model. If set to true,
-    /// then `max_lookback` is ignored. Defaults to `false`
+    /// If set to true, the query model becomes closer to the InfluxDB data model, and the
+    /// query's `LOOKBACK_DELTA` (with it `max_lookback`) is ignored. Defaults to `false`
     pub set_lookback_to_step: bool,
 
     /// The maximum duration for query execution (default 30 secs)
@@ -63,7 +63,7 @@ impl Default for PromqlConfig {
             max_points_per_timeseries: 0,
             max_samples_per_query: crate::config::PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT as usize,
             max_response_series: DEFAULT_MAX_UNIQUE_TIMESERIES,
-            max_lookback: Duration::ZERO,
+            max_lookback: Duration::from_secs(60 * 60),
             set_lookback_to_step: false,
             max_query_duration: Duration::from_secs(30),
             optimize_queries: false,

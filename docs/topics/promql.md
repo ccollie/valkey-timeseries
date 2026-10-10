@@ -324,9 +324,9 @@ at startup.
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
 | `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. In a cluster each shard applies its own value to what it reads. |
 | `ts-promql-lookback-delta` | 5m | Default sample lookback interval. |
-| `ts-promql-max-lookback` | 0 | Optional upper bound on lookback; `0` uses the lookback delta. |
+| `ts-promql-max-lookback` | 1h | Longest `LOOKBACK_DELTA` a query may request; longer ones are refused. The default lookback and, for a range query, its `STEP` are always allowed. `0` means unlimited. |
 | `ts-promql-max-query-duration` | 30s | Maximum wall-clock query duration. |
-| `ts-promql-set-lookback-to-step` | no | Use the range query step as the lookback interval. |
+| `ts-promql-set-lookback-to-step` | no | Use the range query step as the lookback interval; `LOOKBACK_DELTA` is then ignored. |
 | `ts-promql-optimize-queries` | no | Enable query rewrites and selector push-down. |
 | `ts-promql-derived-filter-pushdown` | yes | Narrow a range query's binary-operation operands by the label values the index holds for the other operand. |
 | `ts-promql-enable-experimental-functions` | no | Allow functions marked experimental by the parser (as Prometheus' `--enable-feature=promql-experimental-functions`). |

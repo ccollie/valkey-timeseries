@@ -355,13 +355,22 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
                                         'LOOKBACK_DELTA', '-1000')
 
     def test_query_with_very_large_lookback_delta(self):
-        """Test TS.QUERY with a very large lookback delta."""
+        """A lookback past ts-promql-max-lookback (1h by default) is refused; with the cap
+        lifted (0) the same query answers."""
         self.setup_simple_series()
 
-        result = self.client.execute_command('TS.QUERY', 'http_requests',
-                                             'LOOKBACK_DELTA', '999999999')
+        with pytest.raises(ResponseError, match="exceeds the 1h allowed by ts-promql-max-lookback"):
+            self.client.execute_command('TS.QUERY', 'http_requests', 'LOOKBACK_DELTA', '999999999')
+        # The cap itself is allowed.
+        assert self.client.execute_command('TS.QUERY', 'http_requests', 'LOOKBACK_DELTA', '1h')
 
-        assert result is not None
+        self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-lookback', '0')
+        try:
+            result = self.client.execute_command('TS.QUERY', 'http_requests',
+                                                 'LOOKBACK_DELTA', '999999999')
+            assert result is not None
+        finally:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-lookback', '1h')
 
     def test_query_series_with_many_points(self):
         """Test TS.QUERY on a series with many data points."""

@@ -189,6 +189,25 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError):
             self.client.execute_command("TS.QUERYRANGE", "http_requests")
 
+    def test_queryrange_lookback_is_capped_except_up_to_the_step(self):
+        """LOOKBACK_DELTA past ts-promql-max-lookback (1h by default) is refused. A lookback
+        no longer than STEP is allowed past it: it reads at most one step further back."""
+        self.setup_simple_series()
+        base = ("TS.QUERYRANGE", "http_requests", "START", "1000", "END", "5000")
+
+        with pytest.raises(ResponseError, match="exceeds the 1h allowed by ts-promql-max-lookback"):
+            self.client.execute_command(*base, "STEP", "1m", "LOOKBACK_DELTA", "2h")
+        assert self.client.execute_command(*base, "STEP", "1d", "LOOKBACK_DELTA", "1d")
+        with pytest.raises(ResponseError, match="exceeds the 1d allowed"):
+            self.client.execute_command(*base, "STEP", "1d", "LOOKBACK_DELTA", "2d")
+
+        # With the lookback fixed to the step the option is ignored, so nothing is refused.
+        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-set-lookback-to-step", "yes")
+        try:
+            assert self.client.execute_command(*base, "STEP", "1m", "LOOKBACK_DELTA", "2h")
+        finally:
+            self.client.execute_command("CONFIG", "SET", "ts.ts-promql-set-lookback-to-step", "no")
+
     def test_queryrange_invalid_argument(self):
         self.setup_simple_series()
 

@@ -304,6 +304,22 @@ that length the parser alone is 0.5–0.8 s per query.
 
 ### D4. Enforce `ts-promql-max-lookback`
 
+**Status:** implemented 2026-10-09, with three deviations from the text below.
+
+- **Rejected, not clamped.** A shorter lookback changes which series are stale, so a clamped
+  query would silently answer a different question. Every other limit here rejects too. (The
+  text's claim that clamping is "what the Prometheus flag does" was wrong: Prometheus has no
+  maximum-lookback flag. The parameter's old doc comment was copied from VictoriaMetrics,
+  where `maxLookback` *is* the lookback, not a cap on it.)
+- **Two lookbacks are always allowed:** the configured `ts-promql-lookback-delta`, so asking
+  for the server's own default never fails, and for a range query anything up to `STEP`. A
+  lookback ≤ step reads at most one step before `START` and never repeats a sample across
+  steps, so it adds neither F1's multiplier nor F4's history read. The step-derived lookback
+  (`STEP` larger than the default, or `ts-promql-set-lookback-to-step`) is therefore left
+  alone, and with `set-lookback-to-step` the option is ignored and nothing is refused.
+- **Default 1h** as proposed; `0` now means unlimited rather than "use lookback-delta". A
+  store of hourly or daily series has to raise it.
+
 In `normalize_lookback` and the instant parser, clamp a client lookback to the configured
 maximum (or reject above it; clamping is what the Prometheus flag does). Default it to
 something finite rather than 0, for example 1 h, and make `set_lookback_to_step` respect it
@@ -380,7 +396,7 @@ the limits above cannot be tuned, and F2 is invisible today.
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `ts-promql-max-points-per-timeseries` | 11,000 (from 0) | per-series output cap, now also charged (D1) |
-| `ts-promql-max-lookback` | 1h (from 0, and now enforced) | cap on client `LOOKBACK_DELTA` (D4) |
+| `ts-promql-max-lookback` | 1h (from 0, and now enforced; done) | cap on client `LOOKBACK_DELTA` (D4) |
 | `ts-promql-max-samples-total` | 2× per-query budget | process-wide in-flight sample budget (D5) |
 | `ts-promql-memory-ratio-limit` | 0.9 | refuse/abort queries above this used-memory ratio (D5) |
 | `ts-promql-max-reply-bytes` | 256 MiB | estimated reply size cap (D5) |

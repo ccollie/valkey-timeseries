@@ -178,7 +178,9 @@ const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
 const PROMQL_MAX_LOOKBACK_MIN_MS: i64 = 0;
 const PROMQL_MAX_LOOKBACK_MAX_MS: i64 = ONE_YEAR_MS;
-const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 0; // 0 = use lookback-delta
+// 0 = no limit. An hour covers series sampled down to every few minutes; a store of sparser
+// series (hourly, daily) raises it. See `check_requested_lookback` in the command parser.
+pub(crate) const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 60 * 60 * 1000; // 1h
 const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
 const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_MAX_QUERY_DURATION_DEFAULT_MS: i64 = 30 * 1000; // 30s
@@ -1345,7 +1347,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         min: None,
         max: None,
         flags: ConfigurationFlags::DEFAULT,
-        description: "Fix the PromQL lookback interval to the query's step (ignores max-lookback)",
+        description: "Fix the PromQL lookback interval to the query's step (ignores LOOKBACK_DELTA)",
         storage: ConfigStorage::Bool {
             cell: || &PROMQL_SET_LOOKBACK_TO_STEP,
         },
@@ -1467,7 +1469,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         min: Some(ConfigValue::DurationMs(PROMQL_MAX_LOOKBACK_MIN_MS)),
         max: Some(ConfigValue::DurationMs(PROMQL_MAX_LOOKBACK_MAX_MS)),
         flags: ConfigurationFlags::DEFAULT,
-        description: "Upper bound on the PromQL lookback interval (0 = use lookback-delta)",
+        description: "Longest LOOKBACK_DELTA a PromQL query may request (0 = no limit); the default lookback and, for a range query, its STEP are always allowed",
         storage: ConfigStorage::Str {
             cell: || &PROMQL_MAX_LOOKBACK_STRING,
             apply: update_promql_max_lookback,
@@ -1786,7 +1788,7 @@ mod tests {
         ("ts-promql-max-points-per-timeseries", "0"),
         ("ts-promql-max-samples-per-query", "50000000"),
         ("ts-promql-lookback-delta", "300000"),
-        ("ts-promql-max-lookback", "0"),
+        ("ts-promql-max-lookback", "3600000"),
         ("ts-promql-max-query-duration", "30000"),
     ];
 

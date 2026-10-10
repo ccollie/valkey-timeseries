@@ -98,6 +98,9 @@ Accepts a duration string or an integer number of milliseconds. `0` selects the 
 **Default:** `ts-promql-lookback-delta` (5m), or `STEP` when the step is larger. With
 `ts-promql-set-lookback-to-step` enabled, the lookback is always `STEP` and this option is ignored.
 
+**Limit:** at most `ts-promql-max-lookback` (1h by default; `0` lifts it). A lookback no longer than
+`ts-promql-lookback-delta`, or than `STEP`, is always allowed: it reads at most one step further back.
+
 </details>
 
 <details open><summary><code>TIMEOUT duration</code></summary>
@@ -187,6 +190,7 @@ At most `ts-promql-max-concurrent-queries` (default 8) queries run at once; up t
 | `STEP` is missing | `TSDB: missing query STEP argument` |
 | `STEP` is zero | `invalid query: step must be greater than zero` |
 | `STEP`, `LOOKBACK_DELTA` or `TIMEOUT` cannot be parsed | `TSDB: couldn't parse <OPTION> duration` |
+| `LOOKBACK_DELTA` is longer than `ts-promql-max-lookback` (and than `STEP`) | `TSDB: LOOKBACK_DELTA <lookback> exceeds the <limit> allowed by ts-promql-max-lookback` |
 | `START` or `END` cannot be parsed | `TSDB: invalid <START\|END> timestamp` |
 | `END` is before `START` | `TSDB: END must not be before START` |
 | `START` is in the future and `END` is omitted | `TSDB: START must not be after the current time (the default END)` |
