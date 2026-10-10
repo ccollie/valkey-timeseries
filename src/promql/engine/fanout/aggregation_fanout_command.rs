@@ -289,6 +289,10 @@ impl FanoutCommand for AggregationFanoutCommand {
         self.timeout
     }
 
+    fn time_budget(req: &AggregationQuery) -> Option<Duration> {
+        super::time_budget_from_wire(req.query.as_ref()?.time_budget_ms)
+    }
+
     fn generate_request(&self) -> AggregationQuery {
         let query = InstantQuery {
             selector: Some(ProtoSeriesSelector::from(&self.vector.matchers)),
@@ -296,6 +300,7 @@ impl FanoutCommand for AggregationFanoutCommand {
             lookback_delta: self.vector.lookback_delta,
             max_series: self.vector.max_series,
             max_points_per_series: self.vector.max_points_per_series,
+            time_budget_ms: super::time_budget_to_wire(self.timeout),
         };
 
         let (scalar_param, label_param) =

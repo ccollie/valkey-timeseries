@@ -53,6 +53,17 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// responsive while the shard-local reply is materialized.
     fn get_local_response(ctx: &FanoutContext, req: Self::Request) -> ValkeyResult<Self::Response>;
 
+    /// How long the requester of `req` waits for its answer, if the request says.
+    ///
+    /// A receiving node counts it from when the request arrived: a request still queued
+    /// past it is dropped unrun, and a read past it stops between batches. Measured from
+    /// arrival rather than carried as a time of day, so it needs no clock agreement, and
+    /// the receiver's deadline can only fall later than the requester's, never earlier.
+    /// `None` (the default) never expires.
+    fn time_budget(_req: &Self::Request) -> Option<Duration> {
+        None
+    }
+
     /// Return the timeout duration for the entire fanout operation.
     /// This timeout applies to the overall operation, not individual RPC calls.
     fn get_timeout(&self) -> Duration {
@@ -157,19 +168,25 @@ where
     let state = Arc::new(FanoutState::new(op, outstanding, f));
 
     let rpc_state = state.clone();
+    // Runs on the main thread, inside the cluster-bus callback.
     let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
         let Ok(buf) = res else {
             rpc_state.on_error(res.err().unwrap(), target);
             return;
         };
-        match OP::Response::deserialize(buf) {
-            Ok(resp) => rpc_state.on_response(resp, target),
-            Err(e) => {
-                let err =
-                    FanoutError::serialization(format!("Failed to deserialize response: {e}"));
-                rpc_state.on_error(err, target);
+        if buf.len() >= DEFERRED_DECODE_MIN_BYTES {
+            // Decoding and merging a large response here stalls every client of the
+            // node for as long as they take; copying it out is a fraction of that.
+            let state = Arc::clone(&rpc_state);
+            let (owned, target_owned) = (buf.to_vec(), *target);
+            let deferred = PEER_REQUEST_EXECUTOR
+                .try_spawn(move || deliver_response(&state, &owned, &target_owned));
+            if deferred.is_ok() {
+                return;
             }
+            // The lane is full: decode here, as before, rather than fail the fan-out.
         }
+        deliver_response(&rpc_state, buf, target);
     };
 
     if let Err(e) = invoke_rpc(
@@ -205,6 +222,30 @@ where
     }
 
     Ok(())
+}
+
+/// The smallest shard response decoded off the main thread. A smaller one decodes in
+/// well under the ~50 µs a hand-off to a worker costs; at this size decoding is about
+/// 0.1 ms, and a range or grid response can be megabytes.
+///
+/// A deferred response still counts as answered for the RPC's own timeout as soon as it
+/// arrives: the fan-out then completes when its decode does, on the lane, however long
+/// the lane's queue is.
+const DEFERRED_DECODE_MIN_BYTES: usize = 64 * 1024;
+
+/// Decode one shard's response and hand it to the fan-out.
+fn deliver_response<OP, F>(state: &FanoutState<OP, F>, buf: &[u8], target: &NodeInfo)
+where
+    OP: FanoutCommand + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
+{
+    match OP::Response::deserialize(buf) {
+        Ok(resp) => state.on_response(resp, target),
+        Err(e) => {
+            let err = FanoutError::serialization(format!("Failed to deserialize response: {e}"));
+            state.on_error(err, target);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,6 +501,8 @@ where
             return;
         }
         let fanout_ctx = FanoutContext::new(user, db);
+        // Past it the fan-out has answered with a timeout, so a long read stops there.
+        fanout_ctx.set_deadline(deadline);
         match OP::get_local_response(&fanout_ctx, req) {
             Ok(response) => state.on_response(response, &target),
             Err(err) => state.on_error(err.into(), &target),

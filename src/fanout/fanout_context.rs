@@ -4,6 +4,8 @@ use crate::fanout::{FanoutAclScope, FanoutIdentity};
 use crate::series::acl::ModuleUser;
 use std::ops::Deref;
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::time::Instant;
 use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
@@ -46,6 +48,10 @@ pub struct FanoutContext {
     user: Option<String>,
     db: i32,
     ctx: &'static DetachedContext,
+    /// When the request reached this node: what its time budget counts from.
+    received: Instant,
+    /// When the requester stops waiting, if it said ([`Self::set_deadline`]).
+    deadline: OnceLock<Instant>,
 }
 
 impl FanoutContext {
@@ -57,7 +63,36 @@ impl FanoutContext {
             user,
             db,
             ctx: &MODULE_CONTEXT,
+            received: Instant::now(),
+            deadline: OnceLock::new(),
         }
+    }
+
+    /// The request reached this node at `received`, earlier than it was picked up: a
+    /// peer's request waits in the fan-out lane's queue, and that wait counts against
+    /// its time budget.
+    pub fn received_at(mut self, received: Instant) -> Self {
+        self.received = received;
+        self
+    }
+
+    /// When the request reached this node.
+    pub fn received(&self) -> Instant {
+        self.received
+    }
+
+    /// Record when the requester stops waiting for this answer. Reads walking the
+    /// keyspace for it stop between batches from then on ([`Self::expired`]). Only the
+    /// first call counts.
+    pub fn set_deadline(&self, deadline: Instant) {
+        let _ = self.deadline.set(deadline);
+    }
+
+    /// Whether the requester has stopped waiting: its answer would arrive after it gave up.
+    pub fn expired(&self) -> bool {
+        self.deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= *deadline)
     }
 
     /// The ACL user the request executes as, if enforcement applies.
@@ -122,6 +157,20 @@ mod tests {
         let ctx = FanoutContext::new(Some("alice".to_owned()), 3);
         assert_eq!(ctx.user(), Some("alice"));
         assert_eq!(ctx.db(), 3);
+    }
+
+    #[test]
+    fn test_fanout_context_expires_only_with_a_deadline_in_the_past() {
+        let ctx = FanoutContext::new(None, 0);
+        assert!(!ctx.expired(), "no deadline: never expires");
+        ctx.set_deadline(Instant::now() + std::time::Duration::from_secs(60));
+        assert!(!ctx.expired());
+        ctx.set_deadline(Instant::now());
+        assert!(!ctx.expired(), "only the first deadline counts");
+
+        let past = FanoutContext::new(None, 0);
+        past.set_deadline(Instant::now());
+        assert!(past.expired());
     }
 
     #[test]

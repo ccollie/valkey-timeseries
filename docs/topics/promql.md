@@ -355,7 +355,10 @@ overrun immediately instead of after every waiting query has timed out.
 A query whose client disconnects is abandoned: skipped if it is still queued, and stopped at
 its next deadline check if it is running, so its worker is free again within a step or two.
 On a single node that includes a read in progress, which stops at its next lock hold. In a
-cluster, a fan-out already sent to the shards still runs to its own timeout.
+cluster, a fan-out already sent to the shards runs out its time budget, which is never
+longer than what was left of the query's `TIMEOUT` when it was sent. Each shard stops its
+share at that budget too: a request that waited it out in the shard's queue is dropped
+unrun, and a read past it stops before its next batch.
 
 `INFO ts_promql` shows the pool's state as `ts_queries_running`, `ts_queries_queued`, the
 cumulative `ts_queries_rejected`, and `ts_queries_cancelled`, the queries abandoned because

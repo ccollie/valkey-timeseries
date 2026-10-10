@@ -28,6 +28,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use valkey_module::{
     Context, DetachedContext, MODULE_CONTEXT, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
@@ -457,11 +458,15 @@ fn cluster_fingerprint_matches(ctx: &DetachedContext, expected: u64) -> bool {
 /// cluster-map check (for `CLUSTER NODES`) and the handler itself, for as long
 /// as its keyspace/index work needs (see `FanoutCommand::get_local_response`).
 /// Request decoding and response encoding to happen with the GIL released.
+///
+/// `received` is when the request arrived, before it waited in the lane's queue: a
+/// request's time budget counts from then (see `FanoutCommand::time_budget`).
 fn process_request_message(
     header: FanoutMessageHeader,
     handler: RequestHandlerCallback,
     request_buf: &[u8],
     sender_id: NodeId,
+    received: Instant,
 ) {
     let request_id = header.request_id;
 
@@ -491,7 +496,7 @@ fn process_request_message(
 
     // The handler re-selects `db` and resolves `user` on every GIL acquisition
     // (`FanoutContext::lock`); the context tells it which ones.
-    let fanout_ctx = FanoutContext::new(header.user, header.db);
+    let fanout_ctx = FanoutContext::new(header.user, header.db).received_at(received);
     match handler(&fanout_ctx, request_buf, &mut dest) {
         Ok(()) => {
             let ctx = MODULE_CONTEXT.lock_gil();
@@ -612,8 +617,9 @@ extern "C" fn on_request_received(
     let (request_id, db) = (header.request_id, header.db);
 
     // A blocking thread: the handler takes the GIL (R1 in `common::threads`).
+    let received = Instant::now();
     let queued = PEER_REQUEST_EXECUTOR.try_spawn(move || {
-        process_request_message(header, handler, &buf, sender);
+        process_request_message(header, handler, &buf, sender, received);
     });
     if queued.is_err() {
         // Answer now rather than leave the requester waiting out its timeout.

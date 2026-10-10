@@ -545,9 +545,28 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
     }
 }
 
+/// How long a fan-out for this query may take: its timeout, but never past the query's
+/// deadline. A query's fan-outs run one after another (a preload, then the reads the step
+/// loop falls back to), and arming each with the whole timeout let the last of them outlive
+/// the query by up to a full timeout, and its shards with it. This is also the time budget
+/// the request carries, so the shards stop when the coordinator does.
 fn calculate_timeout(opts: &QueryOptions) -> Duration {
-    opts.timeout.unwrap_or_else(get_cluster_command_timeout)
-    // todo: cap with promql config max query duration
+    remaining_budget(
+        opts.timeout.unwrap_or_else(get_cluster_command_timeout),
+        opts.deadline,
+        current_time_millis(),
+    )
+}
+
+/// `timeout`, cut to what is left before `deadline` (epoch ms) at `now`. At least 1 ms,
+/// so a query already past its deadline gets a fan-out that times out at once rather than
+/// one with no limit.
+fn remaining_budget(timeout: Duration, deadline: Option<Timestamp>, now: Timestamp) -> Duration {
+    let Some(deadline) = deadline.filter(|&d| d > 0) else {
+        return timeout;
+    };
+    let left = Duration::from_millis(deadline.saturating_sub(now).max(1) as u64);
+    timeout.min(left)
 }
 
 fn validate_max_series_(series_count: usize, max_series: usize) -> QueryResult<()> {
@@ -1462,6 +1481,27 @@ mod selector_batch_executor_tests {
                 .expect("a parked caller pool starved the processor");
             assert_eq!(answer, Ok((0..10_000usize).sum()));
         }
+    }
+
+    #[test]
+    fn a_fan_out_never_outlives_its_query() {
+        use super::remaining_budget;
+        let thirty = Duration::from_secs(30);
+        // No deadline: the timeout as configured.
+        assert_eq!(remaining_budget(thirty, None, 1_000), thirty);
+        assert_eq!(remaining_budget(thirty, Some(0), 1_000), thirty);
+        // A deadline further off than the timeout leaves it alone.
+        assert_eq!(remaining_budget(thirty, Some(100_000), 1_000), thirty);
+        // Closer: what is left of the query.
+        assert_eq!(
+            remaining_budget(thirty, Some(5_000), 1_000),
+            Duration::from_millis(4_000)
+        );
+        // Past it: a fan-out that times out at once, not an unlimited one.
+        assert_eq!(
+            remaining_budget(thirty, Some(1_000), 2_000),
+            Duration::from_millis(1)
+        );
     }
 
     #[test]

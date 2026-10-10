@@ -116,7 +116,12 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
             lookback_delta: self.lookback_delta,
             max_series: self.max_series,
             max_points_per_series: self.max_points_per_series,
+            time_budget_ms: super::time_budget_to_wire(self.timeout),
         }
+    }
+
+    fn time_budget(req: &InstantQuery) -> Option<Duration> {
+        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {

@@ -365,7 +365,12 @@ impl FanoutCommand for GridFanoutCommand {
                 }
             }),
             sample_timestamps: self.request.sample_timestamps,
+            time_budget_ms: super::time_budget_to_wire(self.timeout),
         }
+    }
+
+    fn time_budget(req: &GridQuery) -> Option<Duration> {
+        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, mut resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
