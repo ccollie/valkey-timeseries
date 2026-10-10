@@ -251,6 +251,32 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
         with pytest.raises(ResponseError, match='(?i)permission'):
             self.instant_query('wide', client=user)
 
+    def test_coordinator_charges_the_grid_holes_it_builds(self):
+        """Two samples per series, 3,000 steps apart, under a one-second
+        lookback: each series is present at two steps, and its grid holds
+        3,000 slots, holes included. A shard ships so sparse a series raw and
+        the coordinator builds the grid; it used to charge the 2 points per
+        series that arrived and now charges the 3 x 3,000 slots."""
+        shard = self.new_client_for_primary(1)
+        first = T0 * 1000
+        last = first + 2_999_000
+        for i in range(3):
+            key = f'sparse:{i}:{{{WIDE_TAG}}}'
+            shard.execute_command('TS.CREATE', key, 'METRIC', f'sparse{{i="{i}"}}')
+            shard.execute_command('TS.ADD', key, first, 1)
+            shard.execute_command('TS.ADD', key, last, 1)
+        query = ('TS.QUERYRANGE', 'sparse', 'START', str(first), 'END', str(last),
+                 'STEP', '1s', 'LOOKBACK_DELTA', '1s')
+        try:
+            self.set_config(MAX_SAMPLES_CONFIG, '8999')
+            with pytest.raises(ResponseError, match='too many samples'):
+                self.coordinator().execute_command(*query)
+            self.set_config(MAX_SAMPLES_CONFIG, '9000')
+            result = QueryResult.from_raw(self.coordinator().execute_command(*query))
+            assert sum(len(series.values) for series in result.result) == 6
+        finally:
+            self.set_config(MAX_SAMPLES_CONFIG, '50000000')
+
     def test_series_limit_stops_the_shard_walk(self, aggregation_pushdown, rollup_pushdown):
         """A shard refusing its share for `ts-promql-max-response-series` stops walking at
         the series that takes it over the limit, or for a range read at the end of that

@@ -12,6 +12,14 @@
 //! exceed the budget; and the evaluator sums every read it receives, so a query
 //! spread over several selectors is refused once the total passes the budget.
 //! Peak memory for one query is therefore bounded by about twice the budget.
+//!
+//! The step grids a range query builds from its reads are charged too, as they
+//! are built: one sample inside a long lookback fills a slot at every step, so
+//! a read of a few samples can become a grid of millions. A series costs the
+//! larger of its raw span and its grid, not their sum, so ordinary data (whose
+//! grid is the smaller) costs what it decoded. A shard's grid push-down needs
+//! no charge of its own: it ships a series raw whenever the grid would be the
+//! larger, so the expansion happens, and is charged, on the coordinator.
 
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicUsize, Ordering};

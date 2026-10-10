@@ -2,6 +2,7 @@ use crate::common::threads::IntoParRayon;
 use crate::common::time::{current_time_millis, system_time_to_millis};
 use crate::common::{Sample, Timestamp};
 use crate::promql::engine::derived_filters::derive_filters_in_place;
+use crate::promql::engine::validate_max_series;
 use crate::promql::engine::{QueryOptions, QueryReader};
 use crate::promql::error::QueryError;
 use crate::promql::exec::planner::PlannedQuery;
@@ -151,6 +152,15 @@ pub fn evaluate_instant(
     if deadline > 0 && current_time_millis() > deadline {
         return Err(QueryError::Timeout);
     }
+
+    // The result, not only each read: an operator can return more series than
+    // any read did (`a or b`, `count_values`, `label_replace`).
+    let returned = match &result {
+        ExprResult::InstantVector(samples) => samples.len(),
+        ExprResult::RangeVector(series) => series.len(),
+        ExprResult::Scalar(_) | ExprResult::String(_) => 0,
+    };
+    validate_max_series(returned, opts.max_series).map_err(QueryError::Execution)?;
 
     match result {
         ExprResult::Scalar(value) => {
@@ -317,6 +327,12 @@ pub fn evaluate_range(
                 }
             }
         }
+        // `ts-promql-max-response-series` bounds the series the query returns.
+        // Each read is bounded on its own, but the steps of a range query
+        // accumulate series no single step had: `count_values` over a thousand
+        // series makes one per distinct value per step. Checked per chunk, so a
+        // query past it stops evaluating instead of finishing first.
+        validate_max_series(series_map.len(), opts.max_series).map_err(QueryError::Execution)?;
     }
 
     let mut result: Vec<RangeSample> = series_map

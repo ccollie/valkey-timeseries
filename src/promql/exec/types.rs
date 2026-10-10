@@ -846,6 +846,17 @@ pub(in crate::promql) enum StepGrid<T> {
     },
 }
 
+impl<T> StepGrid<T> {
+    /// How many step slots the grid stores: from its first present step to its
+    /// last, holes included. What it costs against the sample budget, since a
+    /// hole takes a slot as surely as a value does.
+    pub(in crate::promql) fn stored_len(&self) -> usize {
+        match self {
+            StepGrid::Dense { values, .. } | StepGrid::Sparse { values, .. } => values.len(),
+        }
+    }
+}
+
 impl<T: Copy> StepGrid<T> {
     /// The value at `step`, or `None` when that step holds nothing.
     ///

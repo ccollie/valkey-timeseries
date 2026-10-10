@@ -189,6 +189,45 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError):
             self.client.execute_command("TS.QUERYRANGE", "http_requests")
 
+    def test_sparse_series_are_charged_for_the_grid_they_fill(self):
+        """One sample per series under a lookback that covers every step fills a
+        grid slot at every step. The read decodes 3 samples; the grids hold
+        3 x 3,000 points, and those are what ts-promql-max-samples-per-query
+        is charged. It used to charge the 3 raw samples and build the grids
+        regardless."""
+        for i in range(3):
+            self.client.execute_command('TS.ADD', f'sparse:{i}', 0, 1,
+                                        'LABELS', '__name__', 'sparse', 'i', str(i))
+        query = ('TS.QUERYRANGE', 'sparse', 'START', '1000', 'END', '3000000',
+                 'STEP', '1s', 'LOOKBACK_DELTA', '1h')
+        try:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-samples-per-query', '8999')
+            with pytest.raises(ResponseError, match='too many samples'):
+                self.client.execute_command(*query)
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-samples-per-query', '9000')
+            result = QueryResult.from_raw(self.client.execute_command(*query))
+            assert sum(len(series.values) for series in result.result) == 9000
+        finally:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-samples-per-query', '50000000')
+
+    def test_result_series_are_bounded_not_only_each_read(self):
+        """ts-promql-max-response-series bounds the series the query returns.
+        Each read here returns two series and the `or` returns four."""
+        for i in range(2):
+            for metric in ('left', 'right'):
+                self.client.execute_command('TS.ADD', f'{metric}:{i}', 1000, i,
+                                            'LABELS', '__name__', metric, 'i', str(i))
+        query = ('TS.QUERYRANGE', 'left or label_replace(right, "side", "r", "", "")',
+                 'START', '1000', 'END', '3000', 'STEP', '1s')
+        try:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '3')
+            with pytest.raises(ResponseError, match='max series limit: 4 > 3'):
+                self.client.execute_command(*query)
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '4')
+            assert len(QueryResult.from_raw(self.client.execute_command(*query)).result) == 4
+        finally:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '1000')
+
     def test_queryrange_lookback_is_capped_except_up_to_the_step(self):
         """LOOKBACK_DELTA past ts-promql-max-lookback (1h by default) is refused. A lookback
         no longer than STEP is allowed past it: it reads at most one step further back."""

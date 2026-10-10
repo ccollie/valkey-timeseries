@@ -421,21 +421,42 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(());
         };
-        let rolled = self.finish_grid(&request, outcome)?;
-
-        let series = rolled
-            .into_iter()
-            .map(|s| PreloadedGridSeries {
-                labels: s.labels,
-                values: scatter_onto_grid(
-                    &window_ends,
-                    s.samples.iter().map(|p| (p.timestamp, p.value)),
-                ),
-            })
-            .collect();
-
+        let decoded = raw_span_samples(&outcome);
+        let rolled = self.finish_grid(&request, outcome, false)?;
+        let series = self.scatter_charged(&window_ends, rolled, decoded)?;
         self.cache_preloaded_grid(key, grid, series);
         Ok(())
+    }
+
+    /// Scatter each entry's `(window end, value)` points onto the step grid,
+    /// charging every grid to the budget as it is built ([`Self::charge_grid`]).
+    ///
+    /// `decoded` is what the raw span the entries were computed from already
+    /// cost (0 for a pushed-down answer): the grids are charged only past it,
+    /// so the request costs the larger of its span and its grids.
+    pub(super) fn scatter_charged(
+        &self,
+        window_ends: &[Timestamp],
+        entries: Vec<RangeSample<EvalLabels>>,
+        decoded: usize,
+    ) -> EvalResult<Vec<PreloadedGridSeries>> {
+        let mut covered = decoded;
+        entries
+            .into_iter()
+            .map(|s| {
+                let values = scatter_onto_grid(
+                    window_ends,
+                    s.samples.iter().map(|p| (p.timestamp, p.value)),
+                );
+                let used = values.stored_len().min(covered);
+                covered -= used;
+                self.charge_grid(&values, used)?;
+                Ok(PreloadedGridSeries {
+                    labels: s.labels,
+                    values,
+                })
+            })
+            .collect()
     }
 
     /// The grid request for `vs` over `grid`, with `@`/`offset` resolved into
@@ -481,27 +502,37 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// A source that answered raw is compensated with the request's own
     /// kernels — the same ones a shard runs — after its span is charged to the
     /// budget. The stepped shape is not an answer to these requests at all.
+    ///
+    /// `charge_points` is for a caller that keeps the points as they are. One
+    /// that scatters them onto a step grid passes `false` and charges the grid
+    /// instead ([`Self::charge_grid`]): the grid is what stays, and charging
+    /// both would count every point twice.
     pub(super) fn finish_grid(
         &self,
         request: &GridRequest,
         outcome: GridOutcome,
+        charge_points: bool,
     ) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
-        // Charged here, whatever the answer's shape, so every caller pays the
-        // same for the same request: a raw span for what was decoded (before
-        // the evaluation turns it into one point per step), a pushed-down
-        // answer for the points that arrived — its source charged the span
-        // against its own budget.
+        // A raw span is charged here, whatever the caller does with it: it was
+        // decoded on this node (before the evaluation turns it into one point
+        // per step). A pushed-down answer is charged for the points that
+        // arrived, unless the caller charges the grid it builds from them —
+        // its source charged the span against its own budget.
         let outcome = match outcome {
             GridOutcome::Raw(series) => {
                 self.charge_range_samples(&series)?;
                 request.evaluate(series)?
             }
             GridOutcome::Rolled(series) => {
-                self.charge_range_samples(&series)?;
+                if charge_points {
+                    self.charge_range_samples(&series)?;
+                }
                 GridOutcome::Rolled(series)
             }
             GridOutcome::Reduced(groups) => {
-                self.charge_range_samples(&groups)?;
+                if charge_points {
+                    self.charge_range_samples(&groups)?;
+                }
                 GridOutcome::Reduced(groups)
             }
             other => other,
@@ -610,20 +641,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // A peer without grid push-down: not cached, so the selector is
             // preloaded on its own and the aggregation runs per step.
             GridOutcome::Unsupported => return Ok(()),
-            outcome => self.finish_grid(&request, outcome)?,
+            outcome => self.finish_grid(&request, outcome, false)?,
         };
-
-        let series = groups
-            .into_iter()
-            .map(|s| PreloadedGridSeries {
-                labels: s.labels,
-                values: scatter_onto_grid(
-                    &window_ends,
-                    s.samples.iter().map(|p| (p.timestamp, p.value)),
-                ),
-            })
-            .collect();
-
+        // A raw answer took the stepped path above, so nothing here was decoded locally.
+        let series = self.scatter_charged(&window_ends, groups, 0)?;
         self.cache_preloaded_grid(key, grid, series);
         Ok(())
     }
@@ -653,17 +674,23 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 options.lookback_delta = Duration::from_millis(lookback_delta_ms as u64);
                 match self.reader.query_grid(vs, &request, options)? {
                     GridOutcome::Stepped(series) => {
-                        self.charge_samples(series.iter().map(|s| s.points.len()).sum())?;
+                        // Charged as the grids they become, holes included: a
+                        // source can ship a few points per series that span
+                        // the whole grid.
                         let preloaded_series = series
                             .into_iter()
-                            .map(|s| PreloadedInstantSeries {
-                                labels: s.labels,
-                                values: scatter_onto_grid(
+                            .map(|s| {
+                                let values = scatter_onto_grid(
                                     &window_ends,
                                     s.points.iter().map(|p| (p.step_ts, p.sample)),
-                                ),
+                                );
+                                self.charge_grid(&values, 0)?;
+                                Ok(PreloadedInstantSeries {
+                                    labels: s.labels,
+                                    values,
+                                })
                             })
-                            .collect();
+                            .collect::<EvalResult<Vec<_>>>()?;
                         self.cache_preloaded_series(vs, eval_start_ms, step_ms, preloaded_series);
                         return Ok(());
                     }
@@ -708,6 +735,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
     /// Bucket a selector's raw span to one sample per step — the last sample
     /// inside the lookback window — and cache it for the step loop.
+    ///
+    /// The span is charged as it arrives, and each series' grid as it is built
+    /// for whatever it stores beyond that series' span, so a series costs the
+    /// larger of the two. The grid is the larger whenever the lookback outlasts
+    /// the gap between samples: one sample a day under a one-day lookback fills
+    /// every step.
     pub(super) fn cache_stepped_span(
         &self,
         vs: &VectorSelector,
@@ -728,7 +761,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // ── Per-series step-bucketing ─────────────────
         let preloaded_series: Vec<PreloadedInstantSeries> = raw_series
             .into_par_rayon()
-            .map(|RangeSample { labels, samples }| {
+            .map(|RangeSample { labels, samples }| -> EvalResult<_> {
+                // Another series' grid may already have spent the budget.
+                self.check_budget()?;
+                let decoded = samples.len();
                 // Per-step instant stmt sets query_start = query_end = eval_ts for the evaluation
                 // timestamp; however, when resolving `@ start()` / `@ end()` inside the
                 // preloading phase we must use the enclosing query's bounds so that
@@ -752,10 +788,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     values.push(latest.copied());
                 });
                 let values = values.finish();
+                self.charge_grid(&values, decoded)?;
 
-                PreloadedInstantSeries { labels, values }
+                Ok(PreloadedInstantSeries { labels, values })
             })
-            .collect();
+            .into_fallible()
+            .collect()?;
 
         self.cache_preloaded_series(vs, eval_start_ms, step_ms, preloaded_series);
 
@@ -779,5 +817,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         cache.insert(key, data);
         drop(cache);
         self.note_preloaded();
+    }
+}
+
+/// The raw samples a grid answer carries: what [`Evaluator::finish_grid`]
+/// charges for a source that answered raw, and 0 for any other answer.
+fn raw_span_samples(outcome: &GridOutcome) -> usize {
+    match outcome {
+        GridOutcome::Raw(series) => series.iter().map(|s| s.samples.len()).sum(),
+        _ => 0,
     }
 }

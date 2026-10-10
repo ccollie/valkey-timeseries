@@ -594,6 +594,12 @@ impl<'a> ShardGrid<'a> {
     }
 
     /// Take one batch of non-empty windows.
+    ///
+    /// Nothing here is charged to the shard's sample budget beyond the raw
+    /// samples the read already charged: a series is staged only when its span
+    /// holds at least as many samples as there are steps ([`ships_raw`]), so
+    /// its stage output is never the larger. A sparse series that would expand
+    /// travels raw, and the coordinator charges the grid it builds from it.
     pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) {
         let (raw, staged): (Vec<_>, Vec<_>) = windows
             .into_iter()

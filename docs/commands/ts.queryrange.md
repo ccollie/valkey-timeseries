@@ -179,8 +179,8 @@ that cannot block.
 
 At most `ts-promql-max-concurrent-queries` (default 8) queries run at once; up to `ts-promql-max-queued-queries`
 (default 128) more wait for a worker, and further queries are refused on arrival. A result with more series than
-`ts-promql-max-response-series` (default 1000) is an error, as is a query that would load more than
-`ts-promql-max-samples-per-query` samples (default 50,000,000). See
+`ts-promql-max-response-series` (default 1000) is an error, whether a read or an operator produced them, as is a
+query that would load more than `ts-promql-max-samples-per-query` samples (default 50,000,000). See
 [Configuration and safeguards](../topics/promql.md#configuration-and-safeguards).
 
 ### Errors

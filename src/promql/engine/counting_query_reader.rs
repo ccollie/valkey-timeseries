@@ -1001,6 +1001,109 @@ mod tests {
         try_range(reader, "rate(a[1m])", RAW - 1).expect_err("one sample short of the span");
     }
 
+    /// One sample per series under a lookback that covers every step fills a
+    /// grid slot at every step. The read decoded three samples; the grids hold
+    /// 30,000 points, and those are what the query is charged: each series
+    /// costs the larger of its span and its grid.
+    #[test]
+    fn a_sparse_series_is_charged_for_the_grid_it_fills() {
+        const STEPS: i64 = 10_000;
+        let querier = MemorySeriesQuerier::new();
+        for l in 0..3 {
+            let labels = Labels::from_pairs(&[("__name__", "sparse"), ("l", &l.to_string())]);
+            querier.add_sample(&labels, Sample::new(0, 1.0));
+        }
+        let reader: Arc<dyn QueryReader> = Arc::new(querier);
+        let run = |max_samples: usize| {
+            let start = 1_000;
+            let end = start + (STEPS - 1) * 1_000;
+            let stmt = EvalStmt {
+                expr: promql_parser::parser::parse("sparse").unwrap(),
+                start: ms(start),
+                end: ms(end),
+                interval: Duration::from_secs(1),
+                // Reaches back to the one sample from the last step.
+                lookback_delta: Duration::from_millis(end as u64 + 1),
+            };
+            let options = QueryOptions {
+                max_samples,
+                ..options()
+            };
+            evaluate_range(reader.clone(), stmt, options)
+        };
+
+        let grids = 3 * STEPS as usize;
+        let result = run(grids).expect("exactly the grids fits");
+        assert_eq!(result.iter().map(|s| s.samples.len()).sum::<usize>(), grids);
+        let err = run(grids - 1).expect_err("the grids, not the three raw samples, are charged");
+        assert!(err.to_string().contains("too many samples"), "{err}");
+        assert!(run(0).is_ok(), "0 is unlimited");
+    }
+
+    /// `ts-promql-max-response-series` bounds what the query returns, not only
+    /// each read: an `or` of two three-series reads returns six.
+    #[test]
+    fn the_result_is_bounded_by_max_series_not_only_each_read() {
+        // `or` matches label sets without `__name__`, so `a or b` would keep only
+        // `a`'s three: the right side gets a label of its own.
+        const OR6: &str = r#"a or label_replace(b, "src", "b", "", "")"#;
+        let (_, reader) = build_reader();
+        let parse = |q: &str| promql_parser::parser::parse(q).unwrap();
+        let with_max_series = |max_series| QueryOptions {
+            max_series,
+            ..options()
+        };
+        let range = |query: &str, max_series| {
+            let stmt = EvalStmt {
+                expr: parse(query),
+                start: ms(RANGE_START_MS),
+                end: ms(RANGE_END_MS),
+                interval: STEP,
+                lookback_delta: options().lookback_delta,
+            };
+            evaluate_range(reader.clone(), stmt, with_max_series(max_series))
+        };
+        let instant = |query: &str, max_series| {
+            let stmt = EvalStmt {
+                expr: parse(query),
+                start: ms(RANGE_END_MS),
+                end: ms(RANGE_END_MS),
+                interval: Duration::ZERO,
+                lookback_delta: options().lookback_delta,
+            };
+            evaluate_instant(
+                reader.clone(),
+                stmt,
+                ms(RANGE_END_MS),
+                with_max_series(max_series),
+            )
+        };
+
+        assert_eq!(range(OR6, 6).unwrap().len(), 6);
+        let err = range(OR6, 4).expect_err("six series returned, each read three");
+        assert!(
+            err.to_string().ends_with("max series limit: 6 > 4"),
+            "{err}"
+        );
+        assert!(instant(OR6, 6).is_ok());
+        let err = instant(OR6, 4).expect_err("the instant result too");
+        assert!(
+            err.to_string().ends_with("max series limit: 6 > 4"),
+            "{err}"
+        );
+        assert!(range(OR6, 0).is_ok(), "0 is unlimited");
+
+        // Series a range query accumulates across steps: every series holds the
+        // same value at a step and a new one at the next, so `count_values` makes
+        // one series per step, five in all, from a single series per step.
+        assert_eq!(
+            range("count_values(\"v\", a)", 5).unwrap().len(),
+            RANGE_STEPS
+        );
+        let err = range("count_values(\"v\", a)", 4).expect_err("one series per step");
+        assert!(err.to_string().contains("max series limit"), "{err}");
+    }
+
     #[test]
     fn instant_aggregation_is_one_pushdown_request() {
         let (counting, reader) = build_reader();

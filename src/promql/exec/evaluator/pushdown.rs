@@ -325,7 +325,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(None);
         };
-        let grouped = self.finish_grid(&request, outcome)?;
+        let grouped = self.finish_grid(&request, outcome, true)?;
 
         let samples = grouped
             .into_iter()
@@ -415,7 +415,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(None);
         };
-        let rolled = self.finish_grid(&request, outcome)?;
+        let rolled = self.finish_grid(&request, outcome, true)?;
 
         // A single evaluation yields at most one point per series, stamped with
         // the query's evaluation timestamp rather than the window end — so a

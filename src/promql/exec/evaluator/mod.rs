@@ -320,6 +320,31 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok(self.budget.charge(samples)?)
     }
 
+    /// Count a step grid the preloader built — its stored slots, holes
+    /// included — beyond `covered` samples already charged for the raw span it
+    /// was built from.
+    ///
+    /// A grid is charged as it is built, one series at a time, because it can
+    /// dwarf the read that fed it: one sample inside a long lookback fills a
+    /// slot at every step, so a read of a thousand samples could build a
+    /// billion slots that nothing counted. Building stops at the grid that
+    /// crosses the limit.
+    ///
+    /// Only the excess over `covered`, so a series costs the larger of its span
+    /// and its grid rather than their sum: for ordinary data the grid is the
+    /// smaller (a sample every 10 s under a 15 s step), and what a query is
+    /// charged stays what it decoded, as it was before grids were charged.
+    fn charge_grid<T>(&self, grid: &StepGrid<T>, covered: usize) -> EvalResult<()> {
+        self.charge_samples(grid.stored_len().saturating_sub(covered))
+    }
+
+    /// Fail if the budget is already past its limit, before building more: for
+    /// grids built in parallel, where another series' grid may have crossed it.
+    /// At the limit exactly is not past it, so an empty grid is still admitted.
+    fn check_budget(&self) -> EvalResult<()> {
+        self.charge_samples(0)
+    }
+
     fn charge_range_samples(&self, series: &[RangeSample<EvalLabels>]) -> EvalResult<()> {
         self.charge_samples(series.iter().map(|s| s.samples.len()).sum())
     }

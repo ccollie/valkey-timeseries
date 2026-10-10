@@ -302,6 +302,10 @@ fn bench_range_query(c: &mut Criterion) {
         timeout: None,
         deadline: None,
         enable_experimental_functions: true,
+        // These measure evaluation, not the limits: `count_values` returns
+        // ~110k series, past the default `max_response_series`.
+        max_series: 0,
+        max_samples: 0,
         ..QueryOptions::default()
     };
 
@@ -552,6 +556,10 @@ fn bench_group_samples(c: &mut Criterion) {
         timeout: None,
         deadline: None,
         enable_experimental_functions: true,
+        // These measure grouping, not the limits: `without (le)` over g_large
+        // returns 2,000 series, past the default `max_response_series`.
+        max_series: 0,
+        max_samples: 0,
         ..QueryOptions::default()
     };
     let query_time = ms_to_system_time((NUM_INTERVALS as i64 - 1) * INTERVAL_MS);
