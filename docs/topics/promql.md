@@ -340,8 +340,15 @@ query's own grid, a subquery's grid (`m[30d:1m]` is 43,200 steps), and a grid an
 node asks this one to evaluate. A query that needs more is rejected with an error before
 anything is read. Prometheus caps only the outer grid, at 11,000 points.
 
+The query text is parsed by the query worker, not by the command itself: the command checks
+only that the query is present and within `ts-promql-max-query-len`, so a slow-to-parse query
+never holds up other clients. Syntax, regex and nesting-depth errors are therefore reported
+after admission. A query refused because the queue is full, or one sent inside MULTI or a
+script, gets that error even if its text is also malformed.
+
 A query that is admitted to the queue keeps its `TIMEOUT` budget while it waits: one that
-expires before a worker takes it is answered with a timeout error without being evaluated.
+expires before a worker takes it is answered with a timeout error without being parsed or
+evaluated.
 Refusing on arrival once the backlog reaches `ts-promql-max-queued-queries` reports an
 overrun immediately instead of after every waiting query has timed out. `INFO ts_promql`
 shows the pool's state as `ts_queries_running`, `ts_queries_queued` and the cumulative

@@ -29,7 +29,7 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let promql_config = config_guard.deref();
     let ParsedPromqlQuery {
-        eval_stmt,
+        statement,
         mut options,
         hash_tags,
     } = parse_query_command_args(promql_config, &mut args)?;
@@ -39,12 +39,14 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // happens to have selected at the time the worker thread runs.
     options.db = get_current_db(ctx);
 
-    let eval_ts = eval_stmt.start;
+    let eval_ts = statement.start();
     let querier = get_promql_querier(ctx, hash_tags);
+    // The query text is parsed on the query worker, not here: see `submit_evaluation`.
     submit_evaluation(
         ctx,
         options.deadline,
-        move || evaluate_instant(querier, eval_stmt, eval_ts, options),
+        move || statement.parse(),
+        move |eval_stmt| evaluate_instant(querier, eval_stmt, eval_ts, options),
         move |ctx, result| {
             reply_with_query_value(ctx, result, system_time_to_millis(eval_ts));
         },

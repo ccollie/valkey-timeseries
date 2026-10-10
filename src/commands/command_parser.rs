@@ -34,7 +34,7 @@ use promql_parser::parser::{EvalStmt, Expr};
 use smallvec::SmallVec;
 use std::fmt::Display;
 use std::iter::{Peekable, Skip};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::vec::IntoIter;
 use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -1815,7 +1815,10 @@ fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {
     Ok(Some(limit as usize))
 }
 
-fn parse_promql_query(query: &str, config: &PromqlConfig) -> ValkeyResult<Expr> {
+/// The checks on a PromQL query's text that cost O(length): what the command handler applies
+/// on the main thread. Everything costlier is in [`parse_promql_query`], which runs on the
+/// query worker.
+fn check_promql_query_text(query: &str, config: &PromqlConfig) -> ValkeyResult<()> {
     if query.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_QUERY));
     }
@@ -1823,6 +1826,16 @@ fn parse_promql_query(query: &str, config: &PromqlConfig) -> ValkeyResult<Expr> 
         let msg = "TSDB: query too long"; // todo: better error
         return Err(ValkeyError::Str(msg));
     }
+    Ok(())
+}
+
+/// Parse a PromQL query whose text [`check_promql_query_text`] admitted.
+///
+/// Not for the main thread. Parsing grows faster than the text: measured with promql-parser
+/// 0.11.0 (release, Apple M2), a chain of 4,000 unary minus signs took 54 ms and one of
+/// 16,000 took 0.76 s, and the depth check that refuses both runs only after the parse. The
+/// regex pre-check costs up to about 75 ms on its own.
+fn parse_promql_query(query: &str) -> ValkeyResult<Expr> {
     // Before parsing: the parser compiles every regex matcher without a size limit.
     validate_query_regexes(query).map_err(ValkeyError::String)?;
     // TODO: it may be helpful to return the exact error
@@ -1856,9 +1869,39 @@ fn parse_duration_internal(arg: Option<ValkeyString>, token_name: &str) -> Valke
 /// it selects which peers the coordinator contacts and is never part of
 /// evaluation.
 pub(super) struct ParsedPromqlQuery {
-    pub eval_stmt: EvalStmt,
+    pub statement: PromqlStatement,
     pub options: crate::promql::QueryOptions,
     pub hash_tags: Vec<String>,
+}
+
+/// A `TS.QUERY` / `TS.QUERYRANGE` statement whose arguments are resolved but whose query text
+/// is not yet parsed: the command handler builds it on the main thread, and the query worker
+/// parses it ([`Self::parse`]). The text has passed [`check_promql_query_text`].
+pub(super) struct PromqlStatement {
+    query: String,
+    start: SystemTime,
+    end: SystemTime,
+    interval: Duration,
+    lookback_delta: Duration,
+}
+
+impl PromqlStatement {
+    /// The evaluation time of an instant query; the start of a range query.
+    pub fn start(&self) -> SystemTime {
+        self.start
+    }
+
+    /// Parse the query text into the statement to evaluate. An error is the command's reply
+    /// as it stands, with the same text it had when the handler parsed.
+    pub fn parse(self) -> ValkeyResult<EvalStmt> {
+        Ok(EvalStmt {
+            expr: parse_promql_query(&self.query)?,
+            start: self.start,
+            end: self.end,
+            interval: self.interval,
+            lookback_delta: self.lookback_delta,
+        })
+    }
 }
 
 fn set_query_timeout(
@@ -1888,7 +1931,7 @@ pub(super) fn parse_query_range_command_args(
     let mut hash_tags: Vec<String> = Vec::new();
     let mut options = crate::promql::QueryOptions::default();
 
-    let expr = parse_promql_query(&query, config)?;
+    check_promql_query_text(&query, config)?;
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -1963,8 +2006,8 @@ pub(super) fn parse_query_range_command_args(
         }));
     }
 
-    let eval_stmt = EvalStmt {
-        expr,
+    let statement = PromqlStatement {
+        query,
         start: timestamp_to_system_time(start),
         end: timestamp_to_system_time(end),
         interval: step,
@@ -1972,7 +2015,7 @@ pub(super) fn parse_query_range_command_args(
     };
 
     Ok(ParsedPromqlQuery {
-        eval_stmt,
+        statement,
         options,
         hash_tags,
     })
@@ -2009,7 +2052,7 @@ pub(super) fn parse_query_command_args(
     let mut hash_tags: Vec<String> = Vec::new();
     let mut options = crate::promql::QueryOptions::default();
 
-    let expr = parse_promql_query(&query, config)?;
+    check_promql_query_text(&query, config)?;
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -2041,8 +2084,8 @@ pub(super) fn parse_query_command_args(
 
     let query_time = timestamp_to_system_time(evaluation_ts.as_timestamp(None));
 
-    let eval_stmt = EvalStmt {
-        expr,
+    let statement = PromqlStatement {
+        query,
         start: query_time,
         end: query_time,
         interval: Duration::from_secs(0),
@@ -2050,7 +2093,7 @@ pub(super) fn parse_query_command_args(
     };
 
     Ok(ParsedPromqlQuery {
-        eval_stmt,
+        statement,
         options,
         hash_tags,
     })
@@ -2060,6 +2103,75 @@ pub(super) fn parse_query_command_args(
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    fn statement(query: &str) -> PromqlStatement {
+        PromqlStatement {
+            query: query.to_string(),
+            start: SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+            end: SystemTime::UNIX_EPOCH + Duration::from_secs(70),
+            interval: Duration::from_secs(15),
+            lookback_delta: Duration::from_secs(300),
+        }
+    }
+
+    fn error_text(err: ValkeyError) -> String {
+        err.to_string()
+    }
+
+    /// The handler's own checks are the cheap ones: an empty or over-long query is refused
+    /// there, and anything else is admitted unparsed, however wrong or deep.
+    #[test]
+    fn the_handler_checks_only_what_costs_o_length() {
+        let config = PromqlConfig {
+            max_query_len: 1024,
+            ..Default::default()
+        };
+        let empty = check_promql_query_text("", &config).unwrap_err();
+        assert_eq!(error_text(empty), error_consts::MISSING_QUERY);
+        let long = check_promql_query_text(&"u".repeat(1025), &config).unwrap_err();
+        assert_eq!(error_text(long), "TSDB: query too long");
+        assert!(check_promql_query_text(&"u".repeat(1024), &config).is_ok());
+
+        let deep = format!("{}up", "-".repeat(1000));
+        for admitted in ["invalid {[}", r#"up{a=~"[a-z]{3000}"}"#, deep.as_str()] {
+            assert!(
+                check_promql_query_text(admitted, &config).is_ok(),
+                "{admitted}"
+            );
+        }
+    }
+
+    /// The worker's parse refuses what the handler used to, with the same reply text.
+    #[test]
+    fn the_worker_parse_keeps_the_handler_error_texts() {
+        let invalid = statement("invalid {[}").parse().unwrap_err();
+        assert_eq!(error_text(invalid), error_consts::INVALID_QUERY);
+
+        let regex = statement(r#"up{server=~"[a-z]{3000}"}"#)
+            .parse()
+            .unwrap_err();
+        assert!(
+            error_text(regex).contains("regex for label 'server'"),
+            "regex error names the label"
+        );
+
+        // Past `MAX_QUERY_DEPTH` (500): each `+u` nests one level.
+        let chain = format!("u{}", "+u".repeat(600));
+        let deep = statement(&chain).parse().unwrap_err();
+        assert!(error_text(deep).contains("nested too deeply"));
+    }
+
+    #[test]
+    fn the_worker_parse_keeps_the_resolved_arguments() {
+        let stmt = statement("rate(up[5m])").parse().unwrap();
+        let expected = statement("rate(up[5m])");
+        assert_eq!(stmt.start, expected.start);
+        assert_eq!(stmt.end, expected.end);
+        assert_eq!(stmt.interval, expected.interval);
+        assert_eq!(stmt.lookback_delta, expected.lookback_delta);
+        assert_eq!(stmt.expr.to_string(), "rate(up[5m])");
+        assert_eq!(expected.start(), expected.start);
+    }
 
     #[test]
     fn explicit_timeout_replaces_the_default_deadline() {

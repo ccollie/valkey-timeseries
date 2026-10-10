@@ -33,7 +33,7 @@ pub fn ts_queryrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     let config_guard = promql_config();
     let promql_config = config_guard.deref();
     let ParsedPromqlQuery {
-        eval_stmt,
+        statement,
         mut options,
         hash_tags,
     } = parse_query_range_command_args(promql_config, &mut args)?;
@@ -44,10 +44,12 @@ pub fn ts_queryrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     options.db = get_current_db(ctx);
 
     let querier = get_promql_querier(ctx, hash_tags);
+    // The query text is parsed on the query worker, not here: see `submit_evaluation`.
     submit_evaluation(
         ctx,
         options.deadline,
-        move || evaluate_range(querier, eval_stmt, options),
+        move || statement.parse(),
+        move |eval_stmt| evaluate_range(querier, eval_stmt, options),
         |ctx, result| {
             reply_with_query_value(ctx, QueryValue::Matrix(result), current_time_millis());
         },

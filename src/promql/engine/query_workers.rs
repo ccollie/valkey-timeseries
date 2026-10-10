@@ -65,18 +65,28 @@ pub(crate) fn run_evaluation<R: Send>(evaluate: impl FnOnce() -> R + Send) -> R 
 /// Evaluate a query for the client of `ctx` on a query worker, and answer it from there.
 ///
 /// The client is blocked only once the backlog has room for the query, so a refusal is an
-/// ordinary error reply. `evaluate` runs on the evaluation pool ([`run_evaluation`]); `reply`
-/// writes its result afterwards. A query whose `deadline` passed while it waited for a worker
-/// is answered with a timeout and never evaluated: the wait counts against its budget.
-pub(crate) fn submit_evaluation<R, E, P>(
+/// ordinary error reply. On the worker, `prepare` runs first — parsing the query text — and an
+/// error from it is the reply as it stands; then `evaluate` runs on the evaluation pool
+/// ([`run_evaluation`]) over what `prepare` produced, and `reply` writes its result. A query
+/// whose `deadline` passed while it waited for a worker is answered with a timeout and neither
+/// prepared nor evaluated: the wait counts against its budget.
+///
+/// `prepare` is here, not in the command handler, because parsing costs time that grows faster
+/// than the query text: a 16 KiB query took 0.76 s to parse, and on the main thread that is a
+/// stall for every client, paid even by a query refused afterwards for its depth. On a worker
+/// it is bounded by the same pool and queue as evaluation.
+pub(crate) fn submit_evaluation<S, R, Q, E, P>(
     ctx: &Context,
     deadline: Option<Timestamp>,
+    prepare: Q,
     evaluate: E,
     reply: P,
 ) -> ValkeyResult
 where
+    S: Send + 'static,
     R: Send + 'static,
-    E: FnOnce() -> QueryResult<R> + Send + 'static,
+    Q: FnOnce() -> ValkeyResult<S> + Send + 'static,
+    E: FnOnce(S) -> QueryResult<R> + Send + 'static,
     P: FnOnce(&ReplyContext, R) + Send + 'static,
 {
     // Checked before blocking: the server asserts on a blocked deny-blocking
@@ -97,11 +107,20 @@ where
             thread_ctx.reply(Err(ValkeyError::String(QueryError::Timeout.to_string())));
             return;
         }
+        // On this thread, not the evaluation pool: it is sequential, and its own thread keeps
+        // it from holding a pool worker other evaluations' parallel work could use.
+        let prepared = match prepare() {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                thread_ctx.reply(Err(err));
+                return;
+            }
+        };
         let evaluate = move || {
             if PANIC_NEXT_EVALUATION.swap(false, Ordering::Relaxed) {
                 panic!("TS._DEBUG PANIC_NEXT_EVALUATION");
             }
-            evaluate()
+            evaluate(prepared)
         };
         match run_evaluation(evaluate) {
             Ok(value) => reply(&thread_ctx.get_reply_context(), value),

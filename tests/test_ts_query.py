@@ -8,7 +8,8 @@ from __future__ import annotations
 import math
 import pytest
 from datetime import datetime, timezone, timedelta
-from valkey import ResponseError
+from time import sleep
+from valkey import Connection, ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -595,6 +596,53 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
             assert len(self._vector_values_by_label(result, "server")) == 4
         finally:
             self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 4096)
+
+    def test_slow_parses_do_not_stall_the_main_thread(self):
+        """Parsing grows faster than the query text: a 16 KiB chain of unary minus signs took
+        about 0.76 s to parse, and the depth check that refuses it runs only afterwards. The
+        command handler used to parse on the main thread, so every client waited for every
+        such query. The text is now parsed on a query worker, and the error still arrives."""
+        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 16384)
+        connections = []
+        try:
+            deep = "-" * 16000 + "up"
+            for _ in range(4):
+                conn = Connection(host=self.server.bind_ip, port=self.server.port, socket_timeout=30)
+                conn.connect()
+                conn.send_command("TS.QUERY", deep)
+                connections.append(conn)
+            # Sample the main thread's latency across the burst. One of these parses held it
+            # for ~0.8 s on an M2, so a PING that lands during one waits for the rest of it;
+            # off the main thread every PING is answered in milliseconds.
+            worst = timedelta(0)
+            sampling_until = datetime.now() + timedelta(seconds=1.5)
+            while datetime.now() < sampling_until:
+                started = datetime.now()
+                assert self.client.execute_command("PING")
+                worst = max(worst, datetime.now() - started)
+                sleep(0.01)
+            assert worst < timedelta(seconds=0.3), f"main thread stalled for {worst}"
+
+            for conn in connections:
+                with pytest.raises(ResponseError, match="nested too deeply"):
+                    conn.read_response()
+        finally:
+            for conn in connections:
+                conn.disconnect()
+            self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 4096)
+
+    def test_parse_errors_arrive_from_the_worker_in_order(self):
+        """A query that fails to parse is answered from the query worker. A pipelined
+        command after it must read its own reply, not the parse error."""
+        time = self.setup_http_requests_scenario()
+        pipe = self.client.pipeline(transaction=False)
+        pipe.execute_command("TS.QUERY", "invalid {[}")
+        pipe.execute_command("TS.QUERY", "http_requests_total", "TIME", time)
+        pipe.execute_command("PING")
+        invalid, valid, pong = pipe.execute(raise_on_error=False)
+        assert isinstance(invalid, ResponseError)
+        assert not isinstance(valid, ResponseError)
+        assert pong in (True, b"PONG", "PONG")
 
     def test_aggregation_sum(self):
         time = self.setup_http_requests_scenario()
