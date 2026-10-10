@@ -10,6 +10,7 @@ use crate::fanout::{FanoutCommandResult, FanoutError, exec_command, get_cluster_
 use crate::fanout::{compute_hash_tag_fanout_target, is_clustered, with_fanout_user};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::label_profile::{
     LabelProfile, LabelProfileBuilder, profiled_series_cap,
 };
@@ -797,6 +798,8 @@ fn execute_cluster_grid(
     let timeout = calculate_timeout(&gc.options);
     let max_series = gc.options.max_series;
     let max_points_per_series = gc.options.max_points_per_series;
+    let max_samples = gc.options.max_samples;
+    let deadline = Deadline::from_options(&gc.options);
     let cmd = GridFanoutCommand::new(
         gc.matchers,
         gc.request,
@@ -811,8 +814,8 @@ fn execute_cluster_grid(
 
     let handler = move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
         let peer_unsupported = cmd.peer_unsupported();
-        let query_result = match result.and_then(|()| cmd.into_result()) {
-            Ok(outcome) => {
+        let query_result = match result {
+            Ok(()) => cmd.into_result(&deadline, max_samples).and_then(|outcome| {
                 // The grid output, not the input, is what these bound: one
                 // entry per series (or group), one point per step that produced
                 // one.
@@ -823,13 +826,12 @@ fn execute_cluster_grid(
                     | GridOutcome::Raw(series) => series.iter().map(|s| s.samples.len()).collect(),
                     GridOutcome::Unsupported => Vec::new(),
                 };
-                validate_max_series_(points.len(), max_series).and_then(|_| {
-                    for count in points {
-                        validate_max_points_per_series(count, max_points_per_series)?;
-                    }
-                    Ok(SelectorOutput::Grid(outcome))
-                })
-            }
+                validate_max_series_(points.len(), max_series)?;
+                for count in points {
+                    validate_max_points_per_series(count, max_points_per_series)?;
+                }
+                Ok(SelectorOutput::Grid(outcome))
+            }),
             Err(e) if peer_unsupported => {
                 log_warning(format!(
                     "promql: grid push-down unsupported by a peer, evaluating without it: {e}"

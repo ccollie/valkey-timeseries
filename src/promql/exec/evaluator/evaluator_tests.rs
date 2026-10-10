@@ -4606,7 +4606,11 @@ mod tests {
             // Evaluate here, exactly as a shard does — through the request's
             // own kernels, so this stands in for the shard rather than
             // imitating it.
-            request.evaluate(spans, &crate::promql::deadline::Deadline::default())
+            request.evaluate(
+                spans,
+                &crate::promql::deadline::Deadline::default(),
+                &mut |_| Ok(()),
+            )
         }
     }
 

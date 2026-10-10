@@ -421,9 +421,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(());
         };
-        let decoded = raw_span_samples(&outcome);
-        let rolled = self.finish_grid(&request, outcome, false)?;
-        let series = self.scatter_charged(&window_ends, rolled, decoded)?;
+        let (rolled, charged) = self.finish_grid(&request, outcome, false)?;
+        let series = self.scatter_charged(&window_ends, rolled, charged)?;
         self.cache_preloaded_grid(key, grid, series);
         Ok(())
     }
@@ -431,16 +430,18 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// Scatter each entry's `(window end, value)` points onto the step grid,
     /// charging every grid to the budget as it is built ([`Self::charge_grid`]).
     ///
-    /// `decoded` is what the raw span the entries were computed from already
-    /// cost (0 for a pushed-down answer): the grids are charged only past it,
-    /// so the request costs the larger of its span and its grids.
+    /// `charged` is what [`Self::finish_grid`] already charged for the entries
+    /// — the raw span they were computed from and the points that span
+    /// expanded to, or 0 for a pushed-down answer: the grids are charged only
+    /// past it, for the holes they add, so the request costs the larger of its
+    /// span and its grids.
     pub(super) fn scatter_charged(
         &self,
         window_ends: &[Timestamp],
         entries: Vec<RangeSample<EvalLabels>>,
-        decoded: usize,
+        charged: usize,
     ) -> EvalResult<Vec<PreloadedGridSeries>> {
-        let mut covered = decoded;
+        let mut covered = charged;
         entries
             .into_iter()
             .map(|s| {
@@ -507,21 +508,32 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// that scatters them onto a step grid passes `false` and charges the grid
     /// instead ([`Self::charge_grid`]): the grid is what stays, and charging
     /// both would count every point twice.
+    ///
+    /// Alongside the points comes what was charged for them here, for
+    /// [`Self::scatter_charged`] to charge the grid past.
     pub(super) fn finish_grid(
         &self,
         request: &GridRequest,
         outcome: GridOutcome,
         charge_points: bool,
-    ) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
+    ) -> EvalResult<(Vec<RangeSample<EvalLabels>>, usize)> {
         // A raw span is charged here, whatever the caller does with it: it was
-        // decoded on this node (before the evaluation turns it into one point
-        // per step). A pushed-down answer is charged for the points that
-        // arrived, unless the caller charges the grid it builds from them —
-        // its source charged the span against its own budget.
+        // decoded on this node. So is whatever the evaluation expands it to
+        // beyond that, chunk by chunk as it is built — one sample in a long
+        // window answers at every step, and a grid that crosses the budget has
+        // to stop there, not be refused once it is whole. A pushed-down answer
+        // is charged for the points that arrived, unless the caller charges the
+        // grid it builds from them — its source charged the span against its
+        // own budget.
+        let mut charged = 0;
         let outcome = match outcome {
             GridOutcome::Raw(series) => {
-                self.charge_range_samples(&series)?;
-                request.evaluate(series, &self.deadline())?
+                charged = series.iter().map(|s| s.samples.len()).sum();
+                self.charge_samples(charged)?;
+                request.evaluate(series, &self.deadline(), &mut |expanded| {
+                    charged += expanded;
+                    self.budget.charge(expanded)
+                })?
             }
             GridOutcome::Rolled(series) => {
                 if charge_points {
@@ -542,8 +554,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             request.rollup.is_some(),
             request.aggregation.is_some(),
         ) {
-            (GridOutcome::Rolled(series), true, false) => Ok(series),
-            (GridOutcome::Reduced(groups), _, true) => Ok(groups),
+            (GridOutcome::Rolled(series), true, false) => Ok((series, charged)),
+            (GridOutcome::Reduced(groups), _, true) => Ok((groups, charged)),
             _ => Err(EvaluationError::InternalError(
                 "grid request answered with the wrong shape".to_string(),
             )),
@@ -641,7 +653,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // A peer without grid push-down: not cached, so the selector is
             // preloaded on its own and the aggregation runs per step.
             GridOutcome::Unsupported => return Ok(()),
-            outcome => self.finish_grid(&request, outcome, false)?,
+            outcome => self.finish_grid(&request, outcome, false)?.0,
         };
         // A raw answer took the stepped path above, so nothing here was decoded locally.
         let series = self.scatter_charged(&window_ends, groups, 0)?;
@@ -817,14 +829,5 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         cache.insert(key, data);
         drop(cache);
         self.note_preloaded();
-    }
-}
-
-/// The raw samples a grid answer carries: what [`Evaluator::finish_grid`]
-/// charges for a source that answered raw, and 0 for any other answer.
-fn raw_span_samples(outcome: &GridOutcome) -> usize {
-    match outcome {
-        GridOutcome::Raw(series) => series.iter().map(|s| s.samples.len()).sum(),
-        _ => 0,
     }
 }

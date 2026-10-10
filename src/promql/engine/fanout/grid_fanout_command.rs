@@ -35,7 +35,7 @@ use crate::fanout::{
     get_cluster_command_timeout, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
-use crate::promql::EvalLabels;
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::query_utils::local_grid_windows;
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
@@ -45,6 +45,7 @@ use crate::promql::engine::query_reader::{
     GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, SteppedPoint, SteppedSeries,
     grid_window_ends,
 };
+use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::exec::aggregations::PushdownStrategy;
 use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSelection};
 use crate::promql::functions::RollupKind;
@@ -57,6 +58,7 @@ use crate::promql::generated::{
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::model::RangeSample;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count};
+use crate::promql::{EvalLabels, EvaluationError, QueryError, QueryResult};
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
 use std::time::Duration;
@@ -238,61 +240,87 @@ impl GridFanoutCommand {
     /// same window ends a shard used, and — for a fused request — folded into
     /// the partials or candidates the shards sent. What comes out is the same
     /// either way.
-    pub fn into_result(mut self) -> Result<GridOutcome, FanoutError> {
+    ///
+    /// Shards ship a series raw exactly when it holds fewer samples than there
+    /// are steps ([`ships_raw`]), so the raw spans are the ones whose output
+    /// can dwarf them: one sample in a long window answers at every step. They
+    /// go through the stage a chunk at a time
+    /// ([`GridRequest::per_series_chunked`]), `deadline` checked before each.
+    /// A fused request folds each chunk into its groups and drops it. An
+    /// unfused one keeps every point, so its output is counted against
+    /// `max_samples` (`ts-promql-max-samples-per-query`) as it is built: the
+    /// evaluator charges at least that many to the query's budget once it has
+    /// the result, so a request over the limit on its own is refused at the
+    /// chunk that crosses it rather than after the whole grid is built.
+    pub fn into_result(
+        mut self,
+        deadline: &Deadline,
+        max_samples: usize,
+    ) -> QueryResult<GridOutcome> {
         let raw = std::mem::take(&mut self.raw);
-        let mut stepped = std::mem::take(&mut self.stepped);
-        let mut rolled = std::mem::take(&mut self.rolled);
-
-        if !raw.is_empty() {
-            match self.request.per_series(&self.window_ends, raw) {
-                GridSeries::Stepped(series) => stepped.extend(series),
-                GridSeries::Rolled(series) => rolled.extend(series),
-            }
-        }
-
-        if let Some(mut selection) = self.selection.take() {
-            // Fused with a selecting or counting operator: the shards'
-            // outputs are candidates; whatever arrived raw or un-selected is
-            // run through the operator here and joins them.
-            let unselected = if self.request.rollup.is_some() {
+        let stepped = std::mem::take(&mut self.stepped);
+        let rolled = std::mem::take(&mut self.rolled);
+        let selection = self.selection.take();
+        let partials = self.partials.take();
+        let request = &self.request;
+        let window_ends = &self.window_ends;
+        let shard_output = || {
+            if request.rollup.is_some() {
                 GridSeries::Rolled(rolled)
             } else {
                 GridSeries::Stepped(stepped)
             }
-            .into_step_values();
+        };
+        let execution = |e: EvaluationError| QueryError::Execution(e.to_string());
+
+        if let Some(mut selection) = selection {
+            // Fused with a selecting or counting operator: the shards'
+            // outputs are candidates; whatever arrived raw or un-selected is
+            // run through the operator here and joins them.
+            let unselected = shard_output().into_step_values();
             if !unselected.is_empty() {
-                selection
-                    .apply(unselected)
-                    .map_err(|e| FanoutError::custom(e.to_string()))?;
+                selection.apply(unselected).map_err(execution)?;
             }
+            request.per_series_chunked(window_ends, raw, deadline, |output, _| {
+                selection
+                    .apply(output.into_step_values())
+                    .map_err(execution)
+            })?;
             return selection
                 .finalize()
                 .map(GridOutcome::Reduced)
-                .map_err(|e| FanoutError::custom(e.to_string()));
+                .map_err(execution);
         }
 
-        Ok(match self.partials.take() {
+        if let Some(mut partials) = partials {
             // Fused: fold in whatever arrived un-grouped, then finalize every
             // (group, step).
-            Some(mut partials) => {
-                let modifier = self
-                    .request
-                    .aggregation
-                    .as_ref()
-                    .and_then(|agg| agg.modifier.as_ref());
-                let ungrouped = if self.request.rollup.is_some() {
-                    GridSeries::Rolled(rolled)
-                } else {
-                    GridSeries::Stepped(stepped)
-                }
-                .into_step_values();
-                if !ungrouped.is_empty() {
-                    partials.accumulate(modifier, ungrouped);
-                }
-                GridOutcome::Reduced(partials.finalize())
+            let modifier = request
+                .aggregation
+                .as_ref()
+                .and_then(|agg| agg.modifier.as_ref());
+            let ungrouped = shard_output().into_step_values();
+            if !ungrouped.is_empty() {
+                partials.accumulate(modifier, ungrouped);
             }
-            None if self.request.rollup.is_some() => GridOutcome::Rolled(rolled),
-            None => GridOutcome::Stepped(stepped),
+            request.per_series_chunked(window_ends, raw, deadline, |output, _| {
+                partials.accumulate(modifier, output.into_step_values());
+                Ok(())
+            })?;
+            return Ok(GridOutcome::Reduced(partials.finalize()));
+        }
+
+        let mut output = shard_output();
+        let budget = SampleBudget::new(max_samples);
+        budget.charge(output.points())?;
+        request.per_series_chunked(window_ends, raw, deadline, |chunk, _| {
+            budget.charge(chunk.points())?;
+            output.append(chunk);
+            Ok(())
+        })?;
+        Ok(match output {
+            GridSeries::Stepped(series) => GridOutcome::Stepped(series),
+            GridSeries::Rolled(series) => GridOutcome::Rolled(series),
         })
     }
 }

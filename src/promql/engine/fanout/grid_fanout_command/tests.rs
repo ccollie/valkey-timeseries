@@ -377,7 +377,7 @@ fn fan_out(request: &GridRequest, shards: &[Vec<RangeSample<EvalLabels>>]) -> Gr
         cmd.on_response(response(request, shard.clone()), &node(7000 + index as u16))
             .expect("shard response accepted");
     }
-    cmd.into_result().unwrap()
+    cmd.into_result(&Deadline::default(), 0).unwrap()
 }
 
 /// The push-down contract: evaluating at the shards and combining equals
@@ -388,7 +388,11 @@ fn test_fanout_matches_single_node() {
     for shards in [test_shards(), dense_shards()] {
         let all: Vec<RangeSample<EvalLabels>> = shards.iter().flatten().cloned().collect();
         for (shape, request) in request_shapes() {
-            let want = rendered(request.evaluate(all.clone(), &Deadline::default()).unwrap());
+            let want = rendered(
+                request
+                    .evaluate(all.clone(), &Deadline::default(), &mut |_| Ok(()))
+                    .unwrap(),
+            );
 
             assert_eq!(want, rendered(fan_out(&request, &shards)), "{shape}");
 
@@ -400,7 +404,7 @@ fn test_fanout_matches_single_node() {
             }
             assert_eq!(
                 want,
-                rendered(cmd.into_result().unwrap()),
+                rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
                 "{shape} (all raw)"
             );
 
@@ -414,7 +418,7 @@ fn test_fanout_matches_single_node() {
             }
             assert_eq!(
                 want,
-                rendered(cmd.into_result().unwrap()),
+                rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
                 "{shape} (mixed)"
             );
         }
@@ -459,7 +463,11 @@ fn test_stepped_selection_matches_the_step_loop_rule() {
         ]
     );
 
-    let got = rendered(request.evaluate(vec![input], &Deadline::default()).unwrap());
+    let got = rendered(
+        request
+            .evaluate(vec![input], &Deadline::default(), &mut |_| Ok(()))
+            .unwrap(),
+    );
     assert_eq!(got, vec![("m{instance=\"0\"}".to_string(), want)]);
 }
 
@@ -501,10 +509,14 @@ fn test_modifiers_are_geometry() {
 }
 
 fn request_points(request: &GridRequest, input: RangeSample<EvalLabels>) -> Vec<Point> {
-    rendered(request.evaluate(vec![input], &Deadline::default()).unwrap())
-        .pop()
-        .map(|(_, points)| points)
-        .unwrap_or_default()
+    rendered(
+        request
+            .evaluate(vec![input], &Deadline::default(), &mut |_| Ok(()))
+            .unwrap(),
+    )
+    .pop()
+    .map(|(_, points)| points)
+    .unwrap_or_default()
 }
 
 /// The size rule: a series with fewer samples in the span than the grid
@@ -529,10 +541,14 @@ fn test_size_rule_ships_the_smaller_form() {
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result().unwrap()),
+        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
         rendered(
             request
-                .evaluate(vec![sparse.clone(), dense.clone()], &Deadline::default())
+                .evaluate(
+                    vec![sparse.clone(), dense.clone()],
+                    &Deadline::default(),
+                    &mut |_| Ok(())
+                )
                 .unwrap()
         ),
     );
@@ -552,10 +568,10 @@ fn test_size_rule_ships_the_smaller_form() {
     let mut cmd = command(fused.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result().unwrap()),
+        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
         rendered(
             fused
-                .evaluate(vec![sparse, dense], &Deadline::default())
+                .evaluate(vec![sparse, dense], &Deadline::default(), &mut |_| Ok(()))
                 .unwrap()
         ),
     );
@@ -687,10 +703,10 @@ fn test_reduction_folds_a_sparse_group() {
         let mut cmd = command(request.clone());
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
-            rendered(cmd.into_result().unwrap()),
+            rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
             rendered(
                 request
-                    .evaluate(windows.clone(), &Deadline::default())
+                    .evaluate(windows.clone(), &Deadline::default(), &mut |_| Ok(()))
                     .unwrap()
             ),
             "{what}"
@@ -723,10 +739,10 @@ fn test_reduction_keeps_a_lone_sparse_series_raw() {
         let mut cmd = command(request.clone());
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
-            rendered(cmd.into_result().unwrap()),
+            rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
             rendered(
                 request
-                    .evaluate(vec![lone.clone()], &Deadline::default())
+                    .evaluate(vec![lone.clone()], &Deadline::default(), &mut |_| Ok(()))
                     .unwrap()
             ),
             "{what}"
@@ -791,8 +807,12 @@ fn test_groups_decide_independently() {
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result().unwrap()),
-        rendered(request.evaluate(windows, &Deadline::default()).unwrap()),
+        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+        rendered(
+            request
+                .evaluate(windows, &Deadline::default(), &mut |_| Ok(()))
+                .unwrap()
+        ),
     );
 }
 
@@ -890,7 +910,11 @@ fn test_every_reduction_folds_sparse_groups_like_single_node() {
                     base.rollup.as_ref().map(|r| r.kind)
                 );
                 let request = fused_modifier(base.clone(), kind, modifier);
-                let want = rendered(request.evaluate(all.clone(), &Deadline::default()).unwrap());
+                let want = rendered(
+                    request
+                        .evaluate(all.clone(), &Deadline::default(), &mut |_| Ok(()))
+                        .unwrap(),
+                );
 
                 let mut cmd = command(request.clone());
                 for (index, shard) in shards.iter().enumerate() {
@@ -901,7 +925,11 @@ fn test_every_reduction_folds_sparse_groups_like_single_node() {
                     );
                     cmd.on_response(resp, &node(7000 + index as u16)).unwrap();
                 }
-                assert_rendered_close(&want, &rendered(cmd.into_result().unwrap()), &what);
+                assert_rendered_close(
+                    &want,
+                    &rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+                    &what,
+                );
             }
         }
     }
@@ -1054,7 +1082,7 @@ fn test_grid_transport_is_sparse() {
 
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(gappy), &node(7000)).unwrap();
-    let GridOutcome::Rolled(fallback) = cmd.into_result().unwrap() else {
+    let GridOutcome::Rolled(fallback) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
         panic!("a rollup request answers Rolled");
     };
     assert_eq!(fallback.len(), 1);
@@ -1078,7 +1106,7 @@ fn test_absence_is_not_nan() {
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(outside), &node(7000)).unwrap();
     assert!(
-        rendered(cmd.into_result().unwrap()).is_empty(),
+        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()).is_empty(),
         "a series with no samples in the window must not be reported"
     );
 
@@ -1087,11 +1115,84 @@ fn test_absence_is_not_nan() {
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(nan_series), &node(7000))
         .unwrap();
-    let GridOutcome::Rolled(rolled) = cmd.into_result().unwrap() else {
+    let GridOutcome::Rolled(rolled) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
         panic!("a rollup request answers Rolled");
     };
     assert_eq!(rolled.len(), 1, "the NaN result is a result");
     assert!(rolled[0].samples[0].value.is_nan());
+}
+
+/// Raw arrivals are the sparse series, which expand on the coordinator: one
+/// sample in a window wider than the range answers at every step. 300 such
+/// series over 10,000 steps are three million points, which have to be
+/// refused as they are built, not once the grid is whole.
+fn expanding_arrivals() -> (GridRequest, Vec<RangeSample<EvalLabels>>) {
+    let request = GridRequest {
+        step_ms: 1_000,
+        query_start: 0,
+        query_end: 9_999_000,
+        range_end_ms: 9_999_000,
+        rollup: Some(GridRollup {
+            kind: RollupKind::CountOverTime,
+            range_ms: 10_000_000,
+            param: None,
+        }),
+        ..stepped_request()
+    };
+    let sparse = (0..300)
+        .map(|i| series(&i.to_string(), &[(0, 1.0)]))
+        .collect();
+    (request, sparse)
+}
+
+#[test]
+fn test_raw_expansion_is_refused_past_max_samples() {
+    let (request, sparse) = expanding_arrivals();
+    let mut cmd = command(request.clone());
+    cmd.on_response(raw_response(sparse.clone()), &node(7000))
+        .unwrap();
+    let err = cmd
+        .into_result(&Deadline::default(), 1_000_000)
+        .err()
+        .expect("three million points over a million-sample limit");
+    let QueryError::TooManySamples { loaded, limit } = err else {
+        panic!("refused as over the sample limit: {err}");
+    };
+    assert_eq!(limit, 1_000_000);
+    assert!(
+        loaded < 2_000_000,
+        "stopped at the chunk that crossed: {loaded}"
+    );
+
+    // Unlimited, the same arrivals answer in full.
+    let mut cmd = command(request);
+    cmd.on_response(raw_response(sparse), &node(7000)).unwrap();
+    let GridOutcome::Rolled(rolled) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+        panic!("a rollup request answers Rolled");
+    };
+    assert_eq!(
+        rolled.iter().map(|s| s.samples.len()).sum::<usize>(),
+        3_000_000
+    );
+}
+
+#[test]
+fn test_raw_expansion_stops_at_a_passed_deadline() {
+    let (request, sparse) = expanding_arrivals();
+    let options = crate::promql::QueryOptions {
+        deadline: Some(crate::common::time::current_time_millis() - 1),
+        ..crate::promql::QueryOptions::default()
+    };
+    for request in [request.clone(), fused(request, AggregationKind::Sum, &[])] {
+        let mut cmd = command(request);
+        cmd.on_response(raw_response(sparse.clone()), &node(7000))
+            .unwrap();
+        let err = cmd
+            .into_result(&Deadline::from_options(&options), 0)
+            .err()
+            .expect("past its deadline");
+        assert!(matches!(err, QueryError::Timeout), "{err}");
+    }
 }
 
 /// The request carries the resolved grid, rollup and aggregation, and
@@ -1185,7 +1286,7 @@ fn test_sample_timestamps_travel_only_on_request() {
 
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
-    let GridOutcome::Stepped(stepped) = cmd.into_result().unwrap() else {
+    let GridOutcome::Stepped(stepped) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
         panic!("a stepped request answers Stepped");
     };
     assert!(
@@ -1217,7 +1318,7 @@ fn test_sample_timestamps_travel_only_on_request() {
     let mut cmd = command(asking.clone());
     cmd.on_response(response(&asking, vec![dense()]), &node(7000))
         .unwrap();
-    let GridOutcome::Stepped(stepped) = cmd.into_result().unwrap() else {
+    let GridOutcome::Stepped(stepped) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
         panic!()
     };
     assert!(
@@ -1584,12 +1685,12 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
 
         let want = rendered(
             request
-                .evaluate(windows.clone(), &Deadline::default())
+                .evaluate(windows.clone(), &Deadline::default(), &mut |_| Ok(()))
                 .unwrap(),
         );
         let mut cmd = command(request.clone());
         cmd.on_response(split, &node(7000)).unwrap();
-        let got = rendered(cmd.into_result().unwrap());
+        let got = rendered(cmd.into_result(&Deadline::default(), 0).unwrap());
         if is_fused {
             assert_rendered_close(&want, &got, what);
         } else {

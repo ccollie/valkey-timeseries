@@ -1040,6 +1040,44 @@ mod tests {
         assert!(run(0).is_ok(), "0 is unlimited");
     }
 
+    /// The same for a rollup: one sample per series in a window that spans
+    /// every step answers at every step. The expansion is charged as the
+    /// rollup builds it, and the grid only for what it adds past that, so the
+    /// query costs its grids exactly once.
+    #[test]
+    fn a_sparse_rollup_is_charged_once_for_the_grid_it_fills() {
+        const STEPS: i64 = 10_000;
+        let querier = MemorySeriesQuerier::new();
+        for l in 0..3 {
+            let labels = Labels::from_pairs(&[("__name__", "sparse"), ("l", &l.to_string())]);
+            querier.add_sample(&labels, Sample::new(0, 1.0));
+        }
+        let reader: Arc<dyn QueryReader> = Arc::new(querier);
+        let run = |max_samples: usize| {
+            let start = 1_000;
+            let end = start + (STEPS - 1) * 1_000;
+            let stmt = EvalStmt {
+                expr: promql_parser::parser::parse("count_over_time(sparse[1d])").unwrap(),
+                start: ms(start),
+                end: ms(end),
+                interval: Duration::from_secs(1),
+                lookback_delta: options().lookback_delta,
+            };
+            let options = QueryOptions {
+                max_samples,
+                ..options()
+            };
+            evaluate_range(reader.clone(), stmt, options)
+        };
+
+        let grids = 3 * STEPS as usize;
+        let result = run(grids).expect("exactly the grids fits");
+        assert_eq!(result.iter().map(|s| s.samples.len()).sum::<usize>(), grids);
+        let err = run(grids - 1).expect_err("the expansion, not the three raw samples, is charged");
+        assert!(err.to_string().contains("too many samples"), "{err}");
+        assert!(run(0).is_ok(), "0 is unlimited");
+    }
+
     /// `ts-promql-max-response-series` bounds what the query returns, not only
     /// each read: an `or` of two three-series reads returns six.
     #[test]
