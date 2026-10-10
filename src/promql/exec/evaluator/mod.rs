@@ -360,9 +360,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
     }
 
-    /// Fail fast once the query deadline has passed, so a preload phase that
-    /// issues several requests stops scheduling more of them.
+    /// Fail fast once the query deadline has passed, or its client has gone,
+    /// so a preload phase that issues several requests stops scheduling more
+    /// of them.
     fn check_deadline(&self) -> EvalResult<()> {
+        if self.options.cancel.is_cancelled() {
+            return Err(EvaluationError::Query(QueryError::Cancelled));
+        }
         if let Some(deadline) = self.options.deadline
             && deadline > 0
             && current_time_millis() > deadline

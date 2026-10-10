@@ -7,6 +7,12 @@
 //! and the rest wait their turn, each still bounded by its own deadline
 //! (`TIMEOUT`), which the evaluation checks before it starts.
 //!
+//! A query whose client disconnects is abandoned: skipped if it is still
+//! queued, and stopped at its next deadline check if it is running (see
+//! [`CancelToken`]). Its reply would go nowhere, and a connection that sends a
+//! heavy query and closes would otherwise cost a worker for the whole
+//! `TIMEOUT` each time.
+//!
 //! The wait itself is bounded by [`max_queued_queries`]. A query that arrives
 //! to a full backlog is refused at once rather than admitted to sit out its
 //! whole `TIMEOUT` holding a blocked client, its parsed statement and its
@@ -22,7 +28,7 @@
 
 use crate::common::Timestamp;
 use crate::common::context::is_blocking_denied;
-use crate::common::replies::{ReplyContext, ThreadSafeReplyContext, block_client};
+use crate::common::replies::{CancelToken, ReplyContext, ThreadSafeReplyContext, block_client};
 use crate::common::threads::{
     BoundedExecutor, Capacity, ExecutorStats, Rejected, run_on_eval_pool,
 };
@@ -30,7 +36,7 @@ use crate::common::time::current_time_millis;
 use crate::config::{max_concurrent_queries, max_queued_queries};
 use crate::error_consts;
 use crate::promql::{QueryError, QueryResult};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
 /// Set by `TS._DEBUG PANIC_NEXT_EVALUATION` (debug mode only): the next evaluation panics.
@@ -41,6 +47,14 @@ static PANIC_NEXT_EVALUATION: AtomicBool = AtomicBool::new(false);
 /// [`PANIC_NEXT_EVALUATION`].
 pub(crate) fn panic_next_evaluation() {
     PANIC_NEXT_EVALUATION.store(true, Ordering::Relaxed);
+}
+
+/// Queries abandoned because their client disconnected, queued or running, since startup.
+static CANCELLED: AtomicU64 = AtomicU64::new(0);
+
+/// How many queries were abandoned because their client disconnected (`INFO ts_promql`).
+pub(crate) fn cancelled_count() -> u64 {
+    CANCELLED.load(Ordering::Relaxed)
 }
 
 static QUERY_WORKERS: BoundedExecutor = BoundedExecutor::new(
@@ -69,7 +83,11 @@ pub(crate) fn run_evaluation<R: Send>(evaluate: impl FnOnce() -> R + Send) -> R 
 /// error from it is the reply as it stands; then `evaluate` runs on the evaluation pool
 /// ([`run_evaluation`]) over what `prepare` produced, and `reply` writes its result. A query
 /// whose `deadline` passed while it waited for a worker is answered with a timeout and neither
-/// prepared nor evaluated: the wait counts against its budget.
+/// prepared nor evaluated: the wait counts against its budget. One whose client disconnected
+/// meanwhile is dropped the same way.
+///
+/// `evaluate` gets the [`CancelToken`] for the client's disconnect; it belongs in the
+/// query's options, where every deadline check reads it.
 ///
 /// `prepare` is here, not in the command handler, because parsing costs time that grows faster
 /// than the query text: a 16 KiB query took 0.76 s to parse, and on the main thread that is a
@@ -86,7 +104,7 @@ where
     S: Send + 'static,
     R: Send + 'static,
     Q: FnOnce() -> ValkeyResult<S> + Send + 'static,
-    E: FnOnce(S) -> QueryResult<R> + Send + 'static,
+    E: FnOnce(S, CancelToken) -> QueryResult<R> + Send + 'static,
     P: FnOnce(&ReplyContext, R) + Send + 'static,
 {
     // Checked before blocking: the server asserts on a blocked deny-blocking
@@ -99,12 +117,22 @@ where
     let slot = QUERY_WORKERS
         .try_reserve()
         .map_err(|rejected| ValkeyError::String(format!("TSDB: {}", rejection(rejected))))?;
-    let blocked_client = block_client(ctx);
+    let mut blocked_client = block_client(ctx);
+    let cancel = blocked_client.cancel_on_disconnect();
 
     slot.spawn(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
         if deadline.is_some_and(|d| current_time_millis() > d) {
             thread_ctx.reply(Err(ValkeyError::String(QueryError::Timeout.to_string())));
+            return;
+        }
+        let abandon = |thread_ctx: &ThreadSafeReplyContext| {
+            CANCELLED.fetch_add(1, Ordering::Relaxed);
+            // Answered all the same: the handle must be, and the server discards it.
+            thread_ctx.reply(Err(ValkeyError::String(QueryError::Cancelled.to_string())));
+        };
+        if cancel.is_cancelled() {
+            abandon(&thread_ctx);
             return;
         }
         // On this thread, not the evaluation pool: it is sequential, and its own thread keeps
@@ -120,10 +148,11 @@ where
             if PANIC_NEXT_EVALUATION.swap(false, Ordering::Relaxed) {
                 panic!("TS._DEBUG PANIC_NEXT_EVALUATION");
             }
-            evaluate(prepared)
+            evaluate(prepared, cancel)
         };
         match run_evaluation(evaluate) {
             Ok(value) => reply(&thread_ctx.get_reply_context(), value),
+            Err(QueryError::Cancelled) => abandon(&thread_ctx),
             Err(err) => {
                 thread_ctx.reply(Err(ValkeyError::String(err.to_string())));
             }

@@ -1104,6 +1104,58 @@ mod tests {
         assert!(err.to_string().contains("max series limit"), "{err}");
     }
 
+    /// A query whose client disconnected stops at its next deadline check
+    /// with `Cancelled`, instead of running on for a reply that goes nowhere.
+    #[test]
+    fn a_disconnected_clients_query_is_cancelled() {
+        use crate::common::replies::TestClient;
+        use crate::promql::QueryError;
+        let (_, reader) = build_reader();
+        let client = TestClient::new();
+        let with_token = QueryOptions {
+            cancel: client.token(),
+            ..options()
+        };
+        let stmt = |query: &str, start: i64, end: i64, step: Duration| EvalStmt {
+            expr: promql_parser::parser::parse(query).unwrap(),
+            start: ms(start),
+            end: ms(end),
+            interval: step,
+            lookback_delta: options().lookback_delta,
+        };
+        // A subquery checks the deadline at its own steps too.
+        let query = "max_over_time(rate(a[1m])[2m:10s])";
+        let range = || {
+            evaluate_range(
+                reader.clone(),
+                stmt(query, RANGE_START_MS, RANGE_END_MS, STEP),
+                with_token,
+            )
+        };
+        let instant = || {
+            let at = RANGE_END_MS;
+            evaluate_instant(
+                reader.clone(),
+                stmt(query, at, at, Duration::ZERO),
+                ms(at),
+                with_token,
+            )
+        };
+
+        assert!(range().is_ok() && instant().is_ok(), "connected: evaluates");
+        client.disconnect();
+        assert!(
+            matches!(range(), Err(QueryError::Cancelled)),
+            "{:?}",
+            range().err()
+        );
+        assert!(
+            matches!(instant(), Err(QueryError::Cancelled)),
+            "{:?}",
+            instant().err()
+        );
+    }
+
     #[test]
     fn instant_aggregation_is_one_pushdown_request() {
         let (counting, reader) = build_reader();

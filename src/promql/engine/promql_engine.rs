@@ -149,6 +149,9 @@ pub fn evaluate_instant(
 
     let result = evaluator.evaluate(stmt)?;
 
+    if opts.cancel.is_cancelled() {
+        return Err(QueryError::Cancelled);
+    }
     if deadline > 0 && current_time_millis() > deadline {
         return Err(QueryError::Timeout);
     }
@@ -265,6 +268,9 @@ pub fn evaluate_range(
         // Best-effort per-step timeout check.
         if deadline > 0 && current_time_millis() > deadline {
             return Err(QueryError::Timeout);
+        }
+        if opts.cancel.is_cancelled() {
+            return Err(QueryError::Cancelled);
         }
 
         let ctx = crate::promql::EvalContext {

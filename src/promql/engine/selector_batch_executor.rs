@@ -989,6 +989,11 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
                 read.fail(QueryError::Timeout);
                 return false;
             }
+            // Its client has gone: the next hold would take the lock for nobody.
+            if read.options.cancel.is_cancelled() {
+                read.fail(QueryError::Cancelled);
+                return false;
+            }
             true
         });
         if !reads.is_empty() {

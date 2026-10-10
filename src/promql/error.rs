@@ -18,6 +18,11 @@ pub enum QueryError {
     #[error("query timed out")]
     Timeout,
 
+    /// The client disconnected while its query waited or ran, so it was abandoned. The
+    /// reply, if any, goes nowhere: this is for logs and counters.
+    #[error("query cancelled: the client disconnected")]
+    Cancelled,
+
     /// An error occurred during query execution.
     #[error("execution error: {0}")]
     Execution(String),

@@ -3,7 +3,7 @@ use crate::commands::promql_utils::{get_promql_querier, reply_with_query_value};
 use crate::common::context::get_current_db;
 use crate::common::time::system_time_to_millis;
 use crate::promql::engine::query_workers::submit_evaluation;
-use crate::promql::engine::{evaluate_instant, promql_config};
+use crate::promql::engine::{QueryOptions, evaluate_instant, promql_config};
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
@@ -46,7 +46,10 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ctx,
         options.deadline,
         move || statement.parse(),
-        move |eval_stmt| evaluate_instant(querier, eval_stmt, eval_ts, options),
+        move |eval_stmt, cancel| {
+            let options = QueryOptions { cancel, ..options };
+            evaluate_instant(querier, eval_stmt, eval_ts, options)
+        },
         move |ctx, result| {
             reply_with_query_value(ctx, result, system_time_to_millis(eval_ts));
         },

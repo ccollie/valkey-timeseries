@@ -22,6 +22,7 @@ pub mod sample_budget;
 mod selector_batch_executor;
 
 use crate::common::Timestamp;
+use crate::common::replies::CancelToken;
 use crate::common::time::current_time_millis;
 use crate::promql::time::duration_ms;
 pub(crate) use fanout::*;
@@ -68,6 +69,8 @@ pub struct QueryOptions {
     pub derived_filter_pushdown: bool,
     /// The db in which to execute the query
     pub db: i32,
+    /// Set once the client that sent the query disconnects; checked wherever the deadline is.
+    pub cancel: CancelToken,
 }
 
 impl Default for QueryOptions {
@@ -93,6 +96,7 @@ impl Default for QueryOptions {
             optimize_queries: config.optimize_queries,
             derived_filter_pushdown: config.derived_filter_pushdown,
             db: 0,
+            cancel: CancelToken::default(),
         }
     }
 }

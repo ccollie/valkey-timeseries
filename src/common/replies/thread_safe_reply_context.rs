@@ -1,3 +1,4 @@
+use super::client_cancellation::{CancelToken, Registration, mark_disconnected};
 use crate::common::replies::{IntoRawCtx, ReplyContext, reply};
 use crate::error_consts;
 use std::ptr;
@@ -17,6 +18,8 @@ pub struct BlockedClient {
     pub(crate) inner: *mut raw::RedisModuleBlockedClient,
     /// Whether a reply has been written or handed to a writer.
     answered: bool,
+    /// Set by [`Self::cancel_on_disconnect`]; dropped before the client is unblocked.
+    cancellation: Option<Registration>,
 }
 
 // We need to be able to send the inner pointer to another thread
@@ -27,12 +30,42 @@ impl BlockedClient {
         Self {
             inner,
             answered: false,
+            cancellation: None,
         }
     }
+
+    /// Have the server report this client's disconnect, and return the token that reads it.
+    ///
+    /// Call on the main thread, straight after blocking: the callback is installed on the
+    /// handle, and the server only calls it from the main thread. The registration lives as
+    /// long as this handle and is removed before the client is unblocked.
+    pub(crate) fn cancel_on_disconnect(&mut self) -> CancelToken {
+        if let Some(registration) = &self.cancellation {
+            return registration.token();
+        }
+        let registration = Registration::new(self.inner as u64);
+        let token = registration.token();
+        self.cancellation = Some(registration);
+        unsafe {
+            raw::RedisModule_SetDisconnectCallback.unwrap()(self.inner, Some(on_disconnect));
+        }
+        token
+    }
+}
+
+/// The server's disconnect callback: runs on the main thread while `bc` is still blocked.
+extern "C" fn on_disconnect(
+    _ctx: *mut raw::RedisModuleCtx,
+    bc: *mut raw::RedisModuleBlockedClient,
+) {
+    mark_disconnected(bc as u64);
 }
 
 impl Drop for BlockedClient {
     fn drop(&mut self) {
+        // Before the unblock below: once unblocked the server may reuse the handle's address
+        // for another blocked client, which must not find this one's registration.
+        drop(self.cancellation.take());
         if self.inner.is_null() {
             return;
         }

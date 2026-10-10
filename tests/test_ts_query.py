@@ -806,3 +806,63 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
 
         with pytest.raises(ResponseError, match="missing HASHTAG argument"):
             self.client.execute_command('TS.QUERY', query, 'TIME', str(time), 'HASHTAG')
+
+
+# About 22 s on an Apple M2 (release build), under the 30 s maximum query duration: three
+# nested one-second subquery grids of 421 steps each, 75 million evaluations of the leaf.
+SLOW_QUERY = ('max_over_time(max_over_time(max_over_time('
+              '(label_replace(vector(1), "a", "b", "", ""))[7m:1s])[7m:1s])[7m:1s])')
+
+
+class TestQueryCancellation(ValkeyTimeSeriesTestCaseBase):
+    """A query whose client disconnects is abandoned: stopped at its next deadline check
+    if it is running, skipped if it is still queued. It used to run to the end for a
+    reply the server then discarded, holding a worker the whole time. One worker, so a
+    second query really queues."""
+
+    MODULE_ARGS = "ts-promql-max-concurrent-queries 1"
+
+    def _pool(self) -> dict:
+        info = self.client.info('ts_promql')
+        # `cancelled` defaults to 0 so that a build without the counter fails on the
+        # behaviour below, not on the field.
+        return {name: info.get(f'ts_queries_{name}', 0)
+                for name in ('running', 'queued', 'cancelled')}
+
+    def _wait_for(self, predicate, timeout: float, what: str) -> dict:
+        deadline = datetime.now() + timedelta(seconds=timeout)
+        while True:
+            pool = self._pool()
+            if predicate(pool):
+                return pool
+            assert datetime.now() < deadline, f"{what}: {pool}"
+            sleep(0.02)
+
+    def _send_slow_query(self) -> Connection:
+        conn = Connection(host=self.server.bind_ip, port=self.server.port)
+        conn.connect()
+        conn.send_command('TS.QUERY', SLOW_QUERY, 'TIME', '1000000', 'TIMEOUT', '30s')
+        return conn
+
+    def test_running_query_stops_when_its_client_disconnects(self):
+        conn = self._send_slow_query()
+        self._wait_for(lambda p: p['running'] == 1, 5, "the query never started")
+
+        conn.disconnect()
+        pool = self._wait_for(lambda p: p['running'] == 0, 3, "still running after disconnect")
+        assert pool['cancelled'] == 1, pool
+
+        # The worker is free again.
+        assert self.client.execute_command('TS.QUERY', '1 + 1')
+
+    def test_queued_query_is_dropped_when_its_client_disconnects(self):
+        running = self._send_slow_query()
+        self._wait_for(lambda p: p['running'] == 1, 5, "the first query never started")
+        queued = self._send_slow_query()
+        self._wait_for(lambda p: p['queued'] == 1, 5, "the second query never queued")
+
+        queued.disconnect()
+        running.disconnect()
+        pool = self._wait_for(lambda p: p['running'] == 0 and p['queued'] == 0, 3,
+                              "a query outlived its client")
+        assert pool['cancelled'] == 2, pool
