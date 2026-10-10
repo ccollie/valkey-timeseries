@@ -606,6 +606,42 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         finally:
             self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 4096)
 
+    def test_series_limit_stops_the_read_early(self):
+        """A read over `ts-promql-max-response-series` stops at the series that takes it
+        over the limit (an instant read), or at the end of that lock hold's batch (a range
+        read), instead of collecting every matched series first. The refusal reports the
+        count at which it stopped: before, this one said 1500."""
+        import re
+        pipe = self.client.pipeline(transaction=False)
+        for i in range(1500):
+            pipe.execute_command('TS.ADD', f'wide:{i}', 1000, i,
+                                 'LABELS', '__name__', 'wide', 'i', str(i))
+        pipe.execute()
+
+        def refused_at(*command) -> int:
+            with pytest.raises(ResponseError) as err:
+                self.client.execute_command(*command)
+            found = re.search(r'max series limit: (\d+) > 10', str(err.value))
+            assert found, str(err.value)
+            return int(found.group(1))
+
+        self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '10')
+        try:
+            # TIME is in seconds: 1 s is the samples' 1000 ms.
+            assert refused_at('TS.QUERY', 'wide', 'TIME', '1') == 11
+            assert refused_at('TS.QUERY', 'sum(wide)', 'TIME', '1') == 11
+            assert 10 < refused_at('TS.QUERY', 'wide[1m]', 'TIME', '1') < 1500
+            assert 10 < refused_at('TS.QUERYRANGE', 'wide', 'START', '1000', 'END', '61000',
+                                   'STEP', '30s') < 1500
+
+            # Under the limit, the same read still sees every series.
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '1500')
+            result = QueryResult.from_raw(
+                self.client.execute_command('TS.QUERY', 'count(wide)', 'TIME', '1'))
+            assert result.result[0].value.value == 1500
+        finally:
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '1000')
+
     def test_slow_parses_do_not_stall_the_main_thread(self):
         """Parsing grows faster than the query text: a 16 KiB chain of unary minus signs took
         about 0.76 s to parse, and the depth check that refuses it runs only afterwards. The

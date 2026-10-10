@@ -10,7 +10,8 @@ use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
 use crate::promql::engine::sample_budget::{SampleBudget, too_many_samples};
 use crate::promql::engine::{
-    get_snapshot_range, instant_lookback_start_ms, validate_max_points, validate_max_series,
+    exceeds_max_series, get_snapshot_range, instant_lookback_start_ms, validate_max_points,
+    validate_max_series,
 };
 use crate::promql::generated::{
     InstantQueryResponse, InstantSample, RangeQueryResponse, RangeSample,
@@ -64,6 +65,10 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
                     label_name_refs,
                     label_value_refs,
                 });
+                // Refused below whatever the rest holds: stop opening series.
+                if exceeds_max_series(samples.len(), max_series as usize) {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
             Ok(ControlFlow::Continue(()))
         },
@@ -110,6 +115,10 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
                     timestamp_ms: sample.timestamp,
                     drop_name: false,
                 });
+                // Refused below whatever the rest holds: stop opening series.
+                if exceeds_max_series(samples.len(), max_series as usize) {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
             Ok(ControlFlow::Continue(()))
         },
@@ -179,6 +188,9 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
 /// symbol table interns by identity. Either shares the series' `Arc`, so no
 /// string is copied and nothing borrows the series.
 ///
+/// `decode` says whether to read on: a read that already knows its verdict (over the series
+/// limit) breaks, and the batches after it are never copied.
+///
 /// The copy is sequential on purpose. A batch is a few hundred KB, and fanning
 /// it out across the shared pool made the lock holder wait for workers busy
 /// decoding other queries' snapshots: with 4 concurrent rollups the main
@@ -190,7 +202,7 @@ fn for_each_snapshot_batch<S, L, T>(
     end_time: Timestamp,
     budget: &SampleBudget,
     labels: L,
-    mut decode: impl FnMut(Vec<(T, RangeSnapshot)>) -> ValkeyResult<()>,
+    mut decode: impl FnMut(Vec<(T, RangeSnapshot)>) -> ValkeyResult<ControlFlow<()>>,
 ) -> ValkeyResult<()>
 where
     S: GilSource + ?Sized,
@@ -223,10 +235,10 @@ where
             Ok(copied)
         },
         |snapshots| {
-            if !snapshots.is_empty() {
-                decode(snapshots)?;
+            if snapshots.is_empty() {
+                return Ok(ControlFlow::Continue(()));
             }
-            Ok(ControlFlow::Continue(()))
+            decode(snapshots)
         },
     )
 }
@@ -243,9 +255,10 @@ where
 ///
 /// `max_points_per_series` bounds the *raw* points examined per series, which is
 /// the resource this push-down is trading away; the coordinator separately
-/// bounds the points it accepts back. Both limits are judged over the whole
-/// read, so a violation is reported only once every batch is in (see
-/// [`WindowBounds`]), after `sink` has seen them.
+/// bounds the points it accepts back. A violation is reported at the end of
+/// the read, after `sink` has seen the batches before it: once every batch is
+/// in, or, for `max_series`, at the batch that takes the count over it (see
+/// [`WindowBounds`]).
 pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     src: &S,
     selector: SeriesSelector,
@@ -288,10 +301,14 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
                 .collect::<Vec<_>>()
                 .map_err(valkey_module::ValkeyError::String)?;
             let windows = bounds.admit(candidates);
+            if bounds.over_series() {
+                // `finish` refuses the read whatever the rest holds.
+                return Ok(ControlFlow::Break(()));
+            }
             if !windows.is_empty() {
                 sink(windows);
             }
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         },
     )?;
 
@@ -315,9 +332,10 @@ fn local_max_samples() -> usize {
 /// filters first, see [`handle_range_query`] — accepts, so whether a query
 /// succeeded would depend on an internal optimization decision.
 ///
-/// That count is only known once every batch is in. A window over the point
-/// limit is remembered rather than reported, so a read over both limits still
-/// fails on `max_series`, as it did when the windows were bounded all at once.
+/// That count only grows, so the read stops at the batch that takes it over
+/// the limit ([`Self::over_series`]). A window over the point limit is
+/// remembered rather than reported, so a read over both limits still fails on
+/// `max_series`, as it did when the windows were bounded all at once.
 struct WindowBounds {
     max_series: u64,
     max_points: Option<usize>,
@@ -350,6 +368,12 @@ impl WindowBounds {
                 .find_map(|w| validate_max_points(w.samples.len(), Some(limit)).err());
         }
         windows
+    }
+
+    /// Whether the windows admitted so far already exceed `max_series`: the
+    /// verdict [`Self::finish`] reaches however many more batches come.
+    fn over_series(&self) -> bool {
+        exceeds_max_series(self.returned, self.max_series as usize)
     }
 
     /// The verdict over every batch admitted.
@@ -422,7 +446,12 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
                 .collect::<Vec<_>>()
                 .map_err(valkey_module::ValkeyError::String)?;
             ranges.extend(batch);
-            Ok(())
+            // Refused below whatever the rest holds: copy no more batches.
+            Ok(if exceeds_max_series(ranges.len(), max_series as usize) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
         },
     )?;
 
@@ -547,6 +576,36 @@ mod tests {
     /// A batch over the point limit early in the read does not pre-empt the
     /// series-count verdict, which needs every batch: over both, the read fails
     /// on `max_series`, as it did bounded all at once.
+    /// The grid read stops at the batch that takes it over the limit: from there
+    /// `finish` refuses it whatever later batches would hold.
+    #[test]
+    fn over_series_holds_once_the_returned_count_passes_the_limit() {
+        let mut bounds = WindowBounds::new(3, 0);
+        bounds.admit(vec![filled("a", 1), empty(), filled("b", 1)]);
+        assert!(!bounds.over_series(), "two returned, one matched but empty");
+        bounds.admit(vec![filled("c", 1)]);
+        assert!(!bounds.over_series(), "exactly the limit is allowed");
+        bounds.admit(vec![filled("d", 1)]);
+        assert!(bounds.over_series());
+        let err = bounds.finish().unwrap_err();
+        assert!(err.ends_with(": 4 > 3"), "{err}");
+
+        let mut unlimited = WindowBounds::new(0, 0);
+        unlimited.admit((0..10).map(|i| filled(&i.to_string(), 1)).collect());
+        assert!(!unlimited.over_series());
+    }
+
+    #[test]
+    fn exceeds_max_series_agrees_with_validate_max_series() {
+        for (count, max) in [(0, 0), (5, 0), (3, 3), (4, 3), (1, 1), (2, 1)] {
+            assert_eq!(
+                exceeds_max_series(count, max),
+                validate_max_series(count, max).is_err(),
+                "{count} vs {max}"
+            );
+        }
+    }
+
     #[test]
     fn max_series_outranks_an_earlier_point_violation() {
         let mut bounds = WindowBounds::new(2, 4);

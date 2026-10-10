@@ -237,7 +237,7 @@ attacker nothing: open, send, close, repeat, and every query still runs for up t
 | # | Defense | Closes | Size |
 |---|---|---|---|
 | D1 | charge produced points to the sample budget; cap the final result | F1, F4 (damage) | small |
-| D2 | fail the series cap during the walk | F3 | small |
+| D2 | fail the series cap during the walk (done) | F3 | small |
 | D3 | parse on the worker; linear pre-check on the main thread | F2 | medium |
 | D4 | enforce `ts-promql-max-lookback` | F4 | small |
 | D5 | global admission: shared budget, used-memory check, reply cap | F5 | medium |
@@ -269,6 +269,23 @@ grid of mostly-absent steps may now be refused; absent steps are not charged (th
 never stores a leading absence), so only present points count.
 
 ### D2. Fail the series cap during the walk
+
+**Status:** implemented 2026-10-09. Every read path now stops once the series it *returns*
+pass the limit (`exceeds_max_series` in `query_limits.rs`), and fails through the same
+`validate_max_series` as before, so the error kind and its fan-out classification are
+unchanged. Where each path stops:
+
+| Path | Stops after |
+|---|---|
+| shard instant read, shard aggregation push-down | the series that crosses the limit |
+| single-node instant and aggregation read | the series that crosses the limit, mid-hold; its buffer is reserved for at most limit + 1 |
+| shard range read, shard grid push-down, single-node range and grid read | the batch that crosses it (≤ 512 series or 4 MiB of chunks): whether a copied series returns anything is only known once it is decoded |
+
+The message now reports the count at which the read stopped, not the matched total: a
+single-node instant read of 1,500 series against a limit of 10 said `1500 > 10` and now says
+`11 > 10`. On a 3-node cluster with 1,300 matching series on one shard, the shard's refusal
+went from `1300 > 100` to `101 > 100` (instant) and to one batch (range and grid). The
+coordinator's own check, over shards each under the limit, still reports the exact sum.
 
 In each `for_each_series` / cursor loop that feeds a `validate_max_series` at the end, stop
 the cursor as soon as the *returned* count exceeds the cap and fail with the same message.

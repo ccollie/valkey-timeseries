@@ -251,6 +251,39 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
         with pytest.raises(ResponseError, match='(?i)permission'):
             self.instant_query('wide', client=user)
 
+    def test_series_limit_stops_the_shard_walk(self, aggregation_pushdown, rollup_pushdown):
+        """A shard refusing its share for `ts-promql-max-response-series` stops walking at
+        the series that takes it over the limit, or for a range read at the end of that
+        batch, instead of opening all 1,300 of its matched series first. The refusal
+        reports the count at which it stopped. Covers the instant selector, the
+        aggregation push-down (and the selector it falls back to), the raw range read,
+        and the grid push-down (and the raw read it falls back to)."""
+        import re
+        self.setup_fleet()
+        self.set_config(MAX_RESPONSE_SERIES_CONFIG, '100')
+        try:
+            def refused_at(command) -> int:
+                with pytest.raises(ResponseError) as err:
+                    self.coordinator().execute_command(*command)
+                found = re.search(r'max series limit: (\d+) > 100', str(err.value))
+                assert found, str(err.value)
+                return int(found.group(1))
+
+            # Per series: exactly one past the limit.
+            assert refused_at(('TS.QUERY', 'wide', 'TIME', str(END))) == 101
+            assert refused_at(('TS.QUERY', 'sum(wide)', 'TIME', str(END))) == 101
+            # Per batch (512 series): past the limit, short of the shard's 1,300.
+            for command in (
+                ('TS.QUERY', 'wide[2m]', 'TIME', str(END)),
+                ('TS.QUERYRANGE', 'wide', 'START', str(T0 * 1000), 'END', str(END * 1000),
+                 'STEP', '30s'),
+                ('TS.QUERYRANGE', 'sum_over_time(wide[1m])', 'START', str(T0 * 1000),
+                 'END', str(END * 1000), 'STEP', '30s'),
+            ):
+                assert 100 < refused_at(command) < WIDE_COUNT, command
+        finally:
+            self.set_config(MAX_RESPONSE_SERIES_CONFIG, '0')
+
 
 # ── Heavy series: batches bounded by copied bytes, not just series ────────
 

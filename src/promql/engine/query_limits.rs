@@ -15,11 +15,21 @@ pub(in crate::promql) fn instant_lookback_start_ms(
         .saturating_add(1)
 }
 
+/// Whether `series_count` returned series already exceed `max_series` (0: no limit).
+///
+/// The count a read returns only grows, so once this holds [`validate_max_series`] will refuse
+/// the read however many more series it finds: a read stops walking here rather than open and
+/// collect every series the selector matched first. The refusal then reports the count at
+/// which the read stopped, not the total it would have reached.
+pub(in crate::promql) fn exceeds_max_series(series_count: usize, max_series: usize) -> bool {
+    max_series > 0 && series_count > max_series
+}
+
 pub(in crate::promql) fn validate_max_series(
     series_count: usize,
     max_series: usize,
 ) -> Result<(), String> {
-    if max_series > 0 && series_count > max_series {
+    if exceeds_max_series(series_count, max_series) {
         Err(format!(
             "{}: {} > {}",
             MAX_SERIES_ERROR_MSG, series_count, max_series

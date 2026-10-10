@@ -174,7 +174,7 @@ At most `ts-promql-max-concurrent-queries` (default 8) queries run at once; up t
 | `LOOKBACK_DELTA` is longer than `ts-promql-max-lookback` | `TSDB: LOOKBACK_DELTA <lookback> exceeds the <limit> allowed by ts-promql-max-lookback` |
 | `HASHTAG` is missing or has an empty tag | `TSDB: missing HASHTAG argument` |
 | Called inside `MULTI`, a script, or a context that cannot block | `TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context` |
-| More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>` |
+| More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>`, where `<n>` is the count at which the read stopped, not the total the selector matches |
 | A subquery grid with more than 1,000,000 steps | `execution error: PromQL argument error: subquery has too many steps: ...` |
 | The query ran past its `TIMEOUT` | `query timed out` |
 

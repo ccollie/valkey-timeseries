@@ -320,7 +320,7 @@ at startup.
 | `ts-promql-max-concurrent-queries` | 8 | Evaluations running at once; further queries wait for a free worker. Immutable after startup. |
 | `ts-promql-max-queued-queries` | 128 | Queries that may wait for a worker; further ones are refused on arrival with an error. `0` means unbounded. |
 | `ts-promql-max-query-len` | 4096 bytes | Maximum query string length. |
-| `ts-promql-max-response-series` | 1000 | Maximum returned series; `0` means unlimited. |
+| `ts-promql-max-response-series` | 1000 | Maximum returned series; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. |
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
 | `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. In a cluster each shard applies its own value to what it reads. |
 | `ts-promql-lookback-delta` | 5m | Default sample lookback interval. |

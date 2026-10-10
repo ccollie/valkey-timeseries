@@ -21,7 +21,8 @@ use crate::promql::engine::{
     AggregationFanoutCommand, GridFanoutCommand, InstantVectorParams,
     InstantVectorSelectorFanoutCommand, LabelProfileFanoutCommand,
     RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, decode_range_series,
-    get_snapshot_range, instant_lookback_start_ms, validate_max_points, validate_max_series,
+    exceeds_max_series, get_snapshot_range, instant_lookback_start_ms, validate_max_points,
+    validate_max_series,
 };
 use crate::promql::{InstantSample, QueryError, QueryOptions, QueryResult, RangeSample};
 use crate::series::chunks::ChunkOps;
@@ -1165,6 +1166,7 @@ impl LocalRead {
             return Ok(None);
         }
         let _ = set_current_db(ctx, self.cursor.db());
+        let max_series = self.options.max_series;
         let Self { cursor, state, .. } = self;
         // Kept apart from the read's own errors, which become `Execution`: this
         // one must reach the caller as the budget error `decode` would raise.
@@ -1182,20 +1184,42 @@ impl LocalRead {
                     // the first hold: a batch `Vec` per hold, and the answer
                     // doubling across holds, left macOS's allocator holding
                     // 300 MB it no longer used under four concurrent queries.
+                    // Never past one over the series limit, where the read stops.
                     if samples.capacity() == 0 {
-                        samples.reserve_exact(cursor.remaining());
+                        let planned = cursor.remaining();
+                        samples.reserve_exact(if max_series > 0 {
+                            planned.min(max_series + 1)
+                        } else {
+                            planned
+                        });
                     }
                     cursor.next_batch(ctx, share, &mut |_, batch| {
-                        samples.extend(batch.iter().filter_map(|(s, _)| {
-                            let sample = s.last_sample_in_range(start, end)?;
-                            Some(InstantSample {
-                                timestamp_ms: sample.timestamp,
-                                value: sample.value,
-                                labels: EvalLabels::interned(&s.labels),
-                            })
-                        }));
+                        // One past the limit is enough to refuse the read: stop there,
+                        // mid-batch, rather than look up the rest of the hold's samples.
+                        let room = if max_series > 0 {
+                            (max_series + 1).saturating_sub(samples.len())
+                        } else {
+                            usize::MAX
+                        };
+                        samples.extend(
+                            batch
+                                .iter()
+                                .filter_map(|(s, _)| {
+                                    let sample = s.last_sample_in_range(start, end)?;
+                                    Some(InstantSample {
+                                        timestamp_ms: sample.timestamp,
+                                        value: sample.value,
+                                        labels: EvalLabels::interned(&s.labels),
+                                    })
+                                })
+                                .take(room),
+                        );
                         Ok(())
                     })?;
+                    if exceeds_max_series(samples.len(), max_series) {
+                        // `finish` refuses the read whatever the rest holds.
+                        cursor.finish();
+                    }
                     None
                 }
                 ReadState::Range {
@@ -1264,7 +1288,13 @@ impl LocalRead {
             return;
         };
         match decode_snapshot_batch(batch, &self.options, budget) {
-            Ok(decoded) => ranges.extend(decoded),
+            Ok(decoded) => {
+                ranges.extend(decoded);
+                if exceeds_max_series(ranges.len(), self.options.max_series) {
+                    // `finish` refuses the read whatever the rest holds: copy no more.
+                    self.cursor.finish();
+                }
+            }
             Err(err) => self.fail(err),
         }
     }
