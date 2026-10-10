@@ -236,17 +236,53 @@ attacker nothing: open, send, close, repeat, and every query still runs for up t
 
 | # | Defense | Closes | Size |
 |---|---|---|---|
-| D1 | charge produced points to the sample budget; cap the final result | F1, F4 (damage) | small |
+| D1 | charge produced points to the sample budget; cap the final result (done) | F1, F4 (damage) | small |
 | D2 | fail the series cap during the walk (done) | F3 | small |
 | D3 | parse on the worker; linear pre-check on the main thread | F2 | medium |
 | D4 | enforce `ts-promql-max-lookback` | F4 | small |
 | D5 | global admission: shared budget, used-memory check, reply cap | F5 | medium |
-| D6 | cancel on disconnect | F6 | small |
+| D6 | cancel on disconnect (done) | F6 | small |
 | D7 | propagate the deadline to shards; decode off the bus callback | F7 | medium |
 | D8 | per-client concurrency; finer deadline checks | F8 | small |
 | D9 | count every refusal | all (tuning) | small |
 
 ### D1. Charge produced points; cap the final result
+
+**Status:** implemented 2026-10-09, with three deviations from the text below.
+
+- **Grids are charged as they are built, a series at a time, for the larger of
+  the raw span and the grid.** Charging both, as the text implies, double-counts
+  ordinary data, whose grid is the smaller: a test pinned that a raw rollup
+  answer is charged once, and two cluster tests pin budgets of 12 against 9 and
+  10 grid points. Charging only the excess over the span keeps every existing
+  budget boundary, and still charges F1's shape for its grid: three series with
+  one sample each across 10,000 steps now cost 30,000, not 3. Every grid the
+  preloader builds is covered: the single-node stepped span, the cluster
+  stepped answer, and rollup and fused-aggregation answers (charged as their
+  grids, holes included, instead of as the points that arrived).
+- **No shard-side charge (item 2).** F1's premise for the shard was wrong: a
+  shard stages a series only when its span holds at least as many samples as
+  there are steps (`ships_raw`), and ships it raw otherwise, so its stage
+  output never exceeds the raw samples it already charged. The expansion
+  happens on the coordinator, which builds the grid from the raw span and now
+  charges it. A trial charge of the shard's output double-counted ordinary
+  data and failed the cluster budget tests (`20 > 12`).
+- **The range result is capped by series, not charged.** Each step's output is
+  built from preloaded grids or live reads that are already charged, and an
+  operator returns at most what it reads at that step (an `or`, the sum of its
+  sides), so charging the result again would double-count as above. What can
+  grow past every read is the *number* of series a range query accumulates
+  (`count_values`, `label_replace`, `or`), and `ts-promql-max-response-series`
+  — documented as the maximum *returned* series — was never applied to the
+  result. It now is, after every chunk of 64 steps and on the instant result.
+  The `count_values` and `group_samples` benchmarks lift both limits, since
+  they return 110,000 and 2,000 series.
+- **`ts-promql-max-points-per-timeseries` keeps its 0 default.** The parameter
+  does double duty: besides the outer grid it bounds the raw samples every read
+  may return per series, on shards too. 11,000 would refuse `rate(m[1d])` over
+  1 s data (86,400 samples per series). An outer-grid cap of Prometheus' 11,000
+  needs a parameter of its own; until then the 1,000,000-step ceiling and the
+  charged grids bound it.
 
 - In `cache_stepped_span`, charge `num_steps` per series before building its grid, or
   charge the builder's final length after `finish()` (the trimmed length is what is kept;
@@ -359,6 +395,19 @@ independently of D1.
 
 ### D6. Cancel on disconnect
 
+**Status:** implemented 2026-10-09. The disconnect callback is installed on the main thread
+straight after blocking, and sets a flag in a process-wide registry keyed by the
+blocked-client handle (`common/replies/client_cancellation.rs`). `QueryOptions` is `Copy`, so
+it carries a `CancelToken` (the key) rather than the flag, and every place that checks the
+deadline reads it: the evaluator's `check_deadline`, each outer step, an instant query before
+and after evaluating, each lock hold of a single-node read, and the worker on dequeue. A
+cancelled query counts in `INFO ts_promql` as `ts_queries_cancelled`. The callback only ever
+sets a registered flag, and the registration is removed in the handle's `Drop` *before* the
+client is unblocked, so a later blocked client reusing the address never starts out
+cancelled. Measured on a release build (Apple M2): a 22 s query stopped 0–2 ms after its client
+closed the connection, in three trials; a queued one is dropped when it is dequeued. Not covered: a cluster
+fan-out already in flight waits out its own timeout, which is D7's deadline propagation.
+
 Pass a disconnect callback to `RM_BlockClient` that sets an `AtomicBool` shared with the
 query's `QueryOptions` (or the `Evaluator`); have `check_deadline` return `Timeout` (or a
 new `Cancelled`) when it is set. Fan-out timers already clean up on their own. A queued
@@ -412,7 +461,7 @@ the limits above cannot be tuned, and F2 is invisible today.
 
 | Parameter | Default | Purpose |
 |---|---:|---|
-| `ts-promql-max-points-per-timeseries` | 11,000 (from 0) | per-series output cap, now also charged (D1) |
+| `ts-promql-max-points-per-timeseries` | 0 (unchanged; see D1's status) | also caps raw samples per read, so 11,000 is too low for it; an outer-grid cap needs its own parameter |
 | `ts-promql-max-lookback` | 1h (from 0, and now enforced; done) | cap on client `LOOKBACK_DELTA` (D4) |
 | `ts-promql-max-samples-total` | 2× per-query budget | process-wide in-flight sample budget (D5) |
 | `ts-promql-memory-ratio-limit` | 0.9 | refuse/abort queries above this used-memory ratio (D5) |
