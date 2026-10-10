@@ -240,10 +240,10 @@ attacker nothing: open, send, close, repeat, and every query still runs for up t
 | D2 | fail the series cap during the walk (done) | F3 | small |
 | D3 | parse on the worker; linear pre-check on the main thread | F2 | medium |
 | D4 | enforce `ts-promql-max-lookback` | F4 | small |
-| D5 | global admission: shared budget, used-memory check, reply cap | F5 | medium |
+| D5 | global admission: shared budget, used-memory check, reply cap (done) | F5 | medium |
 | D6 | cancel on disconnect (done) | F6 | small |
 | D7 | propagate the deadline to shards; decode off the bus callback (done) | F7 | medium |
-| D8 | per-client concurrency; finer deadline checks | F8 | small |
+| D8 | finer deadline checks; configurable subquery step cap (done; per-client limit dropped) | F8 | small |
 | D9 | count every refusal | all (tuning) | small |
 
 ### D1. Charge produced points; cap the final result
@@ -381,6 +381,35 @@ independently of D1.
 
 ### D5. Global admission
 
+**Status:** implemented 2026-10-10 (`src/promql/engine/admission.rs`), with these deviations.
+
+- **Names and units.** `ts-promql-max-samples-in-flight` rather than `-total`, which reads
+  as a lifetime count; `ts-promql-max-memory-percent` as an integer 0–100 rather than a
+  0.0–1.0 ratio, since the module's integer parameters range-check and a float would be the
+  only one. `ts-promql-max-reply-bytes` as proposed.
+- **Default 4× the per-query budget (200,000,000), not 2×.** Twice the budget lets two
+  maximum-size queries run and leaves six of the eight workers unable to run a large one.
+- **Refuse, never wait.** A query that waited mid-evaluation would hold what it had already
+  loaded, and the queue already bounds waiting for a worker.
+- **What counts toward the in-flight total:** each query's own budget, and each read a shard
+  serves for a peer (that node's total). Not the single-node read budgets inside the
+  selector executor: their samples are handed to the query's budget, which charges them, so
+  counting both would double the total. A budget gives back everything it added when dropped.
+- **Memory is sampled, not read per check.** `RM_GetUsedMemoryRatio` reads state the main
+  thread owns, so it is sampled on the main thread, every cron tick and at admission, and
+  query threads read the stored value. Refused at admission; a running query, a single-node
+  read and a shard read stop at their next check; a shard refuses a peer's read before it
+  starts. With no `maxmemory` the ratio is 0 and nothing is refused.
+- **One rule for errors that end a query.** A refusal for load, like a passed deadline or a
+  spent budget, ends the query rather than downgrading a preload to per-step reads that would
+  be refused one by one (`QueryError::ends_query`). That rule now also covers `Cancelled`,
+  which D6 had left to the next deadline check. A shard's refusal for load crosses the
+  fan-out as a query limit and ends the coordinator's query with the shard's words.
+- **The reply estimate** counts a generous fixed cost per sample, label and series; it is
+  checked on the evaluation pool before the reply is written.
+
+`INFO ts_promql` reports `ts_samples_in_flight`.
+
 - A process-wide `SampleBudget` that every query's budget charges through, sized as a
   multiple of the per-query budget (for example `ts-promql-max-samples-total`, default
   2× `max-samples-per-query`). A query that would exceed it is refused with the same
@@ -456,6 +485,39 @@ cluster bus) has its budget counted from arrival, not from when it was sent.
 
 ### D8. Fairness and finer deadline checks
 
+**Status:** implemented 2026-10-10, except the per-client limit, which was dropped: a client
+can open more connections, so a per-connection count bounds nothing a determined sender
+cannot get around, and a per-user one would only move the problem to shared accounts.
+
+- **`ts-promql-max-subquery-steps`** (default 20,000,000; 0 = unlimited) replaces the
+  `MAX_SUBQUERY_STEP_EVALUATIONS` constant (100,000,000). The text below is wrong that
+  10,000,000 admits its own example: `[7d:1m]` is 10,081 steps, so a 1,000-point range query
+  over it is 10.08 million. 20 million admits it with headroom. Measured (release, Apple M2):
+  three nested `[7m:1s]` subqueries, 75 million steps and admitted by the old constant, took
+  4 s over `vector(1)` and 22 s over `label_replace(vector(1), …)`; none of it reads a
+  sample, so no sample limit sees it. The new default refuses that query outright.
+- **Finer deadline checks.** A `Deadline` (deadline, cancellation, memory limit) travels in
+  every `EvalContext`, stamped by `evaluate_with_context`, and the evaluator's own
+  `check_deadline` now uses it too. Kernels call `Deadline::checkpoint(work)`, a per-thread
+  counter that runs the full check every 65,536 units (a sample is 1, a series 16, so about
+  every 4,096 series or 65,536 samples), at series boundaries only. Covered: the grouping
+  pass of every aggregation (`group_samples`, `group_sample_values`, the `count_values`
+  bucket loop) plus one check on entry; the range-vector and rollup drivers (`eval_range`,
+  `eval_rollups`, `eval_rollups_basic`), per series before its window is computed; and the
+  coordinator's grid evaluation over a raw span (`GridRequest::evaluate`), which now runs the
+  shared per-series stage in chunks of about a million units with a check between chunks.
+- **Measured cost.** Two benchmark binaries, D5 and D8, run alternately three times over the
+  aggregation grouping cases and the range rollup, function and sum cases, best run of each
+  compared: grouping 1.00–1.035×, range cases 0.93–1.08× in both directions. Run-to-run
+  spread of one binary was 10–40 % on this machine, so a cost up to about 3 % in the grouping
+  loops cannot be ruled out, and none is shown. (A first, non-interleaved criterion comparison
+  had suggested +11–24 % on grouping; the interleaved runs did not reproduce it.)
+- **Not instrumented, on purpose:** any loop over one series' samples or one group's values
+  (the window kernels, `aggregate_group`'s reductions, the scalar binary operators): those are
+  the loops the compiler vectorizes, and a call or branch on shared state would break that. Nor
+  the shard side of a push-down, which D7's between-batch stop already covers; it passes a
+  `Deadline` that stops nothing.
+
 - `ts-promql-max-queries-per-client` (or per ACL user), default 4, checked in
   `submit_evaluation` with a per-client counter released when the job finishes.
 - In the aggregation and function kernels, call `check_deadline` every N input series
@@ -493,10 +555,11 @@ the limits above cannot be tuned, and F2 is invisible today.
 |---|---:|---|
 | `ts-promql-max-points-per-timeseries` | 0 (unchanged; see D1's status) | also caps raw samples per read, so 11,000 is too low for it; an outer-grid cap needs its own parameter |
 | `ts-promql-max-lookback` | 1h (from 0, and now enforced; done) | cap on client `LOOKBACK_DELTA` (D4) |
-| `ts-promql-max-samples-total` | 2× per-query budget | process-wide in-flight sample budget (D5) |
-| `ts-promql-memory-ratio-limit` | 0.9 | refuse/abort queries above this used-memory ratio (D5) |
-| `ts-promql-max-reply-bytes` | 256 MiB | estimated reply size cap (D5) |
-| `ts-promql-max-queries-per-client` | 4 | in-flight queries per client (D8) |
+| `ts-promql-max-samples-in-flight` | 200,000,000 (done) | process-wide in-flight sample budget (D5) |
+| `ts-promql-max-memory-percent` | 90 (done) | refuse/stop queries at this share of `maxmemory` (D5) |
+| `ts-promql-max-reply-bytes` | 256 MiB (done) | estimated reply size cap (D5) |
+| `ts-promql-max-queries-per-client` | — (dropped; see D8's status) | in-flight queries per client (D8) |
+| `ts-promql-max-subquery-steps` | 20,000,000 (done) | subquery steps one query may evaluate in all (D8) |
 
 Every new parameter must also be copied into the `PROMQL_CONFIG` snapshot by
 `sync_promql_config`, or `CONFIG SET` accepts it and no query sees it (AGENTS.md).
