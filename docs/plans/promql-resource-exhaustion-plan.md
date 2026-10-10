@@ -242,7 +242,7 @@ attacker nothing: open, send, close, repeat, and every query still runs for up t
 | D4 | enforce `ts-promql-max-lookback` | F4 | small |
 | D5 | global admission: shared budget, used-memory check, reply cap | F5 | medium |
 | D6 | cancel on disconnect (done) | F6 | small |
-| D7 | propagate the deadline to shards; decode off the bus callback | F7 | medium |
+| D7 | propagate the deadline to shards; decode off the bus callback (done) | F7 | medium |
 | D8 | per-client concurrency; finer deadline checks | F8 | small |
 | D9 | count every refusal | all (tuning) | small |
 
@@ -414,6 +414,36 @@ new `Cancelled`) when it is set. Fan-out timers already clean up on their own. A
 query whose client has gone should be skipped at dequeue, as an expired one is now.
 
 ### D7. Propagate the deadline to shards
+
+**Status:** implemented 2026-10-09, with one deviation: the budget travels in the request
+payload, not the envelope.
+
+- **Fan-outs are armed with what is left of the query** (`calculate_timeout`): its
+  `TIMEOUT`, cut to the time remaining before its deadline, at least 1 ms.
+- **The request carries that budget** as `time_budget_ms` on `InstantQuery` (and so
+  `AggregationQuery`), `RangeQuery`, `GridQuery` and `LabelProfileQuery`, read through
+  `FanoutCommand::time_budget`. Not in the header as proposed: the header is a fixed layout
+  and a receiver rejects any other version, so an extension would break every old peer
+  mid-upgrade, while proto3 drops an unknown field and decodes an absent one as `0` (no
+  limit). It is relative, not an absolute deadline: the shard counts it from arrival, so
+  no clock agreement is needed and its deadline lands later than the coordinator's by the
+  transit time, never earlier. See §8 of `docs/fanout-compatibility-handshake.md`.
+- **Shards enforce it:** the arrival time is recorded before the request queues for the
+  fan-out lane; a request past its budget at dequeue is answered with a timeout unrun, and
+  `visit_batches` stops a read between batches once `GilSource::expired` (the request's
+  `FanoutContext` deadline) says so. The coordinator's own local share gets the same
+  between-batch stop from the deadline it already checked at dequeue, which covers the
+  `TS.*` fan-outs' local shares too.
+- **Large shard responses decode off the main thread:** a response of 64 KiB or more is
+  copied out of the cluster-bus callback and deserialized and merged on the fan-out lane;
+  smaller ones, and any when the lane is full, decode inline as before. A deferred response
+  counts as answered for the RPC timeout on arrival, so the fan-out completes when its
+  decode does. Every cluster suite passed with the threshold forced to 1 byte, so that every
+  response took the deferred path.
+
+Not covered: a shard cannot stop *inside* one batch (at most 512 series or 4 MiB of chunks),
+and a request delayed before it reaches the shard (a busy shard main thread holding the
+cluster bus) has its budget counted from arrival, not from when it was sent.
 
 - Add an absolute deadline to the fan-out request header (the coordinator's clock; shards
   tolerate skew by also carrying the relative timeout and taking the later of the two).
