@@ -241,13 +241,21 @@ impl PartialGroups {
     }
 
     /// Fold raw instant-vector samples into the per-group states, grouping them
-    /// with `modifier` exactly as the single-node path does.
-    pub fn accumulate(&mut self, modifier: Option<&LabelModifier>, samples: Vec<EvalSample>) {
+    /// with `modifier` exactly as the single-node path does, `deadline`
+    /// checked between them.
+    pub fn accumulate(
+        &mut self,
+        modifier: Option<&LabelModifier>,
+        samples: Vec<EvalSample>,
+        deadline: &Deadline,
+    ) -> EvalResult<()> {
         let kind = self.kind;
         for sample in samples {
+            deadline.checkpoint(SERIES_WORK)?;
             let labels = sample.labels.compute_grouping_labels(modifier);
             self.entry(labels).update(kind, sample.value);
         }
+        Ok(())
     }
 
     /// Merge one shard's state for `labels`' group.
@@ -645,7 +653,9 @@ mod tests {
         let mut coordinator = PartialGroups::new(kind);
         for shard in shards {
             let mut local = PartialGroups::new(kind);
-            local.accumulate(modifier, shard.clone());
+            local
+                .accumulate(modifier, shard.clone(), &Deadline::default())
+                .unwrap();
             for (labels, state) in local.into_partials() {
                 coordinator.merge(labels, state);
             }

@@ -752,7 +752,8 @@ fn execute_cluster_aggregation(
         max_series: ac.options.max_series as u64,
         max_points_per_series: ac.options.max_points_per_series.unwrap_or(0) as u64,
     };
-    let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, timeout);
+    let deadline = Deadline::from_options(&ac.options);
+    let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, timeout, deadline);
 
     let max_series = ac.options.max_series;
     let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
