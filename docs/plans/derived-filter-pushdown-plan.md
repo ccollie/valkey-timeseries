@@ -93,8 +93,12 @@ costing a push-down, never a result). So a profile, and a shard's reply, stays w
 exceeds `MAX_PROFILED_SERIES` (min of `options.max_series` and 50 000) or the source cannot
 answer; unavailable means "derive nothing from this leaf", never an error.
 
-The profile is time-agnostic (the index, not the query range). That is a superset of the
-series the reads will return, which only loosens the derived filters — see §3. It is also
+The profile covers the leaf's window: the span its reads cover over the whole query
+(offset, `@`, lookback or matrix range, and each enclosing subquery's grid applied), and
+only series with a retained sample in it count — §7, *In-range profiles*. A selector that
+occurs more than once is profiled once, over the hull of its windows. That is a superset
+of the series the reads will return, which only loosens the derived filters — see §3. It
+was the whole index until 2026-10-11. It is also
 ACL-agnostic: unauthorized series can only add values or remove a common label, and the
 matchers derived are internal, never surfaced.
 
@@ -189,7 +193,8 @@ is cheap (labels only, no samples), keeps preload parallel, and applies uniforml
 
 - **Results.** For every accepted binop, a derived matcher on the target side excludes a
   series only if no series on the source side could match it at any step: the source's
-  common label values over the index are a superset of its values at any step, and the
+  common label values over its window are a superset of its values at any step (a
+  series with no sample in the window contributes nothing at any step), and the
   `on()`/`ignoring()`/`group_*` trimming is the static optimizer's, already relied on. The
   unrewritten and rewritten trees therefore evaluate identically on the same data; this is
   the invariant every test below asserts (push-down on vs. off, cluster and single node).
@@ -200,7 +205,12 @@ is cheap (labels only, no samples), keeps preload parallel, and applies uniforml
   (`max_series`, an unauthorized key in cluster mode) now succeeds without touching it.
   The static rewrite and the instant runtime path already behave this way for written
   matchers; the cluster ACL suite asserts only on shapes where nothing is derived (checked
-  2026-10-11, §7), and the fail-closed rule itself is unchanged.
+  2026-10-11, §7), and the fail-closed rule itself is unchanged. With windowed profiles a
+  wide operand whose read would have failed is also skipped when the other side matches
+  only series retired before its window (the short-circuit below). The empty operand
+  itself stays in the tree, so the result is right; the copy planted in the other
+  operand's place is read over that position's window, where it may not be empty — a
+  small read, never a wrong result.
 - **`__name__`** is never derived (binop matching ignores it), the 60-value cap holds, and
   `count_values`/`label_replace`/`label_join` synthesized labels are dropped by the
   existing structural rules before they reach a leaf.
@@ -280,9 +290,15 @@ generalization, one for tests, half to measure.
 
 ## 7. Open questions
 
-Re-checked against the code on 2026-10-11. One item is open; the rest are settled.
+Re-checked against the code on 2026-10-11; every item below is settled.
 
-- **In-range profiles — evaluated 2026-09-26, steps restated 2026-10-11, not started.**
+- **In-range profiles — done (2026-10-11), not yet measured.** Landed as steps 1–7
+  below, with two differences from the text. Both local walks needed the check: the
+  single-node executor read (`ReadState::Profile` in `selector_batch_executor.rs`) as
+  well as the shard-side `local_label_profile`. And `derive_filters_in_place` became
+  `pub(crate)`, since it now takes the crate-private `PreloadGrid`. Step 8, the churn
+  benchmark, is still to do. The original text follows as the record of the design.
+
   Profiling each leaf over the window its reads cover, not the whole index, would drop
   retired series (a rolled-out pod, a region that stopped reporting). That tightens three
   things: the derived filters, `retain_pruning` on the target, and
@@ -405,7 +421,7 @@ Re-checked against the code on 2026-10-11. One item is open; the rest are settle
 
 - **Empty operand short-circuit — done (2026-09-13).** `short_circuit_empty_operands`
   runs before the rewrite: where a profile proves an operand's selector matches no
-  series and the operand's shape passes emptiness through (aggregations,
+  series with a sample in its window and the operand's shape passes emptiness through (aggregations,
   series-to-series functions, rollups, subqueries, nested operations other than `or`;
   not `absent`/`absent_over_time`), the other operand is replaced by that empty
   selector for every operator but `or` — and for `unless` only when the left side is
