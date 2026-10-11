@@ -36,7 +36,7 @@ use crate::fanout::{
 };
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
-use crate::promql::engine::fanout::query_utils::{local_budget, local_grid_windows};
+use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
 use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
@@ -299,8 +299,8 @@ impl FanoutCommand for GridFanoutCommand {
         // through the per-series stage with the lock released, before the next
         // batch is read.
         // Held through `finish`: the grid keeps what it made of the windows until then.
-        let budget = local_budget()?;
-        let mut grid = ShardGrid::new(&request, &window_ends, &budget, super::shard_deadline(ctx));
+        let read = shard_read(ctx)?;
+        let mut grid = ShardGrid::new(&request, &window_ends, &read.budget, read.deadline);
         local_grid_windows(
             ctx,
             series_selector,
@@ -308,7 +308,7 @@ impl FanoutCommand for GridFanoutCommand {
             request.backward_ms(),
             req.max_series,
             req.max_points_per_series,
-            &budget,
+            &read,
             |windows| grid.add(windows),
         )?;
         grid.finish()

@@ -2,10 +2,11 @@ use crate::commands::fanout_codec::chunks::serialize_chunk;
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
+use crate::fanout::FanoutContext;
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::EvalSample;
-use crate::promql::engine::admission;
+use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::label_profile::{LabelProfile, LabelProfileBuilder};
 use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
@@ -104,10 +105,11 @@ fn budget_error(err: crate::promql::QueryError) -> valkey_module::ValkeyError {
 /// batch per lock hold. The head chunk's cached last sample usually answers without a decode,
 /// so all of it runs under the lock.
 ///
-/// The samples are charged to `budget` as they are kept (see [`local_budget`]); the caller
+/// The samples are charged to `budget` as they are kept (see [`shard_read`]); the caller
 /// holds it for as long as it holds them. The read stops once it has one series past
 /// `max_series`, which it then refuses: the shard's own working set is bounded whatever the
-/// coordinator does with the samples.
+/// coordinator does with the samples. It also stops, between series, once `deadline` has
+/// passed or this node's memory is past its limit.
 #[allow(clippy::too_many_arguments)]
 fn read_instant_samples<S, T>(
     src: &S,
@@ -116,6 +118,7 @@ fn read_instant_samples<S, T>(
     lookback_delta: u64,
     max_series: u64,
     budget: &SampleBudget,
+    deadline: &Deadline,
     mut make: impl FnMut(&TimeSeries, Sample) -> T,
 ) -> ValkeyResult<Vec<T>>
 where
@@ -130,6 +133,9 @@ where
         None,
         DEFAULT_SERIES_BATCH_SIZE,
         |_, series, _| {
+            deadline
+                .checkpoint(SERIES_WORK)
+                .map_err(super::shard_error)?;
             if let Some(sample) = series.last_sample_in_range(start_time, timestamp) {
                 samples.push(make(&series, sample))?;
                 // Refused below whatever the rest holds: stop opening series.
@@ -160,7 +166,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
     lookback_delta: u64,
     max_series: u64,
     _max_points_per_series: u64,
-    budget: &SampleBudget,
+    read: &ShardRead,
 ) -> ValkeyResult<InstantQueryResponse> {
     let mut symbol_table = symbol_table::SymbolTableBuilder::default();
     let samples = read_instant_samples(
@@ -169,7 +175,8 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
         timestamp,
         lookback_delta,
         max_series,
-        budget,
+        &read.budget,
+        &read.deadline,
         |series, sample| {
             let (label_name_refs, label_value_refs) = symbol_table.intern(&series.labels);
             InstantSample {
@@ -201,7 +208,7 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
     timestamp: Timestamp,
     lookback_delta: u64,
     max_series: u64,
-    budget: &SampleBudget,
+    read: &ShardRead,
 ) -> ValkeyResult<Vec<EvalSample>> {
     read_instant_samples(
         src,
@@ -209,7 +216,8 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
         timestamp,
         lookback_delta,
         max_series,
-        budget,
+        &read.budget,
+        &read.deadline,
         |series, sample| EvalSample {
             // Shares the series' label set; nothing borrows the series.
             labels: EvalLabels::interned(&series.labels),
@@ -227,13 +235,16 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
 /// worth walking to narrow another.
 ///
 /// No sample is read. Every matched key is opened, as a read of the same
-/// selector would, until the cap is passed; the walk stops there.
+/// selector would, until the cap is passed; the walk stops there. Refused
+/// before it starts, and stopped between series, once `deadline` has passed or
+/// this node's memory is past its limit ([`super::shard_deadline`]).
 pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
     src: &S,
     selector: SeriesSelector,
     max_series: usize,
+    deadline: &Deadline,
 ) -> ValkeyResult<Option<LabelProfile>> {
-    check_local_memory()?;
+    deadline.check().map_err(super::shard_error)?;
     let mut builder = LabelProfileBuilder::new();
     let mut matched = 0usize;
     let mut overflow = false;
@@ -243,6 +254,9 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
         None,
         DEFAULT_SERIES_BATCH_SIZE,
         |_, series, _| {
+            deadline
+                .checkpoint(SERIES_WORK)
+                .map_err(super::shard_error)?;
             matched += 1;
             if max_series > 0 && matched > max_series {
                 overflow = true;
@@ -266,7 +280,7 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
 /// so a long window over dense series is copied in more, shorter holds rather
 /// than one hold per 512 series however many chunks each has.
 ///
-/// The copy also refuses the read early against `budget`: the samples of the
+/// The copy also refuses the read early against `read`'s budget: the samples of the
 /// chunks wholly inside the span ([`RangeSnapshot::min_samples`]) are known
 /// without decoding, so a read whose batch alone would overrun what `decode`
 /// has left fails before decoding any of it. `decode` still charges the exact
@@ -278,7 +292,9 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
 /// string is copied and nothing borrows the series.
 ///
 /// `decode` says whether to read on: a read that already knows its verdict (over the series
-/// limit) breaks, and the batches after it are never copied.
+/// limit) breaks, and the batches after it are never copied. So does one whose deadline
+/// (`read`'s) has passed, or whose node's memory is past its limit, checked before each
+/// batch is copied.
 ///
 /// The copy is sequential on purpose. A batch is a few hundred KB, and fanning
 /// it out across the shared pool made the lock holder wait for workers busy
@@ -289,7 +305,7 @@ fn for_each_snapshot_batch<S, L, T>(
     selector: SeriesSelector,
     start_time: Timestamp,
     end_time: Timestamp,
-    budget: &SampleBudget,
+    read: &ShardRead,
     labels: L,
     mut decode: impl FnMut(Vec<(T, RangeSnapshot)>) -> ValkeyResult<ControlFlow<()>>,
 ) -> ValkeyResult<()>
@@ -308,6 +324,7 @@ where
         None,
         limit,
         |_, batch| {
+            read.deadline.check().map_err(super::shard_error)?;
             let mut copied = Vec::with_capacity(batch.len());
             let mut pending = 0usize;
             for (s, _) in batch {
@@ -316,7 +333,7 @@ where
                     continue;
                 }
                 pending = pending.saturating_add(snapshot.min_samples());
-                budget
+                read.budget
                     .check_ahead(pending)
                     .map_err(|err| valkey_module::ValkeyError::String(err.to_string()))?;
                 copied.push((labels(s), snapshot));
@@ -349,8 +366,9 @@ where
 /// in, or, for `max_series`, at the batch that takes the count over it (see
 /// [`WindowBounds`]).
 ///
-/// The samples are charged to `budget` as they are decoded. `sink` keeps what it makes of
-/// them past this call, so the caller holds `budget` until it has built its response.
+/// The samples are charged to `read`'s budget as they are decoded, and its deadline is
+/// checked between batches. `sink` keeps what it makes of them past this call, so the
+/// caller holds the budget until it has built its response.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     src: &S,
@@ -359,20 +377,21 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     backward_ms: i64,
     max_series: u64,
     max_points_per_series: u64,
-    budget: &SampleBudget,
+    read: &ShardRead,
     mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>) -> ValkeyResult<()>,
 ) -> ValkeyResult<()> {
     let Some((start_time, end_time)) = grid_fetch_bounds(window_ends, backward_ms) else {
         return Ok(());
     };
 
+    let budget = &read.budget;
     let mut bounds = WindowBounds::new(max_series, max_points_per_series);
     for_each_snapshot_batch(
         src,
         selector,
         start_time,
         end_time,
-        budget,
+        read,
         |s| EvalLabels::interned(&s.labels),
         |snapshots| {
             let candidates = snapshots
@@ -408,36 +427,34 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     bounds.finish().map_err(valkey_module::ValkeyError::String)
 }
 
-/// The sample budget for a read this node performs on another node's behalf: this node's
-/// `ts-promql-max-samples-per-query`, counted toward its `ts-promql-max-samples-in-flight`,
-/// since the read runs here. The charge counts every sample the read decodes until the
-/// budget drops, though a grid read
-/// ([`ShardGrid`](super::grid_fanout_command::ShardGrid)) holds only a batch at a time.
-///
-/// Every shard read takes one — range, grid, instant, and the aggregation push-down's input,
-/// which the coordinator never sees — and is held until what the read produced has been
-/// consumed into the response.
-///
-/// Refused while this node's memory use is at or past its `ts-promql-max-memory-percent`:
-/// taking the budget is the start of a read, so this is the read's admission check too,
-/// done under the same config read.
-pub(super) fn local_budget() -> ValkeyResult<SampleBudget> {
-    let config = promql_config();
-    admission::check_memory(config.max_memory_percent)
-        .map_err(|err| valkey_module::ValkeyError::String(err.to_string()))?;
-    Ok(SampleBudget::counted(
-        config.max_samples_per_query,
-        config.max_samples_in_flight,
-    ))
+/// What a read this node performs on another node's behalf runs under, from one read of
+/// this node's config. Every shard read takes one — range, grid, instant, and the
+/// aggregation push-down's input, which the coordinator never sees — and holds it until
+/// what the read produced has been consumed into the response.
+pub(super) struct ShardRead {
+    /// This node's `ts-promql-max-samples-per-query`, counted toward its
+    /// `ts-promql-max-samples-in-flight`, since the read runs here. The charge counts every
+    /// sample the read decodes until the budget drops, though a grid read
+    /// ([`ShardGrid`](super::grid_fanout_command::ShardGrid)) holds only a batch at a time.
+    pub(super) budget: SampleBudget,
+    /// When the requester stops waiting, and this node's `ts-promql-max-memory-percent`
+    /// ([`super::shard_deadline`]): checked between the read's batches and in the kernels
+    /// that run over what it read, so a read stops when memory pressure rises mid-way, not
+    /// only when it is already high as the read starts.
+    pub(super) deadline: Deadline,
 }
 
-/// Fail if this node's memory use is at or past its `ts-promql-max-memory-percent`, before
-/// a read on another node's behalf starts: for the one read that takes no budget, the label
-/// profile. Every other read is checked as it takes its budget ([`local_budget`]).
-fn check_local_memory() -> ValkeyResult<()> {
-    let limit = promql_config().max_memory_percent;
-    admission::check_memory(limit)
-        .map_err(|err| valkey_module::ValkeyError::String(err.to_string()))
+/// Start a read on another node's behalf ([`ShardRead`]). Refused while this node's memory
+/// use is at or past its `ts-promql-max-memory-percent`, or once the requester has stopped
+/// waiting: this is the read's admission check, done under the same config read.
+pub(super) fn shard_read(ctx: &FanoutContext) -> ValkeyResult<ShardRead> {
+    let config = promql_config();
+    let deadline = super::shard_deadline(ctx, config.max_memory_percent);
+    deadline.check().map_err(super::shard_error)?;
+    Ok(ShardRead {
+        budget: SampleBudget::counted(config.max_samples_per_query, config.max_samples_in_flight),
+        deadline,
+    })
 }
 
 /// The query limits on a shard's grid windows, applied as batches of them are
@@ -521,12 +538,13 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
     end_time: i64,
     max_series: u64,
     max_points_per_series: u64,
+    read: &ShardRead,
 ) -> ValkeyResult<RangeQueryResponse> {
     let max_points = points_limit(max_points_per_series);
     // This shard's own `ts-promql-max-samples-per-query`: the request does not
     // carry the coordinator's budget, and one node's share of a query should
     // not exceed what that node would allow a query of its own.
-    let budget = local_budget()?;
+    let budget = &read.budget;
     let mut ranges = Vec::new();
     // The storage label set itself, not an evaluator copy: the symbol table
     // below interns by identity.
@@ -535,13 +553,13 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
         selector,
         start_time,
         end_time,
-        &budget,
+        read,
         |s| s.labels.clone(),
         |snapshots| {
             let batch = snapshots
                 .into_par_rayon()
                 .map(|(labels, snapshot)| {
-                    if !decode_within_budget(&budget, &snapshot).map_err(|err| err.to_string())? {
+                    if !decode_within_budget(budget, &snapshot).map_err(|err| err.to_string())? {
                         return Ok(None);
                     }
                     // Streams against the per-series point limit, so an

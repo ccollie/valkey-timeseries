@@ -14,7 +14,7 @@ use crate::common::Timestamp;
 use crate::common::replies::CancelToken;
 use crate::common::time::current_time_millis;
 use crate::promql::engine::QueryOptions;
-use crate::promql::engine::admission;
+use crate::promql::engine::admission::{ADMISSION, Admission};
 use crate::promql::{QueryError, QueryResult};
 use std::cell::Cell;
 use std::time::Instant;
@@ -36,7 +36,7 @@ thread_local! {
 /// When an evaluation must stop: its deadline, its client's disconnect, and the memory limit,
 /// or — for a shard's share of a fan-out — when its requester stops waiting ([`Self::until`]).
 /// The default stops nothing: the engine's tests run without one.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Deadline {
     /// Epoch milliseconds; 0 for none.
     at_ms: Timestamp,
@@ -45,6 +45,21 @@ pub(crate) struct Deadline {
     /// When a fan-out's requester stops waiting, measured on this node's clock from the
     /// request's arrival; `None` for none.
     expires: Option<Instant>,
+    /// Where the memory use `max_memory_percent` is checked against is sampled: this
+    /// node's [`ADMISSION`], or a test's own ([`Self::sampled_by`]).
+    admission: &'static Admission,
+}
+
+impl Default for Deadline {
+    fn default() -> Self {
+        Self {
+            at_ms: 0,
+            cancel: CancelToken::default(),
+            max_memory_percent: 0,
+            expires: None,
+            admission: &ADMISSION,
+        }
+    }
 }
 
 impl Deadline {
@@ -53,7 +68,7 @@ impl Deadline {
             at_ms: options.deadline.unwrap_or(0).max(0),
             cancel: options.cancel,
             max_memory_percent: options.max_memory_percent,
-            expires: None,
+            ..Self::default()
         }
     }
 
@@ -64,6 +79,24 @@ impl Deadline {
             expires,
             ..Self::default()
         }
+    }
+
+    /// This deadline, also stopping once this node's memory use is at or past
+    /// `max_memory_percent` of `maxmemory` (0: no limit): for a shard's read, whose
+    /// requester's own limit does not travel with the request.
+    pub(crate) fn with_memory_limit(self, max_memory_percent: u32) -> Self {
+        Self {
+            max_memory_percent,
+            ..self
+        }
+    }
+
+    /// This deadline, checking memory use as `admission` samples it rather than this
+    /// node's: for a test that fakes memory pressure, which on [`ADMISSION`] would refuse
+    /// every other test's queries while it did.
+    #[cfg(test)]
+    pub(crate) fn sampled_by(self, admission: &'static Admission) -> Self {
+        Self { admission, ..self }
     }
 
     fn is_none(&self) -> bool {
@@ -79,7 +112,7 @@ impl Deadline {
         if self.cancel.is_cancelled() {
             return Err(QueryError::Cancelled);
         }
-        admission::check_memory(self.max_memory_percent)?;
+        self.admission.check_memory(self.max_memory_percent)?;
         if self.at_ms > 0 && current_time_millis() > self.at_ms {
             return Err(QueryError::Timeout);
         }
@@ -176,5 +209,33 @@ mod tests {
         assert!(deadline.check().is_ok());
         client.disconnect();
         assert!(matches!(deadline.check(), Err(QueryError::Cancelled)));
+    }
+
+    /// A shard's deadline carries this node's memory limit, so its read and kernels stop
+    /// when memory use rises past it while they run. Without the limit — what a shard's
+    /// deadline used to be, its requester's expiry alone — the same pressure stops nothing.
+    #[test]
+    fn a_memory_limit_stops_a_shard_as_memory_rises() {
+        // Its own memory sample: on `ADMISSION`, every concurrent test's query would be refused.
+        static MEMORY: Admission = Admission::new();
+        let shard = Deadline::until(None)
+            .with_memory_limit(90)
+            .sampled_by(&MEMORY);
+        let expiry_only = Deadline::until(None).sampled_by(&MEMORY);
+        assert!(shard.check().is_ok(), "admitted while memory is fine");
+
+        MEMORY.store_memory_ratio(0.95);
+        let err = shard.check().unwrap_err();
+        assert!(matches!(err, QueryError::Overloaded(_)), "{err}");
+        assert!(err.to_string().contains("95% of maxmemory"), "{err}");
+        let stopped = (0..=CHECK_EVERY / SERIES_WORK)
+            .map(|_| shard.checkpoint(SERIES_WORK))
+            .any(|r| matches!(r, Err(QueryError::Overloaded(_))));
+        assert!(stopped, "a checkpoint between series stops it too");
+
+        assert!(expiry_only.check().is_ok());
+        assert!(
+            (0..=CHECK_EVERY / SERIES_WORK).all(|_| expiry_only.checkpoint(SERIES_WORK).is_ok())
+        );
     }
 }

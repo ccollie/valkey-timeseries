@@ -3,7 +3,7 @@ use crate::fanout::{
     FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo, get_cluster_command_timeout,
 };
 use crate::labels::filters::SeriesSelector;
-use crate::promql::engine::fanout::query_utils::handle_range_query;
+use crate::promql::engine::fanout::query_utils::{handle_range_query, shard_read};
 use crate::promql::generated::{
     RangeQuery, RangeQueryResponse, SeriesSelector as ProtoSeriesSelector,
 };
@@ -82,6 +82,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
             return Ok(RangeQueryResponse::default());
         };
         let series_selector: SeriesSelector = (&selector).try_into()?;
+        let read = shard_read(ctx)?;
         // Locks per batch of matched series; decodes with the lock released.
         handle_range_query(
             ctx,
@@ -90,6 +91,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
             req.end_time,
             req.max_series,
             req.max_points_per_series,
+            &read,
         )
     }
 

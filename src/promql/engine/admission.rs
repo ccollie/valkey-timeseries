@@ -80,7 +80,7 @@ impl Admission {
         self.in_flight.fetch_sub(samples, Ordering::Relaxed);
     }
 
-    fn store_memory_ratio(&self, ratio: f32) {
+    pub(in crate::promql) fn store_memory_ratio(&self, ratio: f32) {
         self.memory_ratio.store(ratio.to_bits(), Ordering::Relaxed);
     }
 

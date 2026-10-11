@@ -24,10 +24,13 @@ use crate::fanout::{ErrorKind, FanoutContext, FanoutError, register_fanout_opera
 use crate::promql::QueryError;
 use crate::promql::deadline::Deadline;
 
-/// The deadline a shard's kernels run under: when its requester stops waiting, if the
-/// request said. Past it the requester has answered without this shard.
-pub(super) fn shard_deadline(ctx: &FanoutContext) -> Deadline {
-    Deadline::until(ctx.deadline())
+/// The deadline a shard's read and kernels run under: when its requester stops waiting, if
+/// the request said, and this node's `ts-promql-max-memory-percent` (`max_memory_percent`),
+/// captured once as the read starts. Past the first the requester has answered without this
+/// shard; past the second the node is under memory pressure, and the read stops between
+/// batches, as at admission, rather than run on.
+pub(super) fn shard_deadline(ctx: &FanoutContext, max_memory_percent: u32) -> Deadline {
+    Deadline::until(ctx.deadline()).with_memory_limit(max_memory_percent)
 }
 
 /// A shard kernel's error as the shard reports it. A timeout can only be

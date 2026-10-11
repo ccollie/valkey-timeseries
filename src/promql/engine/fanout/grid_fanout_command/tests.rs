@@ -1229,6 +1229,36 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     assert!(grid.finish().is_ok());
 }
 
+/// A shard's read stops when this node's memory use rises past its limit while
+/// it runs, not only when it is already past it as the read starts: the memory
+/// limit travels in the shard's deadline, so the kernel that folds what the
+/// read promoted refuses with the memory error, in its own words.
+#[test]
+fn test_promotion_stops_when_memory_rises_past_the_limit() {
+    use crate::promql::engine::admission::Admission;
+    // Its own memory sample: on `ADMISSION`, every concurrent test's query would be refused.
+    static MEMORY: Admission = Admission::new();
+    let (request, windows) = promoted_expansion();
+    let ends = request.window_ends();
+    let shard = Deadline::until(None)
+        .with_memory_limit(90)
+        .sampled_by(&MEMORY);
+    let budget = SampleBudget::default();
+    let mut grid = ShardGrid::new(&request, &ends, &budget, shard);
+    // Admitted, and the read's batches staged, while memory is fine.
+    assert!(shard.check().is_ok());
+    grid.add(windows).unwrap();
+
+    MEMORY.store_memory_ratio(0.95);
+    let err = grid.finish().expect_err("memory rose past the limit");
+    let message = err.to_string();
+    assert!(message.contains("95% of maxmemory"), "{message}");
+    assert!(
+        message.contains("ts-promql-max-memory-percent"),
+        "{message}"
+    );
+}
+
 /// A fused selection runs on the shard as each batch is staged, under the
 /// requester's deadline: past it, the batch is refused rather than selected
 /// for nobody.
