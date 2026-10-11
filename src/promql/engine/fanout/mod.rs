@@ -17,11 +17,28 @@ pub(crate) use type_conversions::validate_query_regexes;
 pub(in crate::promql) use type_conversions::{
     WireRangeResponse, check_unique_series, decode_range_series,
 };
-use valkey_module::ValkeyResult;
+use valkey_module::{ValkeyError, ValkeyResult};
 
 use crate::error_consts;
-use crate::fanout::{ErrorKind, FanoutError, register_fanout_operation};
+use crate::fanout::{ErrorKind, FanoutContext, FanoutError, register_fanout_operation};
 use crate::promql::QueryError;
+use crate::promql::deadline::Deadline;
+
+/// The deadline a shard's kernels run under: when its requester stops waiting, if the
+/// request said. Past it the requester has answered without this shard.
+pub(super) fn shard_deadline(ctx: &FanoutContext) -> Deadline {
+    Deadline::until(ctx.deadline())
+}
+
+/// A shard kernel's error as the shard reports it. A timeout can only be
+/// [`shard_deadline`]'s, so it says the requester gave up.
+pub(super) fn shard_error(err: impl Into<QueryError>) -> ValkeyError {
+    match err.into() {
+        QueryError::Timeout => ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP),
+        QueryError::Execution(message) => ValkeyError::String(message),
+        other => ValkeyError::String(other.to_string()),
+    }
+}
 
 impl From<FanoutError> for QueryError {
     fn from(value: FanoutError) -> Self {

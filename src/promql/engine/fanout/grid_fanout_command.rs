@@ -30,7 +30,6 @@
 
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
-use crate::error_consts;
 use crate::fanout::{
     FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo,
     get_cluster_command_timeout, log_fanout_failure,
@@ -38,13 +37,14 @@ use crate::fanout::{
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::query_utils::{local_budget, local_grid_windows};
+use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
     decode_pushdown_kind, range_sample_from_proto, range_sample_to_proto, wrong_payload,
 };
 use crate::promql::engine::query_reader::{
     GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
-    SteppedSeries, execution_error, grid_window_ends,
+    SteppedSeries, grid_window_ends,
 };
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::functions::RollupKind;
@@ -252,9 +252,10 @@ impl GridFanoutCommand {
             if sink.keeps_output() {
                 budget.charge(chunk.points())?;
             }
-            sink.take(&request, chunk).map_err(execution_error)
+            sink.take(&request, chunk, deadline)
+                .map_err(QueryError::from)
         })?;
-        sink.finish().map_err(execution_error)
+        sink.finish().map_err(QueryError::from)
     }
 }
 
@@ -284,7 +285,7 @@ impl FanoutCommand for GridFanoutCommand {
         // Locks per batch of matched series; each batch is decoded and run
         // through the per-series stage with the lock released, before the next
         // batch is read.
-        let mut grid = ShardGrid::new(&request, &window_ends);
+        let mut grid = ShardGrid::new(&request, &window_ends, super::shard_deadline(ctx));
         // Held through `finish`: the grid keeps what it made of the windows until then.
         let budget = local_budget();
         local_grid_windows(
@@ -297,7 +298,7 @@ impl FanoutCommand for GridFanoutCommand {
             &budget,
             |windows| grid.add(windows),
         )?;
-        grid.finish(|| ctx.expired())
+        grid.finish()
     }
 
     fn get_timeout(&self) -> Duration {
@@ -510,9 +511,9 @@ fn shard_response(
     window_ends: &[i64],
     windows: Vec<RangeSample<EvalLabels>>,
 ) -> ValkeyResult<GridQueryResponse> {
-    let mut grid = ShardGrid::new(request, window_ends);
+    let mut grid = ShardGrid::new(request, window_ends, Deadline::default());
     grid.add(windows)?;
-    grid.finish(|| false)
+    grid.finish()
 }
 
 /// A shard's grid response, built one batch of windows at a time so that the
@@ -547,16 +548,24 @@ pub(super) struct ShardGrid<'a> {
     /// it arrives and keeps only its groups or picks.
     staged: GridSink,
     staged_groups: FingerprintHashSet,
+    /// When the requester stops waiting ([`super::shard_deadline`]): checked by a fused
+    /// selection as it runs, and between the chunks of promoted spans.
+    deadline: Deadline,
 }
 
 impl<'a> ShardGrid<'a> {
-    pub(super) fn new(request: &'a GridRequest, window_ends: &'a [i64]) -> Self {
+    pub(super) fn new(
+        request: &'a GridRequest,
+        window_ends: &'a [i64],
+        deadline: Deadline,
+    ) -> Self {
         Self {
             request,
             window_ends,
             raw: Vec::new(),
             staged: GridSink::for_request(request),
             staged_groups: FingerprintHashSet::default(),
+            deadline,
         }
     }
 
@@ -568,7 +577,8 @@ impl<'a> ShardGrid<'a> {
     /// its stage output is never the larger. A sparse series that would expand
     /// waits for [`Self::finish`], which ships it raw or folds it.
     ///
-    /// Fails only when a fused selection refuses its parameter.
+    /// Fails only for a fused selection: it refuses its parameter, or the
+    /// requester gives up while it runs.
     pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) -> ValkeyResult<()> {
         let (raw, staged): (Vec<_>, Vec<_>) = windows
             .into_iter()
@@ -581,8 +591,8 @@ impl<'a> ShardGrid<'a> {
         if !staged.is_empty() {
             let output = self.request.per_series(self.window_ends, staged);
             self.staged
-                .take(self.request, output)
-                .map_err(|e| ValkeyError::String(e.to_string()))?;
+                .take(self.request, output, &self.deadline)
+                .map_err(shard_error)?;
         }
         Ok(())
     }
@@ -590,11 +600,11 @@ impl<'a> ShardGrid<'a> {
     /// The response, once every batch is in: the raw spans that stay raw, and
     /// the promoted ones folded into their groups' partials.
     ///
-    /// The promoted spans are staged a chunk at a time, `expired` asked after
-    /// each — whether the requester has stopped waiting, as between the read's
-    /// batches — so a large promotion neither holds its whole expansion nor
-    /// runs on for nobody.
-    pub(super) fn finish(mut self, expired: impl Fn() -> bool) -> ValkeyResult<GridQueryResponse> {
+    /// The promoted spans are staged a chunk at a time, the requester's
+    /// deadline checked before each, as between the read's batches, so a
+    /// large promotion neither holds its whole expansion nor runs on for
+    /// nobody.
+    pub(super) fn finish(mut self) -> ValkeyResult<GridQueryResponse> {
         let request = self.request;
         let window_ends = self.window_ends;
         let candidates = std::mem::take(&mut self.raw);
@@ -611,22 +621,14 @@ impl<'a> ShardGrid<'a> {
                 raw.push(series);
             }
         }
-        let staged = &mut self.staged;
+        let (staged, deadline) = (&mut self.staged, &self.deadline);
         request
-            .per_series_chunked(window_ends, folded, &Deadline::default(), |output, _| {
-                staged.take(request, output).map_err(execution_error)?;
-                if expired() {
-                    return Err(QueryError::Timeout);
-                }
-                Ok(())
+            .per_series_chunked(window_ends, folded, deadline, |output, _| {
+                staged
+                    .take(request, output, deadline)
+                    .map_err(QueryError::from)
             })
-            .map_err(|err| match err {
-                // Only `expired` says so: the chunker's own deadline here is
-                // the default, which never fires.
-                QueryError::Timeout => ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP),
-                QueryError::Execution(message) => ValkeyError::String(message),
-                other => ValkeyError::String(other.to_string()),
-            })?;
+            .map_err(shard_error)?;
         respond(request, window_ends, raw, self.staged)
     }
 }

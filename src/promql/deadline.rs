@@ -17,6 +17,7 @@ use crate::promql::engine::QueryOptions;
 use crate::promql::engine::admission;
 use crate::promql::{QueryError, QueryResult};
 use std::cell::Cell;
+use std::time::Instant;
 
 /// Work between two full checks, in units of one sample. About 65 thousand samples or 4
 /// thousand series ([`SERIES_WORK`]): a millisecond or so of kernel work, against a check
@@ -32,14 +33,19 @@ thread_local! {
     static WORK: Cell<usize> = const { Cell::new(0) };
 }
 
-/// When an evaluation must stop: its deadline, its client's disconnect, and the memory limit.
-/// The default stops nothing: a shard's kernels and the engine's tests run without one.
+/// When an evaluation must stop: its deadline, its client's disconnect, and the memory limit,
+/// or — for a shard's share of a fan-out — when its requester stops waiting ([`Self::until`]).
+/// The default stops nothing: the engine's tests, and a coordinator's merge of what its
+/// shards sent (its query checks its own deadline), run without one.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Deadline {
     /// Epoch milliseconds; 0 for none.
     at_ms: Timestamp,
     cancel: CancelToken,
     max_memory_percent: u32,
+    /// When a fan-out's requester stops waiting, measured on this node's clock from the
+    /// request's arrival; `None` for none.
+    expires: Option<Instant>,
 }
 
 impl Deadline {
@@ -48,20 +54,40 @@ impl Deadline {
             at_ms: options.deadline.unwrap_or(0).max(0),
             cancel: options.cancel,
             max_memory_percent: options.max_memory_percent,
+            expires: None,
+        }
+    }
+
+    /// For work done on another node's behalf: stop once `expires` (when the requester
+    /// stops waiting) has passed, with [`QueryError::Timeout`]. `None` stops nothing.
+    pub(crate) fn until(expires: Option<Instant>) -> Self {
+        Self {
+            expires,
+            ..Self::default()
         }
     }
 
     fn is_none(&self) -> bool {
-        self.at_ms == 0 && self.cancel == CancelToken::default() && self.max_memory_percent == 0
+        self.at_ms == 0
+            && self.cancel == CancelToken::default()
+            && self.max_memory_percent == 0
+            && self.expires.is_none()
     }
 
-    /// Fail if the client has gone, memory is past its limit, or the deadline has passed.
+    /// Fail if the client has gone, memory is past its limit, or the deadline (or the
+    /// requester's wait) has passed.
     pub(crate) fn check(&self) -> QueryResult<()> {
         if self.cancel.is_cancelled() {
             return Err(QueryError::Cancelled);
         }
         admission::check_memory(self.max_memory_percent)?;
         if self.at_ms > 0 && current_time_millis() > self.at_ms {
+            return Err(QueryError::Timeout);
+        }
+        if self
+            .expires
+            .is_some_and(|expires| Instant::now() >= expires)
+        {
             return Err(QueryError::Timeout);
         }
         Ok(())
@@ -120,6 +146,25 @@ mod tests {
         for _ in 0..=CHECK_EVERY / SERIES_WORK {
             assert!(later.checkpoint(SERIES_WORK).is_ok());
         }
+    }
+
+    #[test]
+    fn a_requesters_expiry_stops_a_shards_kernels() {
+        assert!(
+            Deadline::until(None).check().is_ok(),
+            "no expiry stops nothing"
+        );
+        let later = Deadline::until(Some(Instant::now() + std::time::Duration::from_secs(60)));
+        assert!(later.check().is_ok());
+        let passed = Deadline::until(Some(Instant::now()));
+        assert!(matches!(passed.check(), Err(QueryError::Timeout)));
+        let stopped = (0..=CHECK_EVERY / SERIES_WORK)
+            .map(|_| passed.checkpoint(SERIES_WORK))
+            .any(|r| matches!(r, Err(QueryError::Timeout)));
+        assert!(
+            stopped,
+            "a checkpoint is not skipped for an expiry-only deadline"
+        );
     }
 
     #[test]

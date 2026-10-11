@@ -8,7 +8,7 @@ use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSele
 use crate::promql::exec::pipeline::for_each_step_sample;
 use crate::promql::functions::RollupKind;
 use crate::promql::{
-    EvalResult, EvaluationError, ExprResult, PromqlResult, QueryError, QueryOptions,
+    EvalResult, ExprResult, PromqlResult, QueryError, QueryOptions,
     model::{InstantSample, RangeSample},
 };
 use orx_parallel::Par;
@@ -357,9 +357,9 @@ impl GridRequest {
             if sink.keeps_output() {
                 charge(output.points().saturating_sub(read))?;
             }
-            sink.take(self, output).map_err(execution_error)
+            sink.take(self, output, deadline).map_err(QueryError::from)
         })?;
-        sink.finish().map_err(execution_error)
+        sink.finish().map_err(QueryError::from)
     }
 
     /// Run the per-series stage over `series` a chunk at a time, `deadline`
@@ -459,16 +459,20 @@ impl GridSink {
     }
 
     /// Take one batch of the stage's output, run here over raw spans. Fails
-    /// only for a selection whose operator refuses its parameter.
+    /// only for a selection: its operator refuses its parameter, or `deadline`
+    /// passes while it runs.
     pub(in crate::promql) fn take(
         &mut self,
         request: &GridRequest,
         output: GridSeries,
+        deadline: &Deadline,
     ) -> EvalResult<()> {
         match self {
             GridSink::Series(series) => series.append(output),
             GridSink::Partials(partials) => Self::fold(partials, request, output),
-            GridSink::Selection(selection) => selection.apply(output.into_step_values())?,
+            GridSink::Selection(selection) => {
+                selection.apply(output.into_step_values(), deadline)?
+            }
         }
         Ok(())
     }
@@ -500,11 +504,6 @@ impl GridSink {
             GridSink::Selection(selection) => GridOutcome::Reduced(selection.finalize()?),
         })
     }
-}
-
-/// A kernel's error as the query reports it.
-pub(in crate::promql) fn execution_error(err: EvaluationError) -> QueryError {
-    QueryError::Execution(err.to_string())
 }
 
 /// The most points the per-series stage can produce from `samples` over
@@ -1025,7 +1024,7 @@ mod evaluate_chunk_tests {
                 }
                 _ => {
                     let mut selection = SteppedSelection::new(aggregation);
-                    selection.apply(whole).unwrap();
+                    selection.apply(whole, &Deadline::default()).unwrap();
                     selection.finalize().unwrap()
                 }
             };

@@ -3,6 +3,7 @@ use super::transport::*;
 use super::*;
 use crate::common::Timestamp;
 use crate::labels::{Label, Labels};
+use crate::promql::QueryError;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::AggregationParam;
 use crate::promql::exec::aggregations::AggregationKind;
@@ -1162,27 +1163,21 @@ fn promoted_expansion() -> (GridRequest, Vec<RangeSample<EvalLabels>>) {
 fn test_promoted_members_fold_a_chunk_at_a_time() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
-    let mut grid = ShardGrid::new(&request, &ends);
+    let mut grid = ShardGrid::new(&request, &ends, Deadline::default());
     grid.add(windows.clone()).unwrap();
     assert!(
         matches!(grid.staged, GridSink::Partials(_)),
         "a fused reduction keeps partials, never per-series output"
     );
-    let chunks = std::cell::Cell::new(0);
-    let shard = grid
-        .finish(|| {
-            chunks.set(chunks.get() + 1);
-            false
-        })
-        .unwrap();
+    // The chunking itself (by output, not raw samples) is pinned by
+    // `a_sparse_expansion_is_chunked_and_charged_by_its_output`.
+    let shard = grid.finish().unwrap();
     assert!(shard.raw.is_empty(), "every sparse member was promoted");
     assert_eq!(
         shard.partials.len(),
         ends.len(),
         "one group, a partial per step"
     );
-    // 300 members x 10,000 steps is about three chunks of output.
-    assert!(chunks.get() >= 3, "folded in chunks: {}", chunks.get());
 
     let mut cmd = command(request.clone());
     cmd.on_response(shard, &node(7000)).unwrap();
@@ -1199,9 +1194,10 @@ fn test_promoted_members_fold_a_chunk_at_a_time() {
 fn test_promotion_stops_when_the_requester_gives_up() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
-    let mut grid = ShardGrid::new(&request, &ends);
+    let gave_up = || Deadline::until(Some(std::time::Instant::now()));
+    let mut grid = ShardGrid::new(&request, &ends, gave_up());
     grid.add(windows).unwrap();
-    let err = grid.finish(|| true).expect_err("the requester gave up");
+    let err = grid.finish().expect_err("the requester gave up");
     assert!(
         err.to_string()
             .contains(crate::error_consts::FANOUT_REQUESTER_GAVE_UP),
@@ -1211,9 +1207,40 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     // With nothing to fold, there is nothing to stop.
     let (request, mut windows) = promoted_expansion();
     windows.retain(|s| s.samples.len() > 1);
-    let mut grid = ShardGrid::new(&request, &ends);
+    let mut grid = ShardGrid::new(&request, &ends, gave_up());
     grid.add(windows).unwrap();
-    assert!(grid.finish(|| true).is_ok());
+    assert!(grid.finish().is_ok());
+}
+
+/// A fused selection runs on the shard as each batch is staged, under the
+/// requester's deadline: past it, the batch is refused rather than selected
+/// for nobody.
+#[test]
+fn test_a_fused_selection_stops_when_the_requester_gives_up() {
+    let request = fused_with(
+        stepped_request(),
+        AggregationKind::Topk,
+        &[],
+        Some(AggregationParam::Scalar(1.0)),
+    );
+    let ends = request.window_ends();
+    let dense: Vec<(i64, f64)> = ends.iter().map(|&t| (t, 1.0)).collect();
+    let windows = vec![series("a", &dense), series("b", &dense)];
+
+    let mut live = ShardGrid::new(&request, &ends, Deadline::default());
+    live.add(windows.clone()).expect("selected");
+
+    let mut late = ShardGrid::new(
+        &request,
+        &ends,
+        Deadline::until(Some(std::time::Instant::now())),
+    );
+    let err = late.add(windows).expect_err("the requester gave up");
+    assert!(
+        err.to_string()
+            .contains(crate::error_consts::FANOUT_REQUESTER_GAVE_UP),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1735,11 +1762,11 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
         let ends = request.window_ends();
         let whole = shard_response(&request, &ends, windows.clone()).unwrap();
 
-        let mut grid = ShardGrid::new(&request, &ends);
+        let mut grid = ShardGrid::new(&request, &ends, Deadline::default());
         for batch in windows.chunks(7) {
             grid.add(batch.to_vec()).unwrap();
         }
-        let split = grid.finish(|| false).unwrap();
+        let split = grid.finish().unwrap();
 
         assert_eq!(split.raw.len(), whole.raw.len(), "{what}: raw spans");
         assert_eq!(split.series.len(), whole.series.len(), "{what}: series");

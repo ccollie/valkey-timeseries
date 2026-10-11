@@ -88,6 +88,12 @@ impl FanoutContext {
         let _ = self.deadline.set(deadline);
     }
 
+    /// When the requester stops waiting, if it said: for work that checks it in its own
+    /// terms, as a PromQL kernel's deadline does.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline.get().copied()
+    }
+
     /// Whether the requester has stopped waiting: its answer would arrive after it gave up.
     pub fn expired(&self) -> bool {
         self.deadline

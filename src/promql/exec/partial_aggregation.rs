@@ -435,15 +435,21 @@ impl SteppedSelection {
 
     /// Run the operator over per-series step values — a shard's own series,
     /// or the ones the coordinator was handed raw — and keep its output as
-    /// candidates.
-    pub fn apply(&mut self, series: Vec<RangeSample<EvalLabels>>) -> EvalResult<()> {
+    /// candidates. `deadline` is checked at every step and every few thousand
+    /// series within one: a shard passes its requester's, a coordinator its
+    /// query's.
+    pub fn apply(
+        &mut self,
+        series: Vec<RangeSample<EvalLabels>>,
+        deadline: &Deadline,
+    ) -> EvalResult<()> {
         let mut by_step: BTreeMap<Timestamp, Vec<EvalSample>> = BTreeMap::new();
         Self::transpose(series, &mut by_step);
         // Sequential on purpose: a step's selection is a few microseconds,
         // and fanning 240 of them out to the pool measured five times slower
         // than running them in a row.
         for (step_ts, samples) in by_step {
-            let output = Self::run_with(&self.aggregation, samples, step_ts)?;
+            let output = Self::run_with(&self.aggregation, samples, step_ts, deadline)?;
             self.steps.entry(step_ts).or_default().extend(output);
         }
         Ok(())
@@ -467,7 +473,10 @@ impl SteppedSelection {
             let output = match strategy {
                 // Selecting is idempotent: the answer is the selection over
                 // the union of what every party selected.
-                PushdownStrategy::Select => Self::run_with(aggregation, candidates, step_ts)?,
+                // Over candidates — at most k per step per party — so unchecked.
+                PushdownStrategy::Select => {
+                    Self::run_with(aggregation, candidates, step_ts, &Deadline::default())?
+                }
                 // Counts from different parties add.
                 PushdownStrategy::CountValues => merge_count_values(candidates),
                 PushdownStrategy::Reduce => unreachable!("a reduction folds as partial states"),
@@ -494,6 +503,7 @@ impl SteppedSelection {
         aggregation: &GridAggregation,
         samples: Vec<EvalSample>,
         step_ts: Timestamp,
+        deadline: &Deadline,
     ) -> EvalResult<Vec<EvalSample>> {
         apply_aggregation(
             aggregation.kind,
@@ -504,10 +514,7 @@ impl SteppedSelection {
                 .map(AggregationParam::to_expr_result),
             samples,
             step_ts,
-            // Shared by a shard's push-down and the coordinator's merge of it: the
-            // shard's reads stop at its requester's budget, the coordinator's query
-            // at its own deadline checks.
-            &Deadline::default(),
+            deadline,
         )
     }
 

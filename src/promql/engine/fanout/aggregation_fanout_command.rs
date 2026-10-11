@@ -44,7 +44,7 @@ use crate::promql::{EvalResult, EvalSample};
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
 use std::time::Duration;
-use valkey_module::{ValkeyError, ValkeyResult};
+use valkey_module::ValkeyResult;
 
 /// The instant-vector half of the request: what to select, and when.
 #[derive(Debug, Clone)]
@@ -291,10 +291,11 @@ impl FanoutCommand for AggregationFanoutCommand {
                     param,
                     samples,
                     req.eval_timestamp,
-                    // A shard's share: its reads already stop at the requester's budget.
-                    &Deadline::default(),
+                    // Its read stops between batches once the requester gives up; so
+                    // does the aggregation over what it read.
+                    &super::shard_deadline(ctx),
                 )
-                .map_err(|e| ValkeyError::String(e.to_string()))?;
+                .map_err(super::shard_error)?;
                 Ok(samples_response(aggregated, true))
             }
         }
