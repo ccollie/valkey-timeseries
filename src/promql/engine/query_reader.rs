@@ -477,7 +477,26 @@ impl GridSink {
     /// how much more the sink holds for it ([`Self::held`]): what a caller
     /// bounding its memory charges. Fails when `deadline` passes while it
     /// folds, or a selection's operator refuses its parameter.
+    ///
+    /// Only a selection differs from [`Self::merge`]: the operator has yet to
+    /// run over this output, so it runs here.
     pub(in crate::promql) fn take(
+        &mut self,
+        request: &GridRequest,
+        output: GridSeries,
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
+        match self {
+            GridSink::Selection(selection) => selection.apply(output.into_step_values(), deadline),
+            GridSink::Series(_) | GridSink::Partials(_) => self.merge(request, output, deadline),
+        }
+    }
+
+    /// Take a batch another party already staged — a shard's per-series
+    /// entries, or the candidates its own run of the operator picked — so the
+    /// operator is not run over it again here, returning how much more the sink
+    /// holds for it. Fails when `deadline` passes while it folds.
+    pub(in crate::promql) fn merge(
         &mut self,
         request: &GridRequest,
         output: GridSeries,
@@ -491,31 +510,9 @@ impl GridSink {
             }
             GridSink::Partials(partials) => Self::fold(partials, request, output, deadline)?,
             GridSink::Selection(selection) => {
-                selection.apply(output.into_step_values(), deadline)?
+                selection.merge(output.into_step_values(), deadline)?
             }
         })
-    }
-
-    /// Take a batch another party already staged — a shard's per-series
-    /// entries, or the candidates its own run of the operator picked — so the
-    /// operator is not run over it again here. Fails when `deadline` passes
-    /// while it folds.
-    pub(in crate::promql) fn merge(
-        &mut self,
-        request: &GridRequest,
-        output: GridSeries,
-        deadline: &Deadline,
-    ) -> EvalResult<()> {
-        match self {
-            GridSink::Series(series) => series.append(output),
-            GridSink::Partials(partials) => {
-                Self::fold(partials, request, output, deadline)?;
-            }
-            GridSink::Selection(selection) => {
-                selection.merge(output.into_step_values(), deadline)?;
-            }
-        }
-        Ok(())
     }
 
     fn fold(

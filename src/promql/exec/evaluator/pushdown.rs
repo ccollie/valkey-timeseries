@@ -1,6 +1,7 @@
 //! Push-down evaluation: rollups and stepped aggregations a source answers over the whole
 //! step grid, and the lookups that find those answers during the step loop.
 
+use super::preload::Keeps;
 use super::*;
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
@@ -326,7 +327,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(None);
         };
-        let (grouped, _) = self.finish_grid(&request, outcome, true)?;
+        let (grouped, _) = self.finish_grid(&request, outcome, Keeps::Points)?;
 
         let samples = grouped
             .into_iter()
@@ -416,7 +417,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(None);
         };
-        let (rolled, _) = self.finish_grid(&request, outcome, true)?;
+        let (rolled, _) = self.finish_grid(&request, outcome, Keeps::Points)?;
 
         // A single evaluation yields at most one point per series, stamped with
         // the query's evaluation timestamp rather than the window end — so a
