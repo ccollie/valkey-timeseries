@@ -43,6 +43,7 @@ pub use cluster_map::{ClusterMap, ClusterNodesSource, FanoutTarget, NodeInfo};
 #[cfg(test)]
 pub(crate) use cluster_map::{NodeRole, SocketAddress};
 pub use registry::register_fanout_operation;
+pub(crate) use workers::hold_request_lane;
 
 pub(crate) fn init_fanout(ctx: &Context) {
     if !is_clustered(ctx) {

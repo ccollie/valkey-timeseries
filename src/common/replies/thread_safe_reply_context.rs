@@ -4,6 +4,7 @@ use crate::common::sync::lock;
 use crate::error_consts;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -201,7 +202,10 @@ pub struct ThreadSafeReplyContext {
     ///
     /// A writer that panics after starting its reply leaves a partial reply that nothing
     /// here can repair; this covers the far likelier failure, before any reply.
-    answered: AtomicBool,
+    ///
+    /// A `Cell`: the context is `Send` but not `Sync`, so only its owning thread reads or
+    /// sets this, and a move to another thread already synchronizes.
+    answered: Cell<bool>,
 }
 
 /// SAFETY: a thread-safe context belongs to one blocked client and may be used from any one
@@ -227,7 +231,7 @@ impl ThreadSafeReplyContext {
         Self {
             ctx,
             blocked_client,
-            answered: AtomicBool::new(false),
+            answered: Cell::new(false),
         }
     }
 
@@ -259,7 +263,7 @@ impl ThreadSafeReplyContext {
 
 impl Drop for ThreadSafeReplyContext {
     fn drop(&mut self) {
-        if !self.answered.load(Ordering::Relaxed) {
+        if !self.answered.get() {
             reply(
                 self.ctx,
                 Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)),
@@ -278,7 +282,7 @@ impl IntoRawCtx for &ThreadSafeReplyContext {
     /// Writing through the raw context is answering too: the caller takes responsibility for
     /// the reply, so the drop must not add an error after it.
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
-        self.answered.store(true, Ordering::Relaxed);
+        self.answered.set(true);
         self.ctx
     }
 }
