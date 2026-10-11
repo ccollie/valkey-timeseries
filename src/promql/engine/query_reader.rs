@@ -387,10 +387,8 @@ impl GridRequest {
     /// raw samples it was built from.
     ///
     /// A chunk is sized by the larger of what its series read and what they
-    /// can produce ([`output_bound`]). Measured by input alone, a thousand
-    /// one-sample series under a window wider than the range would be one
-    /// chunk — and a billion points over a million steps, built between two
-    /// checks before anything could charge them. Sized this way, no chunk
+    /// can produce ([`output_bound`]), since a sparse series under a wide
+    /// window produces a point per step from a sample or two. So no chunk
     /// produces much more than [`EVALUATE_CHUNK_WORK`] points, however sparse
     /// its input: what one series alone can produce is bounded by the step
     /// cap. A chunk is still evaluated in parallel, and the stage's loops over
@@ -869,9 +867,8 @@ mod evaluate_chunk_tests {
         }
     }
 
-    /// The bug this guards against: chunks measured by what the series read
-    /// put every one-sample series in one chunk, and its whole expansion was
-    /// built before anything was charged.
+    /// One-sample series are chunked by what they expand to, not what they
+    /// read, and each chunk's expansion is charged as it is built.
     #[test]
     fn a_sparse_expansion_is_chunked_and_charged_by_its_output() {
         let series = sparse_series();

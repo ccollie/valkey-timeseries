@@ -1469,7 +1469,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         min: Some(ConfigValue::Integer(PROMQL_MAX_SAMPLES_PER_QUERY_MIN)),
         max: Some(ConfigValue::Integer(PROMQL_MAX_SAMPLES_PER_QUERY_MAX)),
         flags: ConfigurationFlags::DEFAULT,
-        description: "Maximum samples one PromQL query may load into memory across all its reads (0 = unlimited)",
+        description: "Maximum samples one PromQL query may load across all its reads, as a running total that freed samples still count toward (0 = unlimited)",
         storage: ConfigStorage::I64 {
             cell: || &PROMQL_MAX_SAMPLES_PER_QUERY,
             validate: None,
@@ -1483,7 +1483,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         min: Some(ConfigValue::Integer(0)),
         max: Some(ConfigValue::Integer(i64::MAX)),
         flags: ConfigurationFlags::DEFAULT,
-        description: "Maximum samples all running PromQL queries, and the shard reads this node serves for them, may hold together (0 = unlimited)",
+        description: "Maximum of the running sample totals of all running PromQL queries, and of the shard reads this node serves for them, added together; each is released when its query or read ends (0 = unlimited)",
         storage: ConfigStorage::I64 {
             cell: || &PROMQL_MAX_SAMPLES_IN_FLIGHT,
             validate: None,

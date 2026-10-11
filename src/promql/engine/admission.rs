@@ -2,13 +2,15 @@
 //!
 //! Every other PromQL limit is per query: `ts-promql-max-samples-per-query` bounds what one
 //! query loads, `ts-promql-max-response-series` what it returns. None of them sees the other
-//! queries, so eight workers each at the per-query budget hold eight budgets, and a server
-//! already near `maxmemory` with its data set admits a query as readily as an idle one. These
-//! do:
+//! queries, so eight workers can each charge a full per-query budget, and a server already
+//! near `maxmemory` with its data set admits a query as readily as an idle one. These do:
 //!
 //! - **Samples in flight** (`ts-promql-max-samples-in-flight`): every query's sample budget,
 //!   and every shard read served for a peer, also charges one process-wide count, released when
-//!   the budget is dropped. Past the limit the charge fails as the per-query one does.
+//!   the budget is dropped. Past the limit the charge fails as the per-query one does. The
+//!   count is the sum of the live budgets' running totals, so like them it is a charge, not a
+//!   measure of what is held: it keeps counting samples a query has already dropped, and never
+//!   sees what no budget charges (see [`super::sample_budget`]).
 //! - **Memory** (`ts-promql-max-memory-percent`): the server's used memory as a share of
 //!   `maxmemory`, sampled on the main thread each cron tick. Past the limit a query is refused
 //!   at admission, and a running one stops at its next deadline check. With no `maxmemory`
@@ -25,8 +27,8 @@ use crate::promql::model::{QueryValue, RangeSample};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-/// The state the process-wide limits are checked against: the samples counted budgets hold,
-/// and the last sampled memory use.
+/// The state the process-wide limits are checked against: what live counted budgets have
+/// charged, and the last sampled memory use.
 ///
 /// One per node, [`ADMISSION`], which every query and shard read shares. A test that drives
 /// the counts — charging past a limit, or faking memory pressure — makes its own instead:
@@ -34,7 +36,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 /// other test's queries meanwhile, since they run at the default limits.
 #[derive(Debug)]
 pub(crate) struct Admission {
-    /// Samples held by budgets that count toward the process-wide limit.
+    /// What live budgets that count toward the process-wide limit have charged in all.
     in_flight: AtomicUsize,
     /// The last sampled `used_memory / maxmemory`, as `f32` bits: 0 with no `maxmemory`.
     memory_ratio: AtomicU32,
@@ -51,7 +53,7 @@ impl Admission {
         }
     }
 
-    /// Samples currently held by counted budgets.
+    /// What live counted budgets have charged in all.
     pub(crate) fn samples_in_flight(&self) -> usize {
         self.in_flight.load(Ordering::Relaxed)
     }
@@ -65,7 +67,7 @@ impl Admission {
             .saturating_add(samples);
         if limit > 0 && total > limit {
             return Err(QueryError::Overloaded(format!(
-                "{}: PromQL queries would hold {total} > {limit} samples \
+                "{}: running PromQL queries would have charged {total} > {limit} samples \
                  (ts-promql-max-samples-in-flight)",
                 error_consts::PROMQL_OVERLOADED_ERROR
             )));
@@ -101,7 +103,7 @@ impl Admission {
     }
 }
 
-/// Samples currently held by this node's counted budgets.
+/// What this node's live counted budgets have charged in all.
 pub(crate) fn samples_in_flight() -> usize {
     ADMISSION.samples_in_flight()
 }

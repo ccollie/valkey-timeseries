@@ -322,8 +322,8 @@ at startup.
 | `ts-promql-max-query-len` | 4096 bytes | Maximum query string length. |
 | `ts-promql-max-response-series` | 1000 | Maximum returned series, checked on the query's result as well as on each read; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. |
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
-| `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. |
-| `ts-promql-max-samples-in-flight` | 200000000 | Maximum samples all running queries hold together, along with the shard reads this node serves for other nodes' queries; a query that would pass it is refused. `0` means unlimited. |
+| `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. The count is a running total: samples stay counted after the query drops them, so it bounds the query's work, not its memory at any one moment. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. |
+| `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. `0` means unlimited. |
 | `ts-promql-max-memory-percent` | 90 | Refuse new queries, and stop running ones at their next check, while used memory is at or past this percentage of `maxmemory`. `0` disables it; it has no effect without `maxmemory`. |
 | `ts-promql-max-reply-bytes` | 268435456 (256 MiB) | Maximum estimated size of a query's reply, checked before any of it is written. `0` means unlimited. |
 | `ts-promql-max-subquery-steps` | 20000000 | Maximum subquery steps one query may evaluate in all: each subquery's steps, multiplied by every subquery around it and by the query's own steps, summed. Checked before anything runs. `0` means unlimited. |
@@ -376,7 +376,8 @@ unrun, and a read past it stops before its next batch.
 `INFO ts_promql` shows the pool's state as `ts_queries_running`, `ts_queries_queued`, the
 cumulative `ts_queries_rejected`, and `ts_queries_cancelled`, the queries abandoned because
 their client disconnected. `ts_samples_in_flight` is what running queries, and the shard reads
-this node serves for other nodes, hold against `ts-promql-max-samples-in-flight`.
+this node serves for other nodes, have charged against `ts-promql-max-samples-in-flight`: their
+running totals, which include samples already dropped, not the samples resident now.
 
 The per-query limits bound each query alone. Three limits bound what all of them take
 together, and each refuses rather than waits, since a query that waited mid-evaluation would

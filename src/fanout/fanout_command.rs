@@ -711,10 +711,9 @@ mod tests {
         assert_eq!(done.recv_timeout(WAIT), Ok((1, None)));
     }
 
-    /// The regression: with the lane occupied, a deferred response's fan-out used to complete
-    /// only when the lane got to the decode, the RPC having already stopped its deadline timer.
-    /// The timer now stays armed, and firing ends the fan-out with a timeout while the decode
-    /// is still queued — which, when the lane does reach it, is dropped unread.
+    /// With the lane occupied, the RPC's deadline timer stays armed for a deferred response:
+    /// firing ends the fan-out with a timeout while the decode is still queued, and the
+    /// decode, when the lane does reach it, is dropped unread.
     #[test]
     fn the_deadline_ends_a_fanout_whose_decode_is_stuck_behind_a_busy_lane() {
         static LANE: BoundedExecutor =

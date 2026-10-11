@@ -60,10 +60,10 @@ fn memory_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
 /// at most `ts-promql-max-queued-queries`. `queries_rejected` counts, since startup, the
 /// queries refused on arrival because the backlog was full, and `queries_cancelled` those
 /// abandoned, queued or running, because their client disconnected. `samples_in_flight` is
-/// what running queries and the shard reads served for them hold against
-/// `ts-promql-max-samples-in-flight`. A non-zero, growing
-/// `queries_queued` with `queries_rejected` climbing is the pool being overrun: either the
-/// queries are too slow or there are too few workers for the load.
+/// what running queries and the shard reads served for them have charged against
+/// `ts-promql-max-samples-in-flight`: running totals, not samples resident now. A non-zero,
+/// growing `queries_queued` with `queries_rejected` climbing is the pool being overrun:
+/// either the queries are too slow or there are too few workers for the load.
 #[info_command_handler]
 fn promql_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
     let pool = query_workers::stats();

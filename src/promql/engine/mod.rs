@@ -56,8 +56,8 @@ pub struct QueryOptions {
     /// The maximum number of data points to return per series for each series. This is to help guard against
     /// OOMs and accidental self-DOS, especially in cluster mode.
     pub max_points_per_series: Option<usize>,
-    /// The maximum number of samples this query may load into memory across
-    /// all its reads (`ts-promql-max-samples-per-query`). 0 = unlimited.
+    /// The maximum number of samples this query may load across all its reads,
+    /// as a running total (`ts-promql-max-samples-per-query`). 0 = unlimited.
     pub max_samples: usize,
     /// Enable experimental functions for the current request
     pub enable_experimental_functions: bool,

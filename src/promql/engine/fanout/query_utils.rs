@@ -395,7 +395,9 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
 
 /// The sample budget for a read this node performs on another node's behalf: this node's
 /// `ts-promql-max-samples-per-query`, counted toward its `ts-promql-max-samples-in-flight`,
-/// since the read's samples are held here for as long as it runs.
+/// since the read runs here. The charge counts every sample the read decodes until the
+/// budget drops, though a grid read
+/// ([`ShardGrid`](super::grid_fanout_command::ShardGrid)) holds only a batch at a time.
 ///
 /// Every shard read takes one — range, grid, instant, and the aggregation push-down's input,
 /// which the coordinator never sees — and is held until what the read produced has been

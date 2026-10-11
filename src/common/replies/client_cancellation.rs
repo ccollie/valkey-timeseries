@@ -1,10 +1,8 @@
 //! Telling a blocked client's background work that the client has gone.
 //!
 //! A command that blocks its client and answers from another thread (`TS.QUERY`,
-//! `TS.QUERYRANGE`) used to run to completion after its client disconnected, holding a
-//! worker and the evaluation pool for up to its whole `TIMEOUT`, for a reply the server then
-//! discards. Opening a connection, sending a heavy query and closing it cost the sender
-//! nothing and the server a worker each time.
+//! `TS.QUERYRANGE`) would otherwise run to completion after its client disconnected,
+//! holding a worker for up to its whole `TIMEOUT` for a reply the server discards.
 //!
 //! The server reports the disconnect through a callback on the blocked-client handle
 //! ([`BlockedClient::cancel_on_disconnect`](super::BlockedClient::cancel_on_disconnect)). The

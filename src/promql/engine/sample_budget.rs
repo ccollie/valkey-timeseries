@@ -4,22 +4,34 @@
 //! the total number of samples materialized on behalf of one query, across
 //! every selector, matrix and rollup read it makes. Per-series and per-count
 //! limits (`ts-promql-max-points-per-timeseries`, `ts-promql-max-response-series`)
-//! bound each dimension on its own; their product — what a range read of a
-//! wide selector actually allocates — is what drove an 8 GB machine into swap.
+//! bound each dimension on its own; this bounds their product, which is what a
+//! range read of a wide selector actually allocates.
+//!
+//! **A charge, not a measure of what is held.** The count is cumulative: it
+//! only grows while the budget lives, and nothing is given back when a read,
+//! grid or step result is dropped. It bounds the work a query does over its
+//! life, not its memory at any one moment, which is usually less (a per-step
+//! read freed long ago still counts) and can briefly be more (a raw span and
+//! the grid built from it coexist while the grid is built, but count once, as
+//! the larger; a subquery's per-evaluation result is capped by a budget of its
+//! own, not charged here).
 //!
 //! Enforced in two layers that share one limit: each selector read counts
 //! exactly what it decodes and stops early, so no single materialization can
 //! exceed the budget; and the evaluator sums every read it receives, so a query
 //! spread over several selectors is refused once the total passes the budget.
-//! Peak memory for one query is therefore bounded by about twice the budget.
+//! A read is counted on its own budget before the query's, so a query can have
+//! charged up to about twice the budget by the time it is refused.
 //!
 //! The step grids a range query builds from its reads are charged too, as they
 //! are built: one sample inside a long lookback fills a slot at every step, so
 //! a read of a few samples can become a grid of millions. A series costs the
 //! larger of its raw span and its grid, not their sum, so ordinary data (whose
-//! grid is the smaller) costs what it decoded. A shard's grid push-down needs
-//! no charge of its own: it ships a series raw whenever the grid would be the
-//! larger, so the expansion happens, and is charged, on the coordinator.
+//! grid is the smaller) costs what it decoded. A shard's grid push-down charges
+//! only its raw reads: what its per-series stage builds is either shipped no
+//! larger than the span it came from or folded into its group's partials a
+//! chunk at a time (`ShardGrid`), so the expansion that is kept happens, and is
+//! charged, on the coordinator.
 
 use crate::promql::engine::admission::{ADMISSION, Admission};
 use crate::promql::{QueryError, QueryResult};
@@ -29,6 +41,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct SampleBudget {
     /// 0 means unlimited.
     limit: usize,
+    /// Everything charged so far; never decreases.
     loaded: AtomicUsize,
     /// The process-wide limit this budget also counts toward, if it does
     /// ([`Self::counted`]); 0 for a budget that does not.
@@ -52,8 +65,8 @@ impl SampleBudget {
     }
 
     /// A budget that also counts toward the process-wide `ts-promql-max-samples-in-flight`
-    /// (`in_flight_limit`; 0 counts nothing). For a query's own budget and a shard read's:
-    /// the ones whose samples are held for the work's whole length. Not for a read whose
+    /// (`in_flight_limit`; 0 counts nothing), until it is dropped. For a query's own budget
+    /// and a shard read's: the ones that live as long as the work. Not for a read whose
     /// samples go on to a query budget that charges them again.
     pub fn counted(limit: usize, in_flight_limit: usize) -> Self {
         Self::counted_against(&ADMISSION, limit, in_flight_limit)
@@ -89,6 +102,7 @@ impl SampleBudget {
         self.limit
     }
 
+    /// Everything charged so far, including samples since dropped.
     pub fn loaded(&self) -> usize {
         self.loaded.load(Ordering::Relaxed)
     }

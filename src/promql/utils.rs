@@ -119,18 +119,15 @@ pub(crate) fn subquery_step_ms(subquery: &SubqueryExpr) -> i64 {
 /// that enclose it and the query's own steps. [`check_subquery_steps`] bounds
 /// each subquery grid alone, but nesting multiplies them: every step of an
 /// outer subquery evaluates the whole inner one, so `max_over_time((...)[1m:10s])`
-/// nested 10 deep is up to 7^10 ≈ 280 million steps, which ran for 55 s in a
-/// debug build (2026-09-29). The deadline stops such a query, but only after it
-/// has held a query worker and the evaluation pool for its whole `TIMEOUT`; this
-/// rejects it before any work.
+/// nested 10 deep is up to 7^10 ≈ 280 million steps. The deadline stops such a
+/// query, but only after it has held a query worker and the evaluation pool for
+/// its whole `TIMEOUT`; this rejects it before any work.
 ///
 /// The limit counts steps, not what a step costs, and a subquery whose inner
-/// expression reads nothing is invisible to every sample budget: three nested
-/// `[7m:1s]` subqueries, 75 million steps, took 4 s over `vector(1)` and 22 s
-/// over `label_replace(vector(1), ...)` (release build, Apple M2, 2026-10-10).
-/// The default of 20 million admits a 1,000-point range query over a 7-day
-/// subquery at a 1-minute step (10.08 million) and bounds the worst admitted
-/// case to about a quarter of that.
+/// expression reads nothing is invisible to every sample budget. The default of
+/// 20 million admits a 1,000-point range query over a 7-day subquery at a
+/// 1-minute step (10.08 million); the timings behind it are in
+/// `docs/plans/promql-resource-exhaustion-plan.md` (F8, D8).
 ///
 /// Counted from the query text alone, before anything is read: a subquery's
 /// range and step are literals, and its grid has at most `range / step + 1`

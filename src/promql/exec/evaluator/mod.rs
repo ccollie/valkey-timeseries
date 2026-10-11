@@ -313,8 +313,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .unwrap_or_else(|| PreloadKey::from_selector(vs))
     }
 
-    /// Count `samples` against the query's budget; fails the query once the
-    /// total it has loaded passes `ts-promql-max-samples-per-query`.
+    /// Count `samples` against the query's budget; fails the query once its
+    /// running total, dropped samples included, passes
+    /// `ts-promql-max-samples-per-query`.
     fn charge_samples(&self, samples: usize) -> EvalResult<()> {
         Ok(self.budget.charge(samples)?)
     }
@@ -323,16 +324,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// included — beyond `covered` samples already charged for the raw span it
     /// was built from.
     ///
-    /// A grid is charged as it is built, one series at a time, because it can
-    /// dwarf the read that fed it: one sample inside a long lookback fills a
-    /// slot at every step, so a read of a thousand samples could build a
-    /// billion slots that nothing counted. Building stops at the grid that
-    /// crosses the limit.
+    /// Charged as it is built, one series at a time, because a grid can dwarf
+    /// the read that fed it (see [`sample_budget`](crate::promql::engine::sample_budget)).
+    /// Building stops at the grid that crosses the limit.
     ///
     /// Only the excess over `covered`, so a series costs the larger of its span
     /// and its grid rather than their sum: for ordinary data the grid is the
-    /// smaller (a sample every 10 s under a 15 s step), and what a query is
-    /// charged stays what it decoded, as it was before grids were charged.
+    /// smaller (a sample every 10 s under a 15 s step), and a query is charged
+    /// what it decoded.
     fn charge_grid<T>(&self, grid: &StepGrid<T>, covered: usize) -> EvalResult<()> {
         self.charge_samples(grid.stored_len().saturating_sub(covered))
     }
@@ -348,17 +347,17 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         self.charge_samples(series.iter().map(|s| s.samples.len()).sum())
     }
 
-    /// Charge a result of `points` samples for what it holds past everything
-    /// the query has already charged, so the query costs the larger of what it
-    /// loaded and what it returns.
+    /// Charge a result of `points` samples for whatever it exceeds the query's
+    /// running total by, so the query costs the larger of everything it has
+    /// charged and what it returns. The result is held until the reply; much of
+    /// what the total counts may already have been dropped.
     ///
     /// Reads alone are not enough: an expression that reads nothing — a
     /// literal, `vector(1)`, `absent(m)`, a subquery over either — generates
     /// its samples, and a range query keeps every step's. A result built from
-    /// reads is no larger than they were, so it costs nothing more here and
-    /// every read-backed budget boundary stays where it was. Called with a
-    /// running total as the result grows; each call charges only the new
-    /// excess, since what earlier calls charged is part of what was loaded.
+    /// reads is no larger than they were, so it costs nothing more here.
+    /// Called with a running count as the result grows; each call charges only
+    /// the new excess, since earlier calls' charges are part of the total.
     pub(crate) fn charge_result_points(&self, points: usize) -> EvalResult<()> {
         self.charge_samples(points.saturating_sub(self.budget.loaded()))
     }

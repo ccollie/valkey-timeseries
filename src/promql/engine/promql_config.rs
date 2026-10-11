@@ -18,11 +18,11 @@ pub struct PromqlConfig {
     /// The maximum number of points that a query can generate.
     pub max_points_per_timeseries: usize,
 
-    /// The maximum number of samples one query may load across all its reads
-    /// (Prometheus' `--query.max-samples`). 0 = unlimited.
+    /// The maximum number of samples one query may load across all its reads, as a
+    /// running total (Prometheus' `--query.max-samples`). 0 = unlimited.
     pub max_samples_per_query: usize,
 
-    /// The samples all running queries, and the shard reads this node serves, may hold
+    /// The most all running queries, and the shard reads this node serves, may have charged
     /// together (`ts-promql-max-samples-in-flight`). 0 = unlimited.
     pub max_samples_in_flight: usize,
 
