@@ -205,7 +205,7 @@ impl ProfiledLeaves {
 
         let profiles: Vec<(SelectorKey, Option<LabelProfile>)> = unique
             .into_par_rayon()
-            .map(|(key, vs)| match reader.label_profile(&vs, options) {
+            .map(|(key, vs)| match reader.label_profile(&vs, None, options) {
                 Ok(profile) => Ok((key, profile)),
                 Err(QueryError::Timeout) => Err(QueryError::Timeout),
                 // The read that follows will report whatever is wrong; a
@@ -405,7 +405,9 @@ fn collect_all_selectors<'a>(expr: &'a Expr, out: &mut Vec<&'a VectorSelector>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::promql::engine::label_profile::{LabelProfileBuilder, join_regexp_values};
+    use crate::promql::engine::label_profile::{
+        LabelProfileBuilder, ProfileWindow, join_regexp_values,
+    };
     use crate::promql::engine::query_reader::{AggregationOutcome, AggregationRequest};
     use crate::promql::exec::types::EvalLabels;
     use crate::promql::model::{InstantSample, RangeSample};
@@ -472,6 +474,7 @@ mod tests {
         fn label_profile(
             &self,
             selector: &VectorSelector,
+            _: Option<ProfileWindow>,
             _: QueryOptions,
         ) -> PromqlResult<Option<LabelProfile>> {
             let mut stripped = selector.clone();

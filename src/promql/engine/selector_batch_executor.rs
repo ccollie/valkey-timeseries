@@ -12,7 +12,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::label_profile::{
-    LabelProfile, LabelProfileBuilder, profiled_series_cap,
+    LabelProfile, LabelProfileBuilder, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationRequest, GridOutcome, GridRequest,
@@ -79,6 +79,7 @@ struct GridSelectorCommand {
 /// the derived filter push-down narrows a range query's operands with.
 struct ProfileSelectorCommand {
     matchers: Matchers,
+    window: Option<ProfileWindow>,
     options: QueryOptions,
 }
 
@@ -447,15 +448,21 @@ impl SelectorBatchExecutor {
     /// The labels of the series `matchers` select — see
     /// [`crate::promql::engine::label_profile`]. Answered from the index on
     /// a single node and by every shard in a cluster; `None` when the
-    /// selector matches more series than the query's cap.
+    /// selector matches more series than the query's cap. With a `window`,
+    /// only the series with a retained sample in it count.
     pub fn label_profile(
         &self,
         matchers: Matchers,
+        window: Option<ProfileWindow>,
         options: QueryOptions,
         caller_user: Option<String>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<Option<LabelProfile>> {
-        let command = SelectorTaskKind::Profile(ProfileSelectorCommand { matchers, options });
+        let command = SelectorTaskKind::Profile(ProfileSelectorCommand {
+            matchers,
+            window,
+            options,
+        });
         self.submit_selector_task(command, caller_user, hash_tags)?
             .into_profile()
     }
@@ -882,6 +889,7 @@ fn execute_cluster_label_profile(
     let timeout = calculate_timeout(&pc.options);
     let cmd = LabelProfileFanoutCommand::new(
         pc.matchers,
+        pc.window,
         profiled_series_cap(&pc.options) as u64,
         timeout,
     );
@@ -1069,8 +1077,10 @@ enum ReadState {
         budget: SampleBudget,
         ranges: Vec<RangeSample<EvalLabels>>,
     },
-    /// The label profile of the matched series, up to `cap` of them.
+    /// The label profile of the matched series — those with a retained
+    /// sample in `window`, when there is one — up to `cap` of them.
     Profile {
+        window: Option<ProfileWindow>,
         cap: usize,
         matched: usize,
         builder: LabelProfileBuilder,
@@ -1162,6 +1172,7 @@ impl LocalRead {
             }
             SelectorTaskKind::Profile(pc) => {
                 let state = ReadState::Profile {
+                    window: pc.window,
                     cap: profiled_series_cap(&pc.options),
                     matched: 0,
                     builder: LabelProfileBuilder::new(),
@@ -1288,14 +1299,22 @@ impl LocalRead {
                     })?
                 }
                 ReadState::Profile {
+                    window,
                     cap,
                     matched,
                     builder,
                     overflow,
                 } => {
-                    let cap = *cap;
+                    let (window, cap) = (*window, *cap);
                     cursor.next_batch(ctx, share, &mut |_, batch| {
                         for (s, _) in batch.iter() {
+                            // Only the series the profile describes count
+                            // against the cap. Checked without decoding: the
+                            // cursor's own range filter would decode a chunk
+                            // per series under the lock.
+                            if !window.is_none_or(|w| w.admits(s)) {
+                                continue;
+                            }
                             *matched += 1;
                             if cap > 0 && *matched > cap {
                                 *overflow = true;

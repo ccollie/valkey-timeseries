@@ -27,7 +27,9 @@
 //! push-down, never a result). Together the caps bound a profile — and a
 //! shard's reply — to about 1 MiB.
 
+use crate::common::Timestamp;
 use crate::labels::{MAX_LABELS_PER_SERIES, compile_literal_set};
+use crate::series::TimeSeries;
 use ahash::AHashMap;
 use promql_parser::label::{METRIC_NAME, MatchOp, Matcher};
 #[cfg(test)]
@@ -71,6 +73,29 @@ pub fn profiled_series_cap(options: &crate::promql::engine::QueryOptions) -> usi
         options.max_series.min(MAX_PROFILED_SERIES)
     } else {
         MAX_PROFILED_SERIES
+    }
+}
+
+/// The span of sample time a profile covers, both ends inclusive: a profile
+/// over a window is built from only the series a read of it could return
+/// anything from. Without one, every series the selector matches counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProfileWindow {
+    pub start_ms: Timestamp,
+    pub end_ms: Timestamp,
+}
+
+impl ProfileWindow {
+    pub fn new(start_ms: Timestamp, end_ms: Timestamp) -> Self {
+        Self { start_ms, end_ms }
+    }
+
+    /// Whether a profile over this window counts `series`: its retained span
+    /// meets the window. Looser than "has a sample in it" only for a series
+    /// whose gap spans the whole window, which costs a push-down, never a
+    /// result.
+    pub fn admits(&self, series: &TimeSeries) -> bool {
+        series.overlaps_retained(self.start_ms, self.end_ms)
     }
 }
 
