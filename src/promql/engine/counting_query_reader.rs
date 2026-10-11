@@ -1,7 +1,9 @@
 //! A counting decorator over [`QueryReader`], for asserting how many reader
 //! calls a query evaluation performs.
 //!
-//! Phase 0 of `docs/plans/promql-execution-optimization-plan.md`: the plan's
+//! Phase 0 of the PromQL execution optimization plan, since removed as
+//! outdated (read it with `git show
+//! d9d07430c^:docs/plans/promql-execution-optimization-plan.md`): the plan's
 //! Tier 1 findings are all forms of reader-call amplification (per-step window
 //! re-fetches, per-inner-step subquery requests), so its later phases are
 //! verified by *counting reader calls*, not by timing. This wrapper is that
@@ -146,8 +148,8 @@ impl QueryReader for CountingQueryReader {
     }
 }
 
-/// Pin the reader-call counts of the query shapes named in
-/// `docs/plans/promql-execution-optimization-plan.md`.
+/// Pin the reader-call counts of the query shapes named in the execution
+/// optimization plan (see the module docs for where to read it).
 ///
 /// These tests assert *current* behavior, including the request amplification
 /// the plan's Tier 1 targets. When a later phase lands, the affected
