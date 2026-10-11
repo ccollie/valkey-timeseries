@@ -94,7 +94,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
         };
         let series_selector: SeriesSelector = (&selector).try_into()?;
         // The response is the samples read, so the budget is held until it is returned.
-        let budget = local_budget();
+        let budget = local_budget()?;
         // Locks per batch of matched series, not for the whole read.
         handle_instant_query(
             ctx,

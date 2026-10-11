@@ -132,6 +132,18 @@ impl SampleBudget {
         self.limit > 0 && self.loaded() >= self.limit
     }
 
+    /// How many more samples the limit admits: what a producer charging in
+    /// batches can keep before its next charge without asking again. Unbounded
+    /// for an unlimited budget. Exact only while the producer is the one
+    /// charging: another charger's samples are seen at the next charge.
+    pub fn room(&self) -> usize {
+        if self.limit == 0 {
+            usize::MAX
+        } else {
+            self.limit.saturating_sub(self.loaded())
+        }
+    }
+
     /// Fail if `pending` more samples, not yet charged, would exceed the
     /// limit. For a read that can refuse itself before decoding: `pending`
     /// must be a lower bound on what it will charge, so this never fails a
@@ -235,6 +247,17 @@ mod tests {
             0,
             "a plain budget counts nothing"
         );
+    }
+
+    #[test]
+    fn room_is_what_the_limit_still_admits() {
+        assert_eq!(SampleBudget::new(0).room(), usize::MAX, "unlimited");
+        let budget = SampleBudget::new(10);
+        assert_eq!(budget.room(), 10);
+        budget.charge(4).unwrap();
+        assert_eq!(budget.room(), 6);
+        let _ = budget.charge(20);
+        assert_eq!(budget.room(), 0, "past the limit leaves none");
     }
 
     #[test]

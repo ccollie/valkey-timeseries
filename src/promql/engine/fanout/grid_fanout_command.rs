@@ -287,7 +287,7 @@ impl FanoutCommand for GridFanoutCommand {
         // batch is read.
         let mut grid = ShardGrid::new(&request, &window_ends, super::shard_deadline(ctx));
         // Held through `finish`: the grid keeps what it made of the windows until then.
-        let budget = local_budget();
+        let budget = local_budget()?;
         local_grid_windows(
             ctx,
             series_selector,

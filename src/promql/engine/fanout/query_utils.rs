@@ -31,7 +31,8 @@ use valkey_module::ValkeyResult;
 /// How many samples an instant read keeps between charges to its budget. Charging per
 /// sample would cost three atomic updates per series under the module lock, one of them on
 /// the process-wide count every query shares; between charges, [`ChargedSamples::push`]
-/// still refuses a sample the read's own limit has no room for.
+/// still refuses a sample the read's own limit has no room for, from a count it keeps
+/// itself rather than one more atomic load per sample.
 const INSTANT_CHARGE_BATCH: usize = 512;
 
 /// The samples an instant read keeps, charged to `budget` as they are kept: one per matched
@@ -41,6 +42,10 @@ struct ChargedSamples<'b, T> {
     budget: &'b SampleBudget,
     samples: Vec<T>,
     uncharged: usize,
+    /// What the budget admitted at the last charge ([`SampleBudget::room`]): kept here so
+    /// a push compares against it instead of loading the budget's count again. The read
+    /// owns its budget, so nothing else shrinks it meanwhile.
+    room: usize,
 }
 
 impl<'b, T> ChargedSamples<'b, T> {
@@ -49,6 +54,7 @@ impl<'b, T> ChargedSamples<'b, T> {
             budget,
             samples: Vec::new(),
             uncharged: 0,
+            room: budget.room(),
         }
     }
 
@@ -58,9 +64,14 @@ impl<'b, T> ChargedSamples<'b, T> {
 
     /// Keep `sample`, failing first if the read's limit has no room for it.
     fn push(&mut self, sample: T) -> ValkeyResult<()> {
-        self.budget
-            .check_ahead(self.uncharged + 1)
-            .map_err(budget_error)?;
+        if self.uncharged >= self.room {
+            // Out of room as of the last charge: the budget's own check gives the refusal
+            // its words, and lets the sample through if the count was stale after all.
+            self.budget
+                .check_ahead(self.uncharged + 1)
+                .map_err(budget_error)?;
+            self.room = self.uncharged + self.budget.room();
+        }
         self.samples.push(sample);
         self.uncharged += 1;
         if self.uncharged >= INSTANT_CHARGE_BATCH {
@@ -71,7 +82,9 @@ impl<'b, T> ChargedSamples<'b, T> {
 
     fn charge(&mut self) -> ValkeyResult<()> {
         let samples = std::mem::take(&mut self.uncharged);
-        self.budget.charge(samples).map_err(budget_error)
+        self.budget.charge(samples).map_err(budget_error)?;
+        self.room = self.budget.room();
+        Ok(())
     }
 
     /// Every sample kept, all of them charged. The charge outlives this: it stays on `budget`.
@@ -108,7 +121,6 @@ fn read_instant_samples<S, T>(
 where
     S: GilSource + ?Sized,
 {
-    check_local_memory()?;
     let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
 
     let mut samples = ChargedSamples::new(budget);
@@ -350,7 +362,6 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     budget: &SampleBudget,
     mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>) -> ValkeyResult<()>,
 ) -> ValkeyResult<()> {
-    check_local_memory()?;
     let Some((start_time, end_time)) = grid_fetch_bounds(window_ends, backward_ms) else {
         return Ok(());
     };
@@ -406,13 +417,23 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
 /// Every shard read takes one — range, grid, instant, and the aggregation push-down's input,
 /// which the coordinator never sees — and is held until what the read produced has been
 /// consumed into the response.
-pub(super) fn local_budget() -> SampleBudget {
+///
+/// Refused while this node's memory use is at or past its `ts-promql-max-memory-percent`:
+/// taking the budget is the start of a read, so this is the read's admission check too,
+/// done under the same config read.
+pub(super) fn local_budget() -> ValkeyResult<SampleBudget> {
     let config = promql_config();
-    SampleBudget::counted(config.max_samples_per_query, config.max_samples_in_flight)
+    admission::check_memory(config.max_memory_percent)
+        .map_err(|err| valkey_module::ValkeyError::String(err.to_string()))?;
+    Ok(SampleBudget::counted(
+        config.max_samples_per_query,
+        config.max_samples_in_flight,
+    ))
 }
 
 /// Fail if this node's memory use is at or past its `ts-promql-max-memory-percent`, before
-/// a read on another node's behalf starts.
+/// a read on another node's behalf starts: for the one read that takes no budget, the label
+/// profile. Every other read is checked as it takes its budget ([`local_budget`]).
 fn check_local_memory() -> ValkeyResult<()> {
     let limit = promql_config().max_memory_percent;
     admission::check_memory(limit)
@@ -501,12 +522,11 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
     max_series: u64,
     max_points_per_series: u64,
 ) -> ValkeyResult<RangeQueryResponse> {
-    check_local_memory()?;
     let max_points = points_limit(max_points_per_series);
     // This shard's own `ts-promql-max-samples-per-query`: the request does not
     // carry the coordinator's budget, and one node's share of a query should
     // not exceed what that node would allow a query of its own.
-    let budget = local_budget();
+    let budget = local_budget()?;
     let mut ranges = Vec::new();
     // The storage label set itself, not an evaluator copy: the symbol table
     // below interns by identity.
@@ -613,6 +633,27 @@ mod tests {
         assert_eq!(samples.len(), 3, "the refused sample is not kept");
         assert_eq!(samples.finish().unwrap(), vec![0, 1, 2]);
         assert_eq!(budget.loaded(), 3);
+    }
+
+    /// The room a push compares against is refreshed at every batch charge, so the refusal
+    /// lands on the first sample past the limit however many batches came before it.
+    #[test]
+    fn an_instant_read_is_refused_past_its_limit_after_a_batch_charge() {
+        let limit = INSTANT_CHARGE_BATCH + 2;
+        let budget = SampleBudget::new(limit);
+        let mut samples = ChargedSamples::new(&budget);
+        for i in 0..limit {
+            samples.push(i).unwrap();
+        }
+        assert_eq!(
+            budget.loaded(),
+            INSTANT_CHARGE_BATCH,
+            "one batch charged so far"
+        );
+        let err = samples.push(limit).unwrap_err().to_string();
+        assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
+        assert_eq!(samples.finish().unwrap().len(), limit);
+        assert_eq!(budget.loaded(), limit);
     }
 
     /// The finding this pins: an instant read on another node's behalf — a plain selector,

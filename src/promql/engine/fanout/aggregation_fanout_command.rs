@@ -252,7 +252,7 @@ impl FanoutCommand for AggregationFanoutCommand {
         let series_selector: SeriesSelector = (&selector).try_into()?;
         // Held to the end, through the aggregation: the coordinator counts only the groups
         // that come back, so this is all that counts the input while it is held here.
-        let budget = local_budget();
+        let budget = local_budget()?;
         // Locks per batch of matched series, not for the whole read.
         let samples = local_instant_eval_samples(
             ctx,
