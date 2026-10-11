@@ -530,7 +530,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             GridOutcome::Raw(series) => {
                 charged = series.iter().map(|s| s.samples.len()).sum();
                 self.charge_samples(charged)?;
-                request.evaluate(series, &self.deadline(), &mut |expanded| {
+                request.evaluate(series, &self.deadline, &mut |expanded| {
                     charged += expanded;
                     self.budget.charge(expanded)
                 })?

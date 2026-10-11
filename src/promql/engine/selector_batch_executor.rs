@@ -1020,23 +1020,9 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
                 read.finish();
                 return false;
             }
-            if read
-                .options
-                .deadline
-                .is_some_and(|d| current_time_millis() > d)
-            {
-                read.fail(QueryError::Timeout);
-                return false;
-            }
-            // Its client has gone: the next hold would take the lock for nobody.
-            if read.options.cancel.is_cancelled() {
-                read.fail(QueryError::Cancelled);
-                return false;
-            }
-            // Memory past the limit: the next hold would add to it.
-            if let Err(err) =
-                crate::promql::engine::admission::check_memory(read.options.max_memory_percent)
-            {
+            // Past its deadline, its client gone, or memory past the limit: the
+            // next hold would take the lock for nobody, or add to the pressure.
+            if let Err(err) = Deadline::from_options(&read.options).check() {
                 read.fail(err);
                 return false;
             }

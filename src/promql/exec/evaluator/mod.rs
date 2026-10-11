@@ -179,6 +179,10 @@ pub(crate) struct Evaluator<'reader, R: QueryReader + ?Sized> {
     /// Per-node lookup keys; see [`NodeKeys`].
     node_keys: Arc<OnceLock<NodeKeys>>,
     options: QueryOptions,
+    /// When the evaluation must stop, from `options`: checked between preload
+    /// requests and subquery steps, and stamped into every [`EvalContext`] for
+    /// the kernels.
+    deadline: Deadline,
 }
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
@@ -208,6 +212,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             any_preloaded: prepared.any_preloaded,
             node_keys: prepared.node_keys,
             options,
+            deadline: Deadline::from_options(&options),
         }
     }
 
@@ -229,6 +234,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             any_preloaded: Arc::clone(&prepared.any_preloaded),
             node_keys: Arc::clone(&prepared.node_keys),
             options,
+            deadline: Deadline::from_options(&options),
         }
     }
 
@@ -377,12 +383,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// server's memory use is past `ts-promql-max-memory-percent`, so a preload
     /// phase that issues several requests stops scheduling more of them.
     fn check_deadline(&self) -> EvalResult<()> {
-        Ok(self.deadline().check()?)
-    }
-
-    /// The query's [`Deadline`], as the kernels see it through their context.
-    fn deadline(&self) -> Deadline {
-        Deadline::from_options(&self.options)
+        Ok(self.deadline.check()?)
     }
 
     pub(crate) fn evaluate(&self, stmt: EvalStmt) -> EvalResult<ExprResult> {
@@ -413,7 +414,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // Every evaluation passes through here — each step, each subquery step — so
         // this is where the context picks up the deadline its kernels check.
         let ctx = EvalContext {
-            deadline: self.deadline(),
+            deadline: self.deadline,
             ..ctx
         };
         let mut result = self.evaluate_expr(expr, &ctx, true)?;

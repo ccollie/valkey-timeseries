@@ -1,6 +1,7 @@
 use crate::common::threads::IntoParRayon;
 use crate::common::time::{current_time_millis, system_time_to_millis};
 use crate::common::{Sample, Timestamp};
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::admission::{check_reply_size, range_reply_bytes_floor};
 use crate::promql::engine::derived_filters::derive_filters_in_place;
 use crate::promql::engine::validate_max_series;
@@ -64,14 +65,18 @@ fn optimize_statement(
 /// rather than materializing every step at once (see `evaluate_range`).
 const STEP_MERGE_CHUNK_SIZE: usize = 64;
 
-fn resolve_deadline_ms(opts: QueryOptions) -> i64 {
-    if let Some(deadline) = opts.deadline {
-        return deadline;
-    }
-    if let Some(timeout) = opts.timeout {
-        return current_time_millis().saturating_add(duration_ms(timeout));
-    }
-    0
+/// `opts` with its deadline resolved: a `timeout` given without a `deadline`
+/// becomes one, counted from now. Done once, at the top of an evaluation, so
+/// every check below it — the step loop's, the evaluator's, the kernels' and
+/// the selector reads' — reads the same deadline from the options. (The
+/// command handlers always set `deadline`; a caller passing only `timeout` is
+/// an embedding or a test.)
+fn with_resolved_deadline(opts: QueryOptions) -> QueryOptions {
+    let deadline = opts.deadline.or_else(|| {
+        opts.timeout
+            .map(|timeout| current_time_millis().saturating_add(duration_ms(timeout)))
+    });
+    QueryOptions { deadline, ..opts }
 }
 
 #[cfg(test)]
@@ -138,24 +143,16 @@ pub fn evaluate_instant(
     query_time: SystemTime,
     opts: QueryOptions,
 ) -> Result<QueryValue, QueryError> {
+    let opts = with_resolved_deadline(opts);
     optimize_statement(&mut stmt, &opts, true)?;
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
-    let deadline = resolve_deadline_ms(opts);
+    let deadline = Deadline::from_options(&opts);
     let evaluator = Evaluator::new(&reader, opts);
 
-    // Best-effort timeout: compute a deadline if set and check before/after heavy ops
-    if deadline > 0 && current_time_millis() > deadline {
-        return Err(QueryError::Timeout);
-    }
-
+    // Before and after the evaluation: the deadline, the client, and memory.
+    deadline.check()?;
     let result = evaluator.evaluate(stmt)?;
-
-    if opts.cancel.is_cancelled() {
-        return Err(QueryError::Cancelled);
-    }
-    if deadline > 0 && current_time_millis() > deadline {
-        return Err(QueryError::Timeout);
-    }
+    deadline.check()?;
 
     // The result, not only each read: an operator can return more series than
     // any read did (`a or b`, `count_values`, `label_replace`).
@@ -243,7 +240,8 @@ pub fn evaluate_range(
     )
     .map_err(QueryError::from)?;
 
-    let deadline = resolve_deadline_ms(opts);
+    let opts = with_resolved_deadline(opts);
+    let deadline = Deadline::from_options(&opts);
 
     let step_ms = duration_ms(step);
     // Every outer step evaluates each subquery in full.
@@ -271,19 +269,11 @@ pub fn evaluate_range(
         .map_err(QueryError::from)?;
     let evaluator = Evaluator::with_prepared(reader.as_ref(), opts, prepared);
 
-    if deadline > 0 && current_time_millis() > deadline {
-        return Err(QueryError::Timeout);
-    }
+    deadline.check()?;
 
     let eval_step = |t: Timestamp| -> QueryResult<(Timestamp, ExprResult)> {
-        // Best-effort per-step timeout check.
-        if deadline > 0 && current_time_millis() > deadline {
-            return Err(QueryError::Timeout);
-        }
-        if opts.cancel.is_cancelled() {
-            return Err(QueryError::Cancelled);
-        }
-        crate::promql::engine::admission::check_memory(opts.max_memory_percent)?;
+        // Per step: the deadline, the client, and memory.
+        deadline.check()?;
 
         let ctx = crate::promql::EvalContext {
             query_start: start_ms,
