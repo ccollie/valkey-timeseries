@@ -8,7 +8,8 @@
 //! Two lanes, so that neither kind of work can starve the other: a node flooded with its own
 //! clients' fan-outs still answers the requests its peers are waiting on, and the reverse.
 
-use crate::common::threads::{BoundedExecutor, Capacity, lane_workers};
+use crate::common::threads::{BoundedExecutor, Capacity, Rejected, lane_workers};
+use std::time::Duration;
 
 /// Queued jobs per lane before submissions are rejected as busy. A client has at most one
 /// blocked fan-out at a time, so this is only reached by a burst from that many clients (or
@@ -21,3 +22,15 @@ pub(super) static PEER_REQUEST_EXECUTOR: BoundedExecutor = BoundedExecutor::new(
     lane_workers,
     Capacity::Fixed(QUEUE_CAPACITY),
 );
+
+/// Occupy every worker of [`PEER_REQUEST_EXECUTOR`] for `hold` (`TS._DEBUG HOLD_FANOUT_LANE`):
+/// the lane as peers' long reads leave it, so a test can show what the fan-outs that share it —
+/// their local shares and deferred decodes — do when it cannot get to them in time. Returns
+/// how many workers were taken.
+pub(crate) fn hold_request_lane(hold: Duration) -> Result<usize, Rejected> {
+    let workers = lane_workers();
+    for _ in 0..workers {
+        PEER_REQUEST_EXECUTOR.try_spawn(move || std::thread::sleep(hold))?;
+    }
+    Ok(workers)
+}

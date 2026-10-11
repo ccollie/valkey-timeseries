@@ -1,6 +1,6 @@
 use crate::common::Timestamp;
 use crate::common::context::{get_current_db, set_current_db};
-use crate::common::logging::log_warning;
+use crate::common::logging::{log_debug, log_warning};
 use crate::common::threads::{
     IntoParRayon, LockGil, MATERIALIZE_POOL, ThreadRole, check_may_block, panic_message,
     run_on_pool_cold, set_thread_role,
@@ -91,14 +91,18 @@ enum SelectorTaskKind {
 }
 
 impl SelectorTaskKind {
-    fn db(&self) -> i32 {
+    fn options(&self) -> &QueryOptions {
         match self {
-            SelectorTaskKind::Vector(iqc) => iqc.options.db,
-            SelectorTaskKind::Range(rc) => rc.options.db,
-            SelectorTaskKind::Aggregation(ac) => ac.options.db,
-            SelectorTaskKind::Grid(gc) => gc.options.db,
-            SelectorTaskKind::Profile(pc) => pc.options.db,
+            SelectorTaskKind::Vector(iqc) => &iqc.options,
+            SelectorTaskKind::Range(rc) => &rc.options,
+            SelectorTaskKind::Aggregation(ac) => &ac.options,
+            SelectorTaskKind::Grid(gc) => &gc.options,
+            SelectorTaskKind::Profile(pc) => &pc.options,
         }
+    }
+
+    fn db(&self) -> i32 {
+        self.options().db
     }
 }
 
@@ -463,6 +467,7 @@ impl SelectorBatchExecutor {
         hash_tags: Arc<[String]>,
     ) -> QueryResult<SelectorOutput> {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let wait_limit = calculate_timeout(command.options()) + RESULT_WAIT_GRACE;
         let task = SelectorTask {
             kind: command,
             caller_user,
@@ -480,11 +485,9 @@ impl SelectorBatchExecutor {
             ));
         }
 
-        match wait_for_result(&result_rx) {
-            Ok(res) => match res {
-                Ok(val) => Ok(val),
-                Err(err) => Err(err),
-            },
+        match wait_for_result(&result_rx, wait_limit) {
+            Ok(res) => res,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(QueryError::Timeout),
             Err(e) => {
                 let msg = format!("Failed to receive query response: {}", e);
                 Err(QueryError::Execution(msg))
@@ -493,13 +496,27 @@ impl SelectorBatchExecutor {
     }
 }
 
-/// Wait for a selector result. A plain blocking wait, on a pool worker too: the processor
-/// needs nothing from this thread's pool to answer (see the type-level docs), and a wait
-/// that ran other jobs meanwhile would stack one blocking wait per stolen closure.
+/// How long past the read's own time limit its caller waits for the answer. The limit is
+/// the fan-out's deadline, whose timeout is the answer due then; the margin lets that
+/// richer path answer first when the main thread runs its timer a little late.
+const RESULT_WAIT_GRACE: Duration = Duration::from_millis(250);
+
+/// Wait up to `limit` for a selector result. A plain blocking wait, on a pool worker too: the
+/// processor needs nothing from this thread's pool to answer (see the type-level docs), and a
+/// wait that ran other jobs meanwhile would stack one blocking wait per stolen closure.
+///
+/// Bounded, though the read it waits for is too, as a backstop: a wait with no limit kept a
+/// query (and its worker) past its deadline whenever the read's own bound failed to end it —
+/// a fan-out to the local node alone has no RPC timer, and its share can sit queued on a busy
+/// worker lane for as long as the lane takes to get to it. A read answered after its caller
+/// stopped waiting is dropped (see [`deliver_task_result`]).
 #[track_caller]
-fn wait_for_result<T>(rx: &mpsc::Receiver<T>) -> Result<T, mpsc::RecvError> {
+fn wait_for_result<T>(
+    rx: &mpsc::Receiver<T>,
+    limit: Duration,
+) -> Result<T, mpsc::RecvTimeoutError> {
     check_may_block();
-    rx.recv()
+    rx.recv_timeout(limit)
 }
 
 /// Start one task's cluster fan-out, under the module lock, as the task's
@@ -597,7 +614,8 @@ fn deliver_task_result(
     result: QueryResult<SelectorOutput>,
 ) {
     if responder.send(result).is_err() {
-        log_warning("promql: failed to send query response to requester");
+        // Its caller stopped waiting (see `wait_for_result`), and has answered without it.
+        log_debug("promql: selector result arrived after its caller stopped waiting");
     }
 }
 
@@ -1482,7 +1500,9 @@ mod selector_batch_executor_tests {
         callers.spawn_broadcast(move |_| {
             let (tx, rx) = mpsc::sync_channel(1);
             task_tx.send(tx).unwrap();
-            done_tx.send(wait_for_result(&rx)).unwrap();
+            done_tx
+                .send(wait_for_result(&rx, Duration::from_secs(10)))
+                .unwrap();
         });
         for _ in 0..2 {
             let answer = done_rx
@@ -1515,11 +1535,31 @@ mod selector_batch_executor_tests {
 
     #[test]
     fn wait_for_result_off_the_pool_is_a_plain_recv() {
+        let limit = Duration::from_secs(5);
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send("x").unwrap();
-        assert_eq!(wait_for_result(&rx), Ok("x"));
+        assert_eq!(wait_for_result(&rx, limit), Ok("x"));
         drop(tx);
-        assert!(wait_for_result(&rx).is_err());
+        assert_eq!(
+            wait_for_result(&rx, limit),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+    }
+
+    /// A read that is never answered — its fan-out stuck behind a busy worker lane, say —
+    /// releases its caller at the limit instead of holding it, and its query worker, forever.
+    #[test]
+    fn wait_for_result_gives_up_at_its_limit() {
+        let (tx, rx) = mpsc::sync_channel::<u32>(1);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for_result(&rx, Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        // The late answer is refused, not left for the next read on this channel.
+        drop(rx);
+        assert!(tx.send(1).is_err());
     }
 
     #[test]

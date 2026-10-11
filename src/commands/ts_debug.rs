@@ -11,9 +11,10 @@ use crate::common::replies::{
 use crate::common::string_interner::{BucketStats, saved_pct};
 use crate::config::is_debug_mode_enabled;
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, is_clustered};
+use crate::fanout::{FanoutClientCommand, hold_request_lane, is_clustered};
 use crate::promql::engine::query_workers::panic_next_evaluation;
 use crate::series::index::series_keys_by_selectors;
+use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// Dumps a bucket's statistics to the reply.
@@ -205,6 +206,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
             "TS._DEBUG PANIC_NEXT_ANALYSIS_JOB",
             "Make the next job on the analysis lane panic (tests the error reply)",
         ),
+        (
+            "TS._DEBUG HOLD_FANOUT_LANE <milliseconds>",
+            "Occupy every fan-out request worker for that long (tests deadlines under a busy lane)",
+        ),
     ];
 
     reply_with_array(ctx, HELP_TEXT.len() * 2);
@@ -213,6 +218,25 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
         reply_with_bulk_string(ctx, description);
     }
 
+    Ok(())
+}
+
+/// The longest `HOLD_FANOUT_LANE` takes: long enough for any deadline test, short enough that
+/// a mistyped argument does not leave a node unable to answer its peers.
+const MAX_LANE_HOLD_MS: u64 = 60_000;
+
+/// `TS._DEBUG HOLD_FANOUT_LANE <milliseconds>`: replies with how many workers it occupied.
+fn hold_fanout_lane(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
+    let millis = args.next_u64()?;
+    args.done()?;
+    if millis == 0 || millis > MAX_LANE_HOLD_MS {
+        return Err(ValkeyError::String(format!(
+            "TSDB: hold must be between 1 and {MAX_LANE_HOLD_MS} milliseconds"
+        )));
+    }
+    let workers = hold_request_lane(Duration::from_millis(millis))
+        .map_err(|rejected| ValkeyError::String(format!("TSDB: {rejected}")))?;
+    reply_with_usize(ctx, workers);
     Ok(())
 }
 
@@ -252,6 +276,7 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             reply_with_simple_string(ctx, "OK");
             Ok(())
         }
+        "HOLD_FANOUT_LANE" => hold_fanout_lane(ctx, &mut itr),
         _ => Err(ValkeyError::String(format!(
             "Unknown subcommand: {} try HELP subcommand",
             keyword
