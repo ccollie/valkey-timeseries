@@ -109,7 +109,15 @@ impl SampleBudget {
 
     /// Account for `samples` more; fails once the total exceeds the limit, or, for a
     /// counted budget, once every counted budget together exceeds the process-wide one.
+    ///
+    /// Charging nothing only checks: a plain load, never a write. Parallel
+    /// producers ask that per series (a grid no larger than its span, or
+    /// "is the budget already spent?"), and a read-modify-write of zero would
+    /// still take the shared counter's cache line exclusively on every one.
     pub fn charge(&self, samples: usize) -> QueryResult<()> {
+        if samples == 0 {
+            return self.check_ahead(0);
+        }
         let total = self
             .loaded
             .fetch_add(samples, Ordering::Relaxed)
@@ -247,6 +255,28 @@ mod tests {
             0,
             "a plain budget counts nothing"
         );
+    }
+
+    /// A zero charge is the same verdict as before, without adding to the count.
+    #[test]
+    fn charging_nothing_only_checks() {
+        let budget = SampleBudget::new(10);
+        budget.charge(10).unwrap();
+        assert!(budget.charge(0).is_ok(), "at the limit is not past it");
+        assert_eq!(budget.loaded(), 10);
+        let _ = budget.charge(5);
+        let err = budget.charge(0).expect_err("past the limit");
+        assert!(
+            matches!(
+                err,
+                QueryError::TooManySamples {
+                    loaded: 15,
+                    limit: 10
+                }
+            ),
+            "{err}"
+        );
+        assert!(SampleBudget::new(0).charge(0).is_ok(), "unlimited");
     }
 
     #[test]

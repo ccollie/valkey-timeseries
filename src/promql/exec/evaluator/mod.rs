@@ -346,7 +346,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// grids built in parallel, where another series' grid may have crossed it.
     /// At the limit exactly is not past it, so an empty grid is still admitted.
     fn check_budget(&self) -> EvalResult<()> {
-        self.charge_samples(0)
+        Ok(self.budget.check_ahead(0)?)
     }
 
     fn charge_range_samples(&self, series: &[RangeSample<EvalLabels>]) -> EvalResult<()> {
