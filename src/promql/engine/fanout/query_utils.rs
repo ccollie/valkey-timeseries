@@ -1,7 +1,7 @@
 use crate::commands::fanout_codec::chunks::serialize_chunk;
 use crate::commands::fanout_codec::symbol_table;
-use crate::common::Timestamp;
 use crate::common::threads::IntoParRayon;
+use crate::common::{Sample, Timestamp};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::EvalSample;
@@ -86,89 +86,29 @@ fn budget_error(err: crate::promql::QueryError) -> valkey_module::ValkeyError {
     valkey_module::ValkeyError::String(err.to_string())
 }
 
-/// This shard's share of an instant-vector selector: the newest sample in the
-/// lookback window of every matched series, read one batch per lock hold. The
-/// head chunk's cached last sample usually answers without a decode, so all of
-/// it runs under the lock.
+/// The newest sample in the lookback window `(timestamp - lookback_delta, timestamp]` of
+/// every series `selector` matches on this node, each made into a `T` by `make`, read one
+/// batch per lock hold. The head chunk's cached last sample usually answers without a decode,
+/// so all of it runs under the lock.
 ///
-/// The samples are charged to `budget` as they are read (see [`local_budget`]); the caller
-/// holds it for as long as it holds them.
-pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
-    src: &S,
-    selector: SeriesSelector,
-    timestamp: Timestamp,
-    lookback_delta: u64,
-    max_series: u64,
-    _max_points_per_series: u64,
-    budget: &SampleBudget,
-) -> ValkeyResult<InstantQueryResponse> {
-    check_local_memory()?;
-    // in prometheus, given a timestamp and delta, we select the latest sample in the range
-    // (ts - delta, ts], so we need to adjust the timestamp accordingly
-    let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
-    let end_time = timestamp;
-
-    // Labels go straight from storage into the response's symbol table by
-    // identity; no owned label strings are built per series. Interning under
-    // each batch's lock is safe across them: the builder keeps every entry it
-    // has keyed alive, so an address cannot be reused by another label.
-    let mut symbol_table = symbol_table::SymbolTableBuilder::default();
-    let mut samples = ChargedSamples::new(budget);
-    for_each_series(
-        src,
-        &[selector],
-        None,
-        DEFAULT_SERIES_BATCH_SIZE,
-        |_, series, _| {
-            if let Some(sample) = series.last_sample_in_range(start_time, end_time) {
-                let (label_name_refs, label_value_refs) = symbol_table.intern(&series.labels);
-                samples.push(InstantSample {
-                    labels: Vec::new(),
-                    value: sample.value,
-                    timestamp: sample.timestamp,
-                    label_name_refs,
-                    label_value_refs,
-                })?;
-                // Refused below whatever the rest holds: stop opening series.
-                if exceeds_max_series(samples.len(), max_series as usize) {
-                    return Ok(ControlFlow::Break(()));
-                }
-            }
-            Ok(ControlFlow::Continue(()))
-        },
-    )?;
-    let samples = samples.finish()?;
-    let symbol_table = symbol_table.finish();
-
-    validate_max_series(samples.len(), max_series as usize)
-        .map_err(valkey_module::ValkeyError::String)?;
-
-    Ok(InstantQueryResponse {
-        samples,
-        labels: Some(symbol_table),
-    })
-}
-
-/// Local instant-vector evaluation for the aggregation push-down.
-///
-/// Identical lookback semantics to [`handle_instant_query`], but yielding
-/// evaluator-native samples so the aggregation operators can be applied to them
-/// directly instead of round-tripping through the wire types. Only the
-/// aggregated result crosses the wire, which is the point of the push-down.
-///
-/// The samples are charged to `budget` as they are read, as for an instant query. The
-/// coordinator only ever counts the aggregated result, so this is the one place the
-/// aggregation's input is counted: the caller holds `budget` until it has aggregated them.
-pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
+/// The samples are charged to `budget` as they are kept (see [`local_budget`]); the caller
+/// holds it for as long as it holds them. The read stops once it has one series past
+/// `max_series`, which it then refuses: the shard's own working set is bounded whatever the
+/// coordinator does with the samples.
+#[allow(clippy::too_many_arguments)]
+fn read_instant_samples<S, T>(
     src: &S,
     selector: SeriesSelector,
     timestamp: Timestamp,
     lookback_delta: u64,
     max_series: u64,
     budget: &SampleBudget,
-) -> ValkeyResult<Vec<EvalSample>> {
+    mut make: impl FnMut(&TimeSeries, Sample) -> T,
+) -> ValkeyResult<Vec<T>>
+where
+    S: GilSource + ?Sized,
+{
     check_local_memory()?;
-    // Prometheus selects the latest sample in (ts - delta, ts].
     let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
 
     let mut samples = ChargedSamples::new(budget);
@@ -179,13 +119,7 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
         DEFAULT_SERIES_BATCH_SIZE,
         |_, series, _| {
             if let Some(sample) = series.last_sample_in_range(start_time, timestamp) {
-                samples.push(EvalSample {
-                    // Shares the series' label set; nothing borrows the series.
-                    labels: EvalLabels::interned(&series.labels),
-                    value: sample.value,
-                    timestamp_ms: sample.timestamp,
-                    drop_name: false,
-                })?;
+                samples.push(make(&series, sample))?;
                 // Refused below whatever the rest holds: stop opening series.
                 if exceeds_max_series(samples.len(), max_series as usize) {
                     return Ok(ControlFlow::Break(()));
@@ -195,13 +129,83 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
         },
     )?;
     let samples = samples.finish()?;
-
-    // Bound the shard's own working set, exactly as the unaggregated instant
-    // query does. The coordinator additionally bounds the aggregated result.
     validate_max_series(samples.len(), max_series as usize)
         .map_err(valkey_module::ValkeyError::String)?;
-
     Ok(samples)
+}
+
+/// This shard's share of an instant-vector selector, in wire form: see
+/// [`read_instant_samples`].
+///
+/// Labels go straight from storage into the response's symbol table by identity; no owned
+/// label strings are built per series. Interning under each batch's lock is safe across them:
+/// the builder keeps every entry it has keyed alive, so an address cannot be reused by
+/// another label.
+pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
+    src: &S,
+    selector: SeriesSelector,
+    timestamp: Timestamp,
+    lookback_delta: u64,
+    max_series: u64,
+    _max_points_per_series: u64,
+    budget: &SampleBudget,
+) -> ValkeyResult<InstantQueryResponse> {
+    let mut symbol_table = symbol_table::SymbolTableBuilder::default();
+    let samples = read_instant_samples(
+        src,
+        selector,
+        timestamp,
+        lookback_delta,
+        max_series,
+        budget,
+        |series, sample| {
+            let (label_name_refs, label_value_refs) = symbol_table.intern(&series.labels);
+            InstantSample {
+                labels: Vec::new(),
+                value: sample.value,
+                timestamp: sample.timestamp,
+                label_name_refs,
+                label_value_refs,
+            }
+        },
+    )?;
+    Ok(InstantQueryResponse {
+        samples,
+        labels: Some(symbol_table.finish()),
+    })
+}
+
+/// Local instant-vector evaluation for the aggregation push-down: the same read as
+/// [`handle_instant_query`] ([`read_instant_samples`]), yielding evaluator-native samples so
+/// the aggregation operators can be applied to them directly instead of round-tripping
+/// through the wire types. Only the aggregated result crosses the wire, which is the point
+/// of the push-down.
+///
+/// The coordinator only ever counts the aggregated result, so `budget` is the one place the
+/// aggregation's input is counted: the caller holds it until it has aggregated them.
+pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
+    src: &S,
+    selector: SeriesSelector,
+    timestamp: Timestamp,
+    lookback_delta: u64,
+    max_series: u64,
+    budget: &SampleBudget,
+) -> ValkeyResult<Vec<EvalSample>> {
+    read_instant_samples(
+        src,
+        selector,
+        timestamp,
+        lookback_delta,
+        max_series,
+        budget,
+        |series, sample| EvalSample {
+            // Shares the series' label set; nothing borrows the series.
+            labels: EvalLabels::interned(&series.labels),
+            value: sample.value,
+            timestamp_ms: sample.timestamp,
+            drop_name: false,
+        },
+    )
 }
 
 /// The labels of the series `selector` matches on this node: the local half
