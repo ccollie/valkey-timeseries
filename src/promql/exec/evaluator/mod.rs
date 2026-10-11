@@ -370,13 +370,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
     /// Charge what a live (non-preloaded) selector read materialized.
     fn charge_result(&self, result: &ExprResult) -> EvalResult<()> {
-        match result {
-            ExprResult::InstantVector(samples) => self.charge_samples(samples.len()),
-            ExprResult::RangeVector(series) => {
-                self.charge_samples(series.iter().map(|s| s.values.len()).sum())
-            }
-            _ => Ok(()),
-        }
+        self.charge_samples(result.point_count())
     }
 
     /// Fail fast once the query deadline has passed, its client has gone, or the

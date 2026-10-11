@@ -1214,6 +1214,27 @@ impl ExprResult {
         }
     }
 
+    /// How many series the result holds, as `ts-promql-max-response-series` counts them: an
+    /// instant vector's samples, a range vector's series; none for a scalar or a string.
+    pub(crate) fn series_count(&self) -> usize {
+        match self {
+            ExprResult::InstantVector(samples) => samples.len(),
+            ExprResult::RangeVector(series) => series.len(),
+            ExprResult::Scalar(_) | ExprResult::String(_) => 0,
+        }
+    }
+
+    /// How many samples the result holds, as the sample budget counts them: a scalar is one
+    /// sample, a string none.
+    pub(crate) fn point_count(&self) -> usize {
+        match self {
+            ExprResult::InstantVector(samples) => samples.len(),
+            ExprResult::RangeVector(series) => series.iter().map(|s| s.values.len()).sum(),
+            ExprResult::Scalar(_) => 1,
+            ExprResult::String(_) => 0,
+        }
+    }
+
     pub fn value_type(&self) -> ValueType {
         match self {
             ExprResult::InstantVector(_) => ValueType::Vector,

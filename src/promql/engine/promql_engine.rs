@@ -156,20 +156,9 @@ pub fn evaluate_instant(
 
     // The result, not only each read: an operator can return more series than
     // any read did (`a or b`, `count_values`, `label_replace`).
-    let returned = match &result {
-        ExprResult::InstantVector(samples) => samples.len(),
-        ExprResult::RangeVector(series) => series.len(),
-        ExprResult::Scalar(_) | ExprResult::String(_) => 0,
-    };
-    validate_max_series(returned, opts.max_series).map_err(QueryError::Execution)?;
+    validate_max_series(result.series_count(), opts.max_series).map_err(QueryError::Execution)?;
     // What the query returns, past what it loaded: see `charge_result_points`.
-    let points = match &result {
-        ExprResult::InstantVector(samples) => samples.len(),
-        ExprResult::RangeVector(series) => series.iter().map(|s| s.values.len()).sum(),
-        ExprResult::Scalar(_) => 1,
-        ExprResult::String(_) => 0,
-    };
-    evaluator.charge_result_points(points)?;
+    evaluator.charge_result_points(result.point_count())?;
 
     match result {
         ExprResult::Scalar(value) => {
@@ -320,11 +309,7 @@ pub fn evaluate_range(
         // a literal) generates them uncharged by any read.
         points += chunk_results
             .iter()
-            .map(|(_, result)| match result {
-                ExprResult::InstantVector(samples) => samples.len(),
-                ExprResult::Scalar(_) => 1,
-                ExprResult::RangeVector(_) | ExprResult::String(_) => 0,
-            })
+            .map(|(_, result)| result.point_count())
             .sum::<usize>();
         evaluator.charge_result_points(points)?;
 
