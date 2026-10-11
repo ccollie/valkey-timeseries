@@ -125,7 +125,7 @@ impl SampleBudget {
         if self.limit > 0 && total > self.limit {
             return Err(too_many_samples(total, self.limit));
         }
-        if self.in_flight_limit > 0 && samples > 0 {
+        if self.in_flight_limit > 0 {
             // Recorded before the check, so `Drop` gives back exactly what was added.
             self.in_flight.fetch_add(samples, Ordering::Relaxed);
             self.admission
