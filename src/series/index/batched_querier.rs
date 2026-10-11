@@ -32,6 +32,7 @@ use super::get_db_index;
 use super::postings::Postings;
 use super::querier::{StaleIds, matches_date_range};
 use crate::common::context::{create_key_string, get_current_db};
+use crate::error_consts;
 use crate::fanout::{FanoutContext, FanoutContextGuard};
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
@@ -40,7 +41,7 @@ use crate::series::{SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries_as};
 use blart::AsBytes;
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Deref};
-use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Series per lock hold when a caller has no reason to pick another size.
 ///
@@ -111,6 +112,12 @@ pub trait GilSource {
     fn can_release(&self) -> bool {
         true
     }
+
+    /// Whether whoever asked for the read has stopped waiting for it, so the next batch
+    /// would be read for nobody. Checked before each batch after the first.
+    fn expired(&self) -> bool {
+        false
+    }
 }
 
 /// A shard-local fan-out share: each lock re-selects the request's database and re-installs
@@ -125,6 +132,10 @@ impl GilSource for FanoutContext {
 
     fn db(&self) -> i32 {
         FanoutContext::db(self)
+    }
+
+    fn expired(&self) -> bool {
+        FanoutContext::expired(self)
     }
 }
 
@@ -289,6 +300,11 @@ where
             break;
         }
         if !cursor.is_done() {
+            // A fan-out share whose requester has given up: the rest of the read would be
+            // copied and decoded under the lock for an answer nobody collects.
+            if src.expired() {
+                return Err(ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP));
+            }
             // The main thread waiting on the lock is woken by the release above, but this
             // thread can take it straight back before the main thread runs. Step aside.
             std::thread::yield_now();
