@@ -370,18 +370,22 @@ impl SteppedPartialGroups {
         Ok(added)
     }
 
-    /// How many `(group, step)` states are held: what this has grown to.
-    pub fn states(&self) -> usize {
-        self.steps.values().map(|groups| groups.groups.len()).sum()
-    }
-
-    /// Merge one shard's state for a `(group, step)` pair.
-    pub fn merge(&mut self, step_ts: Timestamp, labels: EvalLabels, state: AggregationPartial) {
+    /// Merge one shard's state for a `(group, step)` pair, returning how many
+    /// states that added: 1 for a pair not seen before, else 0.
+    pub fn merge(
+        &mut self,
+        step_ts: Timestamp,
+        labels: EvalLabels,
+        state: AggregationPartial,
+    ) -> usize {
         let kind = self.kind;
-        self.steps
+        let groups = self
+            .steps
             .entry(step_ts)
-            .or_insert_with(|| PartialGroups::new(kind))
-            .merge(labels, state);
+            .or_insert_with(|| PartialGroups::new(kind));
+        let before = groups.groups.len();
+        groups.merge(labels, state);
+        groups.groups.len() - before
     }
 
     /// The accumulated states, for transport to the coordinator.
@@ -490,11 +494,6 @@ impl SteppedSelection {
         deadline: &Deadline,
     ) -> EvalResult<usize> {
         Self::transpose(series, &mut self.steps, deadline)
-    }
-
-    /// How many candidates are held, over every step: what this has grown to.
-    pub fn candidates(&self) -> usize {
-        self.steps.values().map(Vec::len).sum()
     }
 
     /// One entry per output label set, each holding its sparse `(step,

@@ -159,6 +159,11 @@ pub(in crate::promql) struct GridFanoutCommand {
     /// Raw spans a shard chose to ship instead, run through the per-series
     /// stage by [`Self::into_result`].
     raw: Vec<RangeSample<EvalLabels>>,
+    /// `ts-promql-max-samples-per-query`, charged for what this command holds
+    /// as it grows: every shard bounds its own output by the same limit, so
+    /// without it the shards together could leave the coordinator holding
+    /// that many times it before the query is refused.
+    budget: SampleBudget,
     /// A peer refused the operation as unknown: it runs an older build that
     /// has no grid push-down (a rolling upgrade). The caller then evaluates
     /// without it, over the selector operations every build has.
@@ -190,6 +195,7 @@ impl Default for GridFanoutCommand {
             },
             0,
             0,
+            0,
             get_cluster_command_timeout(),
             Deadline::default(),
         )
@@ -202,6 +208,7 @@ impl GridFanoutCommand {
         request: GridRequest,
         max_series: u64,
         max_points_per_series: u64,
+        max_samples: usize,
         timeout: Duration,
         deadline: Deadline,
     ) -> Self {
@@ -216,6 +223,7 @@ impl GridFanoutCommand {
             timeout,
             sink,
             raw: Vec::new(),
+            budget: SampleBudget::new(max_samples),
             unsupported_peer: false,
             deadline,
             stopped: None,
@@ -243,17 +251,20 @@ impl GridFanoutCommand {
     /// ([`GridRequest::per_series_chunked`]), `deadline` checked before each.
     /// What the sink holds — an unfused request's points, a fused one's
     /// `(group, step)` states or candidates, which outlive the chunks folded
-    /// into them — is counted against `max_samples`
-    /// (`ts-promql-max-samples-per-query`) as it grows: the evaluator charges
-    /// the result to the query's budget once it has it, so a request over the
-    /// limit on its own is refused at the chunk that crosses it rather than
-    /// after the whole grid is built.
-    pub fn into_result(self, max_samples: usize) -> QueryResult<GridOutcome> {
+    /// into them — is counted against `budget` as it grows, as the shards'
+    /// output was when it arrived ([`FanoutCommand::on_response`]): the
+    /// evaluator charges the result to the query's budget once it has it, so a
+    /// request over the limit on its own is refused at the chunk that crosses
+    /// it rather than after the whole grid is built. The raw spans were charged
+    /// as they arrived and each chunk's are dropped once it has run, so a chunk
+    /// is charged only for what it holds past them.
+    pub fn into_result(self) -> QueryResult<GridOutcome> {
         let Self {
             request,
             window_ends,
             raw,
             mut sink,
+            budget,
             deadline,
             stopped,
             ..
@@ -262,11 +273,9 @@ impl GridFanoutCommand {
             return Err(err);
         }
         let deadline = &deadline;
-        let budget = SampleBudget::new(max_samples);
-        budget.charge(sink.held())?;
-        request.per_series_chunked(&window_ends, raw, deadline, |chunk, _| {
+        request.per_series_chunked(&window_ends, raw, deadline, |chunk, read| {
             let added = sink.take(&request, chunk, deadline)?;
-            budget.charge(added)
+            budget.charge(added.saturating_sub(read))
         })?;
         sink.finish(deadline).map_err(QueryError::from)
     }
@@ -371,7 +380,7 @@ impl FanoutCommand for GridFanoutCommand {
         // series are the shard's per-step picks or counts. A response carrying
         // the wrong list would be folded in twice, or grouped when the query
         // asked for series.
-        if let GridSink::Partials(partials) = &mut self.sink {
+        let added = if let GridSink::Partials(partials) = &mut self.sink {
             if !resp.series.is_empty() {
                 return Err(wrong_payload(
                     target,
@@ -381,6 +390,7 @@ impl FanoutCommand for GridFanoutCommand {
                     "partial states",
                 ));
             }
+            let mut added = 0;
             for mut partial in resp.partials {
                 let labels = resolver.resolve(&mut partial).map_err(malformed)?;
                 let state = decode_peer_partial(
@@ -388,12 +398,13 @@ impl FanoutCommand for GridFanoutCommand {
                     target,
                     "a grid query fused with a reduction",
                 )?;
-                partials.merge(partial.step_ts, labels, state);
+                added += partials.merge(partial.step_ts, labels, state);
                 if let Err(err) = self.deadline.checkpoint(SERIES_WORK) {
                     self.stopped = Some(err);
                     return Ok(());
                 }
             }
+            added
         } else {
             if !resp.partials.is_empty() {
                 return Err(wrong_payload(
@@ -434,21 +445,38 @@ impl FanoutCommand for GridFanoutCommand {
                     }),
                 }
             }
-            if let Err(err) = self.sink.merge(&self.request, output, &self.deadline) {
-                self.stopped = Some(err.into());
-                return Ok(());
+            match self.sink.merge(&self.request, output, &self.deadline) {
+                Ok(added) => added,
+                Err(err) => {
+                    self.stopped = Some(err.into());
+                    return Ok(());
+                }
             }
-        }
+        };
 
-        for raw in resp.raw {
-            let series = range_sample_from_proto(raw, &mut resolver).map_err(|why| {
-                FanoutError::custom(format!(
-                    "TSDB: peer {} returned an undecodable raw series: {why}",
-                    target.socket_address,
-                ))
-            })?;
-            self.raw.push(series);
+        let mut raw_samples = 0;
+        let raw = resp
+            .raw
+            .into_iter()
+            .map(|raw| {
+                let series = range_sample_from_proto(raw, &mut resolver).map_err(|why| {
+                    FanoutError::custom(format!(
+                        "TSDB: peer {} returned an undecodable raw series: {why}",
+                        target.socket_address,
+                    ))
+                })?;
+                raw_samples += series.samples.len();
+                Ok(series)
+            })
+            .collect::<Result<Vec<_>, FanoutError>>()?;
+
+        // Charged as each response arrives rather than once every shard has
+        // answered: past the limit, the rest are dropped unread.
+        if let Err(err) = self.budget.charge(added + raw_samples) {
+            self.stopped = Some(err);
+            return Ok(());
         }
+        self.raw.extend(raw);
         Ok(())
     }
 

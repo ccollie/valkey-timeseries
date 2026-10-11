@@ -461,22 +461,11 @@ impl GridSink {
         }
     }
 
-    /// What the sink holds, in the unit a sample budget charges: points kept,
-    /// `(group, step)` states, or selection candidates. Walks every series or
-    /// step, so for a caller sizing up what arrived before it adds its own;
-    /// [`Self::take`] reports the growth it causes.
-    pub(in crate::promql) fn held(&self) -> usize {
-        match self {
-            GridSink::Series(series) => series.points(),
-            GridSink::Partials(partials) => partials.states(),
-            GridSink::Selection(selection) => selection.candidates(),
-        }
-    }
-
     /// Take one batch of the stage's output, run here over raw spans, returning
-    /// how much more the sink holds for it ([`Self::held`]): what a caller
-    /// bounding its memory charges. Fails when `deadline` passes while it
-    /// folds, or a selection's operator refuses its parameter.
+    /// how much more the sink holds for it — points kept, `(group, step)`
+    /// states, or selection candidates: what a caller bounding its memory
+    /// charges. Fails when `deadline` passes while it folds, or a selection's
+    /// operator refuses its parameter.
     ///
     /// Only a selection differs from [`Self::merge`]: the operator has yet to
     /// run over this output, so it runs here.
