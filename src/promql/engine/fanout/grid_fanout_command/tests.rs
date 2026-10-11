@@ -106,7 +106,25 @@ fn param_for(kind: RollupKind) -> Option<f64> {
 }
 
 fn command(request: GridRequest) -> GridFanoutCommand {
-    GridFanoutCommand::new(Matchers::empty(), request, 0, 0, Duration::from_secs(1))
+    GridFanoutCommand::new(
+        Matchers::empty(),
+        request,
+        0,
+        0,
+        Duration::from_secs(1),
+        Deadline::default(),
+    )
+}
+
+fn command_until(request: GridRequest, deadline: Deadline) -> GridFanoutCommand {
+    GridFanoutCommand::new(
+        Matchers::empty(),
+        request,
+        0,
+        0,
+        Duration::from_secs(1),
+        deadline,
+    )
 }
 
 fn node(port: u16) -> NodeInfo {
@@ -378,7 +396,7 @@ fn fan_out(request: &GridRequest, shards: &[Vec<RangeSample<EvalLabels>>]) -> Gr
         cmd.on_response(response(request, shard.clone()), &node(7000 + index as u16))
             .expect("shard response accepted");
     }
-    cmd.into_result(&Deadline::default(), 0).unwrap()
+    cmd.into_result(0).unwrap()
 }
 
 /// The push-down contract: evaluating at the shards and combining equals
@@ -405,7 +423,7 @@ fn test_fanout_matches_single_node() {
             }
             assert_eq!(
                 want,
-                rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+                rendered(cmd.into_result(0).unwrap()),
                 "{shape} (all raw)"
             );
 
@@ -419,7 +437,7 @@ fn test_fanout_matches_single_node() {
             }
             assert_eq!(
                 want,
-                rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+                rendered(cmd.into_result(0).unwrap()),
                 "{shape} (mixed)"
             );
         }
@@ -542,7 +560,7 @@ fn test_size_rule_ships_the_smaller_form() {
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+        rendered(cmd.into_result(0).unwrap()),
         rendered(
             request
                 .evaluate(
@@ -569,7 +587,7 @@ fn test_size_rule_ships_the_smaller_form() {
     let mut cmd = command(fused.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+        rendered(cmd.into_result(0).unwrap()),
         rendered(
             fused
                 .evaluate(vec![sparse, dense], &Deadline::default(), &mut |_| Ok(()))
@@ -704,7 +722,7 @@ fn test_reduction_folds_a_sparse_group() {
         let mut cmd = command(request.clone());
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
-            rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+            rendered(cmd.into_result(0).unwrap()),
             rendered(
                 request
                     .evaluate(windows.clone(), &Deadline::default(), &mut |_| Ok(()))
@@ -740,7 +758,7 @@ fn test_reduction_keeps_a_lone_sparse_series_raw() {
         let mut cmd = command(request.clone());
         cmd.on_response(resp, &node(7000)).unwrap();
         assert_eq!(
-            rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+            rendered(cmd.into_result(0).unwrap()),
             rendered(
                 request
                     .evaluate(vec![lone.clone()], &Deadline::default(), &mut |_| Ok(()))
@@ -808,7 +826,7 @@ fn test_groups_decide_independently() {
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
     assert_eq!(
-        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
+        rendered(cmd.into_result(0).unwrap()),
         rendered(
             request
                 .evaluate(windows, &Deadline::default(), &mut |_| Ok(()))
@@ -926,11 +944,7 @@ fn test_every_reduction_folds_sparse_groups_like_single_node() {
                     );
                     cmd.on_response(resp, &node(7000 + index as u16)).unwrap();
                 }
-                assert_rendered_close(
-                    &want,
-                    &rendered(cmd.into_result(&Deadline::default(), 0).unwrap()),
-                    &what,
-                );
+                assert_rendered_close(&want, &rendered(cmd.into_result(0).unwrap()), &what);
             }
         }
     }
@@ -1083,7 +1097,7 @@ fn test_grid_transport_is_sparse() {
 
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(gappy), &node(7000)).unwrap();
-    let GridOutcome::Rolled(fallback) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+    let GridOutcome::Rolled(fallback) = cmd.into_result(0).unwrap() else {
         panic!("a rollup request answers Rolled");
     };
     assert_eq!(fallback.len(), 1);
@@ -1107,7 +1121,7 @@ fn test_absence_is_not_nan() {
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(outside), &node(7000)).unwrap();
     assert!(
-        rendered(cmd.into_result(&Deadline::default(), 0).unwrap()).is_empty(),
+        rendered(cmd.into_result(0).unwrap()).is_empty(),
         "a series with no samples in the window must not be reported"
     );
 
@@ -1116,7 +1130,7 @@ fn test_absence_is_not_nan() {
     let mut cmd = command(request.clone());
     cmd.on_response(raw_response(nan_series), &node(7000))
         .unwrap();
-    let GridOutcome::Rolled(rolled) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+    let GridOutcome::Rolled(rolled) = cmd.into_result(0).unwrap() else {
         panic!("a rollup request answers Rolled");
     };
     assert_eq!(rolled.len(), 1, "the NaN result is a result");
@@ -1163,7 +1177,8 @@ fn promoted_expansion() -> (GridRequest, Vec<RangeSample<EvalLabels>>) {
 fn test_promoted_members_fold_a_chunk_at_a_time() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
-    let mut grid = ShardGrid::new(&request, &ends, Deadline::default());
+    let budget = SampleBudget::default();
+    let mut grid = ShardGrid::new(&request, &ends, &budget, Deadline::default());
     grid.add(windows.clone()).unwrap();
     assert!(
         matches!(grid.staged, GridSink::Partials(_)),
@@ -1186,7 +1201,7 @@ fn test_promoted_members_fold_a_chunk_at_a_time() {
             .evaluate(windows, &Deadline::default(), &mut |_| Ok(()))
             .unwrap(),
     );
-    let got = rendered(cmd.into_result(&Deadline::default(), 0).unwrap());
+    let got = rendered(cmd.into_result(0).unwrap());
     assert_rendered_close(&want, &got, "promoted sum");
 }
 
@@ -1195,7 +1210,8 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
     let gave_up = || Deadline::until(Some(std::time::Instant::now()));
-    let mut grid = ShardGrid::new(&request, &ends, gave_up());
+    let budget = SampleBudget::default();
+    let mut grid = ShardGrid::new(&request, &ends, &budget, gave_up());
     grid.add(windows).unwrap();
     let err = grid.finish().expect_err("the requester gave up");
     assert!(
@@ -1207,7 +1223,8 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     // With nothing to fold, there is nothing to stop.
     let (request, mut windows) = promoted_expansion();
     windows.retain(|s| s.samples.len() > 1);
-    let mut grid = ShardGrid::new(&request, &ends, gave_up());
+    let budget = SampleBudget::default();
+    let mut grid = ShardGrid::new(&request, &ends, &budget, gave_up());
     grid.add(windows).unwrap();
     assert!(grid.finish().is_ok());
 }
@@ -1227,12 +1244,15 @@ fn test_a_fused_selection_stops_when_the_requester_gives_up() {
     let dense: Vec<(i64, f64)> = ends.iter().map(|&t| (t, 1.0)).collect();
     let windows = vec![series("a", &dense), series("b", &dense)];
 
-    let mut live = ShardGrid::new(&request, &ends, Deadline::default());
+    let budget = SampleBudget::default();
+
+    let mut live = ShardGrid::new(&request, &ends, &budget, Deadline::default());
     live.add(windows.clone()).expect("selected");
 
     let mut late = ShardGrid::new(
         &request,
         &ends,
+        &budget,
         Deadline::until(Some(std::time::Instant::now())),
     );
     let err = late.add(windows).expect_err("the requester gave up");
@@ -1250,7 +1270,7 @@ fn test_raw_expansion_is_refused_past_max_samples() {
     cmd.on_response(raw_response(sparse.clone()), &node(7000))
         .unwrap();
     let err = cmd
-        .into_result(&Deadline::default(), 1_000_000)
+        .into_result(1_000_000)
         .err()
         .expect("three million points over a million-sample limit");
     let QueryError::TooManySamples { loaded, limit } = err else {
@@ -1265,7 +1285,7 @@ fn test_raw_expansion_is_refused_past_max_samples() {
     // Unlimited, the same arrivals answer in full.
     let mut cmd = command(request);
     cmd.on_response(raw_response(sparse), &node(7000)).unwrap();
-    let GridOutcome::Rolled(rolled) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+    let GridOutcome::Rolled(rolled) = cmd.into_result(0).unwrap() else {
         panic!("a rollup request answers Rolled");
     };
     assert_eq!(
@@ -1282,14 +1302,63 @@ fn test_raw_expansion_stops_at_a_passed_deadline() {
         ..crate::promql::QueryOptions::default()
     };
     for request in [request.clone(), fused(request, AggregationKind::Sum, &[])] {
-        let mut cmd = command(request);
+        let mut cmd = command_until(request, Deadline::from_options(&options));
         cmd.on_response(raw_response(sparse.clone()), &node(7000))
             .unwrap();
-        let err = cmd
-            .into_result(&Deadline::from_options(&options), 0)
-            .err()
-            .expect("past its deadline");
+        let err = cmd.into_result(0).err().expect("past its deadline");
         assert!(matches!(err, QueryError::Timeout), "{err}");
+    }
+}
+
+/// Merging what the shards staged walks every partial or candidate they
+/// sent, so it stops once the query's deadline has passed, as folding what
+/// arrived raw does: the stop is latched, later responses are dropped unread,
+/// and the query is refused with its own reason, not a fan-out failure.
+#[test]
+fn test_merging_shard_output_stops_at_a_passed_deadline() {
+    let base = stepped_grid_request();
+    let ends = base.window_ends();
+    // Enough states or candidates for several deadline checkpoints: a value of
+    // its own per series, so `count_values` keeps a count per series too.
+    let windows: Vec<_> = (0..5_000)
+        .map(|i| {
+            let dense: Vec<(i64, f64)> = ends.iter().map(|&t| (t, i as f64)).collect();
+            series(&i.to_string(), &dense)
+        })
+        .collect();
+    let requests = [
+        fused(base.clone(), AggregationKind::Sum, &["instance"]),
+        fused_with(
+            base.clone(),
+            AggregationKind::Topk,
+            &["instance"],
+            Some(AggregationParam::Scalar(1.0)),
+        ),
+        fused_with(
+            base,
+            AggregationKind::CountValues,
+            &[],
+            Some(AggregationParam::Label("v".to_string())),
+        ),
+    ];
+    for request in requests {
+        let kind = request.aggregation.as_ref().unwrap().kind;
+        let arrived = response(&request, windows.clone());
+
+        let mut live = command(request.clone());
+        live.on_response(arrived.clone(), &node(7000)).unwrap();
+        assert!(live.into_result(0).is_ok(), "{kind:?}");
+
+        let passed = Deadline::until(Some(std::time::Instant::now()));
+        let mut late = command_until(request, passed);
+        late.on_response(arrived.clone(), &node(7000)).unwrap();
+        late.on_response(arrived, &node(7001))
+            .expect("dropped unread once stopped");
+        let err = late
+            .into_result(0)
+            .err()
+            .unwrap_or_else(|| panic!("{kind:?}: past its deadline"));
+        assert!(matches!(err, QueryError::Timeout), "{kind:?}: {err}");
     }
 }
 
@@ -1384,7 +1453,7 @@ fn test_sample_timestamps_travel_only_on_request() {
 
     let mut cmd = command(request.clone());
     cmd.on_response(resp, &node(7000)).unwrap();
-    let GridOutcome::Stepped(stepped) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+    let GridOutcome::Stepped(stepped) = cmd.into_result(0).unwrap() else {
         panic!("a stepped request answers Stepped");
     };
     assert!(
@@ -1416,7 +1485,7 @@ fn test_sample_timestamps_travel_only_on_request() {
     let mut cmd = command(asking.clone());
     cmd.on_response(response(&asking, vec![dense()]), &node(7000))
         .unwrap();
-    let GridOutcome::Stepped(stepped) = cmd.into_result(&Deadline::default(), 0).unwrap() else {
+    let GridOutcome::Stepped(stepped) = cmd.into_result(0).unwrap() else {
         panic!()
     };
     assert!(
@@ -1494,6 +1563,7 @@ fn test_request_round_trip() {
         1_000,
         11_000,
         Duration::from_secs(1),
+        Deadline::default(),
     );
 
     let wire = cmd.generate_request();
@@ -1762,7 +1832,9 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
         let ends = request.window_ends();
         let whole = shard_response(&request, &ends, windows.clone()).unwrap();
 
-        let mut grid = ShardGrid::new(&request, &ends, Deadline::default());
+        let budget = SampleBudget::default();
+
+        let mut grid = ShardGrid::new(&request, &ends, &budget, Deadline::default());
         for batch in windows.chunks(7) {
             grid.add(batch.to_vec()).unwrap();
         }
@@ -1788,7 +1860,7 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
         );
         let mut cmd = command(request.clone());
         cmd.on_response(split, &node(7000)).unwrap();
-        let got = rendered(cmd.into_result(&Deadline::default(), 0).unwrap());
+        let got = rendered(cmd.into_result(0).unwrap());
         if is_fused {
             assert_rendered_close(&want, &got, what);
         } else {

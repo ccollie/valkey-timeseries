@@ -35,7 +35,7 @@ use crate::fanout::{
     get_cluster_command_timeout, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
-use crate::promql::deadline::Deadline;
+use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_budget, local_grid_windows};
 use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
@@ -163,6 +163,13 @@ pub(in crate::promql) struct GridFanoutCommand {
     /// has no grid push-down (a rolling upgrade). The caller then evaluates
     /// without it, over the selector operations every build has.
     unsupported_peer: bool,
+    /// The query's: checked as the shards' output is merged, and as what
+    /// arrived raw is folded and finalized ([`Self::into_result`]).
+    deadline: Deadline,
+    /// Why merging stopped, when `deadline` passed during it: every later
+    /// response is dropped unread, and [`Self::into_result`] reports this, in
+    /// its own words, rather than a fan-out failure.
+    stopped: Option<QueryError>,
 }
 
 impl Default for GridFanoutCommand {
@@ -184,6 +191,7 @@ impl Default for GridFanoutCommand {
             0,
             0,
             get_cluster_command_timeout(),
+            Deadline::default(),
         )
     }
 }
@@ -195,6 +203,7 @@ impl GridFanoutCommand {
         max_series: u64,
         max_points_per_series: u64,
         timeout: Duration,
+        deadline: Deadline,
     ) -> Self {
         let window_ends = request.window_ends();
         let sink = GridSink::for_request(&request);
@@ -208,6 +217,8 @@ impl GridFanoutCommand {
             sink,
             raw: Vec::new(),
             unsupported_peer: false,
+            deadline,
+            stopped: None,
         }
     }
 
@@ -230,32 +241,34 @@ impl GridFanoutCommand {
     /// can dwarf them: one sample in a long window answers at every step. They
     /// go through the stage a chunk at a time
     /// ([`GridRequest::per_series_chunked`]), `deadline` checked before each.
-    /// A fused request folds each chunk into its groups and drops it. An
-    /// unfused one keeps every point, so its output is counted against
-    /// `max_samples` (`ts-promql-max-samples-per-query`) as it is built: the
-    /// evaluator charges at least that many to the query's budget once it has
-    /// the result, so a request over the limit on its own is refused at the
-    /// chunk that crosses it rather than after the whole grid is built.
-    pub fn into_result(self, deadline: &Deadline, max_samples: usize) -> QueryResult<GridOutcome> {
+    /// What the sink holds — an unfused request's points, a fused one's
+    /// `(group, step)` states or candidates, which outlive the chunks folded
+    /// into them — is counted against `max_samples`
+    /// (`ts-promql-max-samples-per-query`) as it grows: the evaluator charges
+    /// the result to the query's budget once it has it, so a request over the
+    /// limit on its own is refused at the chunk that crosses it rather than
+    /// after the whole grid is built.
+    pub fn into_result(self, max_samples: usize) -> QueryResult<GridOutcome> {
         let Self {
             request,
             window_ends,
             raw,
             mut sink,
+            deadline,
+            stopped,
             ..
         } = self;
-        let budget = SampleBudget::new(max_samples);
-        if let GridSink::Series(output) = &sink {
-            budget.charge(output.points())?;
+        if let Some(err) = stopped {
+            return Err(err);
         }
+        let deadline = &deadline;
+        let budget = SampleBudget::new(max_samples);
+        budget.charge(sink.held())?;
         request.per_series_chunked(&window_ends, raw, deadline, |chunk, _| {
-            if sink.keeps_output() {
-                budget.charge(chunk.points())?;
-            }
-            sink.take(&request, chunk, deadline)
-                .map_err(QueryError::from)
+            let added = sink.take(&request, chunk, deadline)?;
+            budget.charge(added)
         })?;
-        sink.finish().map_err(QueryError::from)
+        sink.finish(deadline).map_err(QueryError::from)
     }
 }
 
@@ -285,9 +298,9 @@ impl FanoutCommand for GridFanoutCommand {
         // Locks per batch of matched series; each batch is decoded and run
         // through the per-series stage with the lock released, before the next
         // batch is read.
-        let mut grid = ShardGrid::new(&request, &window_ends, super::shard_deadline(ctx));
         // Held through `finish`: the grid keeps what it made of the windows until then.
         let budget = local_budget()?;
+        let mut grid = ShardGrid::new(&request, &window_ends, &budget, super::shard_deadline(ctx));
         local_grid_windows(
             ctx,
             series_selector,
@@ -339,6 +352,9 @@ impl FanoutCommand for GridFanoutCommand {
     }
 
     fn on_response(&mut self, mut resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
+        if self.stopped.is_some() {
+            return Ok(());
+        }
         // Every element's labels are refs into the response's symbol table,
         // resolved to interned labels: each distinct pair once per response.
         let table = resp.labels.take().unwrap_or_default();
@@ -373,6 +389,10 @@ impl FanoutCommand for GridFanoutCommand {
                     "a grid query fused with a reduction",
                 )?;
                 partials.merge(partial.step_ts, labels, state);
+                if let Err(err) = self.deadline.checkpoint(SERIES_WORK) {
+                    self.stopped = Some(err);
+                    return Ok(());
+                }
             }
         } else {
             if !resp.partials.is_empty() {
@@ -414,7 +434,10 @@ impl FanoutCommand for GridFanoutCommand {
                     }),
                 }
             }
-            self.sink.merge(&self.request, output);
+            if let Err(err) = self.sink.merge(&self.request, output, &self.deadline) {
+                self.stopped = Some(err.into());
+                return Ok(());
+            }
         }
 
         for raw in resp.raw {
@@ -511,7 +534,8 @@ fn shard_response(
     window_ends: &[i64],
     windows: Vec<RangeSample<EvalLabels>>,
 ) -> ValkeyResult<GridQueryResponse> {
-    let mut grid = ShardGrid::new(request, window_ends, Deadline::default());
+    let budget = SampleBudget::default();
+    let mut grid = ShardGrid::new(request, window_ends, &budget, Deadline::default());
     grid.add(windows)?;
     grid.finish()
 }
@@ -548,6 +572,9 @@ pub(super) struct ShardGrid<'a> {
     /// it arrives and keeps only its groups or picks.
     staged: GridSink,
     staged_groups: FingerprintHashSet,
+    /// The read's budget, charged for what `staged` holds beyond the spans
+    /// folded into it.
+    budget: &'a SampleBudget,
     /// When the requester stops waiting ([`super::shard_deadline`]): checked by a fused
     /// selection as it runs, and between the chunks of promoted spans.
     deadline: Deadline,
@@ -557,6 +584,7 @@ impl<'a> ShardGrid<'a> {
     pub(super) fn new(
         request: &'a GridRequest,
         window_ends: &'a [i64],
+        budget: &'a SampleBudget,
         deadline: Deadline,
     ) -> Self {
         Self {
@@ -565,17 +593,19 @@ impl<'a> ShardGrid<'a> {
             raw: Vec::new(),
             staged: GridSink::for_request(request),
             staged_groups: FingerprintHashSet::default(),
+            budget,
             deadline,
         }
     }
 
     /// Take one batch of non-empty windows.
     ///
-    /// Nothing here is charged to the shard's sample budget beyond the raw
-    /// samples the read already charged: a series is staged only when its span
-    /// holds at least as many samples as there are steps ([`ships_raw`]), so
-    /// its stage output is never the larger. A sparse series that would expand
-    /// waits for [`Self::finish`], which ships it raw or folds it.
+    /// A series is staged only when its span holds at least as many samples as
+    /// there are steps ([`ships_raw`]), so its stage output is never the
+    /// larger, and a sparse series that would expand waits for
+    /// [`Self::finish`], which ships it raw or folds it. What `staged` holds is
+    /// still charged past the spans staged into it ([`Self::stage`]): a fused
+    /// selection's candidates need not be fewer than its input.
     ///
     /// Fails only for a fused selection: it refuses its parameter, or the
     /// requester gives up while it runs.
@@ -589,12 +619,34 @@ impl<'a> ShardGrid<'a> {
             staged.iter().map(|series| (series, &false)),
         ));
         if !staged.is_empty() {
+            let read = staged.iter().map(|series| series.samples.len()).sum();
             let output = self.request.per_series(self.window_ends, staged);
-            self.staged
-                .take(self.request, output, &self.deadline)
-                .map_err(shard_error)?;
+            Self::stage(
+                &mut self.staged,
+                self.request,
+                output,
+                read,
+                self.budget,
+                &self.deadline,
+            )
+            .map_err(shard_error)?;
         }
         Ok(())
+    }
+
+    /// Take one batch of stage output, charging `budget` for what the sink now
+    /// holds beyond the `read` raw samples the batch was built from, which the
+    /// read already charged.
+    fn stage(
+        staged: &mut GridSink,
+        request: &GridRequest,
+        output: GridSeries,
+        read: usize,
+        budget: &SampleBudget,
+        deadline: &Deadline,
+    ) -> QueryResult<()> {
+        let added = staged.take(request, output, deadline)?;
+        budget.charge(added.saturating_sub(read))
     }
 
     /// The response, once every batch is in: the raw spans that stay raw, and
@@ -621,24 +673,24 @@ impl<'a> ShardGrid<'a> {
                 raw.push(series);
             }
         }
-        let (staged, deadline) = (&mut self.staged, &self.deadline);
+        let (staged, budget, deadline) = (&mut self.staged, self.budget, &self.deadline);
         request
-            .per_series_chunked(window_ends, folded, deadline, |output, _| {
-                staged
-                    .take(request, output, deadline)
-                    .map_err(QueryError::from)
+            .per_series_chunked(window_ends, folded, deadline, |output, read| {
+                Self::stage(staged, request, output, read, budget, deadline)
             })
             .map_err(shard_error)?;
-        respond(request, window_ends, raw, self.staged)
+        respond(request, window_ends, raw, self.staged, &self.deadline)
     }
 }
 
-/// The wire response from a shard's raw spans and what it staged.
+/// The wire response from a shard's raw spans and what it staged. A fused
+/// selection re-selects over its candidates here, `deadline` checked as it does.
 fn respond(
     request: &GridRequest,
     window_ends: &[i64],
     raw: Vec<RangeSample<EvalLabels>>,
     staged: GridSink,
+    deadline: &Deadline,
 ) -> ValkeyResult<GridQueryResponse> {
     // One symbol table for every labelled element of the response.
     let mut symbols = SymbolTableBuilder::default();
@@ -675,9 +727,7 @@ fn respond(
         // staged here — k series per step, or one count per value — ship as
         // candidates rather than every series.
         GridSink::Selection(selection) => {
-            let selected = selection
-                .finalize()
-                .map_err(|e| ValkeyError::String(e.to_string()))?;
+            let selected = selection.finalize(deadline).map_err(shard_error)?;
             return Ok(GridQueryResponse {
                 series: columnar_series(window_ends, selected, &mut symbols),
                 partials: Vec::new(),

@@ -824,6 +824,7 @@ fn execute_cluster_grid(
         max_series as u64,
         max_points_per_series.unwrap_or(0) as u64,
         timeout,
+        deadline,
     );
 
     let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
@@ -833,7 +834,7 @@ fn execute_cluster_grid(
     let handler = move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
         let peer_unsupported = cmd.peer_unsupported();
         let query_result = match result {
-            Ok(()) => cmd.into_result(&deadline, max_samples).and_then(|outcome| {
+            Ok(()) => cmd.into_result(max_samples).and_then(|outcome| {
                 // The grid output, not the input, is what these bound: one
                 // entry per series (or group), one point per step that produced
                 // one.

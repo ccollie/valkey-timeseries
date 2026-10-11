@@ -23,7 +23,7 @@
 use crate::common::math::kahan_inc;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
-use crate::promql::deadline::Deadline;
+use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::query_reader::{AggregationParam, GridAggregation};
 use crate::promql::exec::aggregations::{
     AggregationKind, PushdownStrategy, apply_aggregation, max_ignore_nan, min_ignore_nan,
@@ -327,7 +327,9 @@ impl SteppedPartialGroups {
         }
     }
 
-    /// Fold per-series rollup output into the per-`(group, step)` states.
+    /// Fold per-series rollup output into the per-`(group, step)` states,
+    /// returning how many states it added. `deadline` is checked between
+    /// series ([`Deadline::checkpoint`]).
     ///
     /// Each series carries its own sparse `(step, value)` points, so a step at
     /// which a series produced nothing simply does not contribute to that step's
@@ -337,21 +339,32 @@ impl SteppedPartialGroups {
         &mut self,
         modifier: Option<&LabelModifier>,
         series: Vec<RangeSample<EvalLabels>>,
-    ) {
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
         let kind = self.kind;
+        let mut added = 0;
         for s in series {
+            deadline.checkpoint(SERIES_WORK + s.samples.len())?;
             // One group per series, however many steps it spans: resolve the
             // group and hash it once, not once per point.
             let labels = s.labels.compute_grouping_labels(modifier);
             let key = labels.fingerprint();
             for point in s.samples {
-                self.steps
+                let groups = self
+                    .steps
                     .entry(point.timestamp)
-                    .or_insert_with(|| PartialGroups::new(kind))
-                    .entry_keyed(key, &labels)
-                    .update(kind, point.value);
+                    .or_insert_with(|| PartialGroups::new(kind));
+                let before = groups.groups.len();
+                groups.entry_keyed(key, &labels).update(kind, point.value);
+                added += groups.groups.len() - before;
             }
         }
+        Ok(added)
+    }
+
+    /// How many `(group, step)` states are held: what this has grown to.
+    pub fn states(&self) -> usize {
+        self.steps.values().map(|groups| groups.groups.len()).sum()
     }
 
     /// Merge one shard's state for a `(group, step)` pair.
@@ -375,13 +388,15 @@ impl SteppedPartialGroups {
     }
 
     /// Finalize into one entry per group, each holding its sparse `(step,
-    /// value)` points in ascending step order.
-    pub fn finalize(self) -> Vec<RangeSample<EvalLabels>> {
+    /// value)` points in ascending step order. `deadline` is checked between
+    /// steps: this walks every `(group, step)` state the query accumulated.
+    pub fn finalize(self, deadline: &Deadline) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
         let kind = self.kind;
         let mut by_group: FingerprintHashMap<(EvalLabels, Vec<Sample>)> =
             FingerprintHashMap::default();
 
         for (step_ts, groups) in self.steps {
+            deadline.checkpoint(SERIES_WORK + groups.groups.len())?;
             for (labels, state) in groups.into_partials() {
                 let key = labels.fingerprint();
                 by_group
@@ -395,10 +410,10 @@ impl SteppedPartialGroups {
             }
         }
 
-        by_group
+        Ok(by_group
             .into_iter()
             .map(|(_, (labels, samples))| RangeSample { labels, samples })
-            .collect()
+            .collect())
     }
 }
 
@@ -435,47 +450,62 @@ impl SteppedSelection {
 
     /// Run the operator over per-series step values — a shard's own series,
     /// or the ones the coordinator was handed raw — and keep its output as
-    /// candidates. `deadline` is checked at every step and every few thousand
-    /// series within one: a shard passes its requester's, a coordinator its
-    /// query's.
+    /// candidates, returning how many it kept. `deadline` is checked between
+    /// series as they are transposed, then at every step and every few
+    /// thousand series within one: a shard passes its requester's, a
+    /// coordinator its query's.
     pub fn apply(
         &mut self,
         series: Vec<RangeSample<EvalLabels>>,
         deadline: &Deadline,
-    ) -> EvalResult<()> {
+    ) -> EvalResult<usize> {
         let mut by_step: BTreeMap<Timestamp, Vec<EvalSample>> = BTreeMap::new();
-        Self::transpose(series, &mut by_step);
+        Self::transpose(series, &mut by_step, deadline)?;
+        let mut added = 0;
         // Sequential on purpose: a step's selection is a few microseconds,
         // and fanning 240 of them out to the pool measured five times slower
         // than running them in a row.
         for (step_ts, samples) in by_step {
             let output = Self::run_with(&self.aggregation, samples, step_ts, deadline)?;
+            added += output.len();
             self.steps.entry(step_ts).or_default().extend(output);
         }
-        Ok(())
+        Ok(added)
     }
 
     /// Fold in another party's output — a shard's per-step selection or
-    /// counts — as candidates.
-    pub fn merge(&mut self, series: Vec<RangeSample<EvalLabels>>) {
-        Self::transpose(series, &mut self.steps);
+    /// counts — as candidates, returning how many. `deadline` is checked
+    /// between series.
+    pub fn merge(
+        &mut self,
+        series: Vec<RangeSample<EvalLabels>>,
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
+        Self::transpose(series, &mut self.steps, deadline)
+    }
+
+    /// How many candidates are held, over every step: what this has grown to.
+    pub fn candidates(&self) -> usize {
+        self.steps.values().map(Vec::len).sum()
     }
 
     /// One entry per output label set, each holding its sparse `(step,
-    /// value)` points in ascending step order.
-    pub fn finalize(self) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
+    /// value)` points in ascending step order. `deadline` is checked at every
+    /// step, and within a selection as [`Self::apply`] checks it: this
+    /// re-selects over every candidate the query accumulated.
+    pub fn finalize(self, deadline: &Deadline) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
         let strategy = self.strategy();
         let aggregation = &self.aggregation;
         let mut by_labels: FingerprintHashMap<(EvalLabels, Vec<Sample>)> =
             FingerprintHashMap::default();
         // The steps come out ascending, so the per-label points need no sort.
         for (step_ts, candidates) in self.steps {
+            deadline.checkpoint(SERIES_WORK + candidates.len())?;
             let output = match strategy {
                 // Selecting is idempotent: the answer is the selection over
                 // the union of what every party selected.
-                // Over candidates — at most k per step per party — so unchecked.
                 PushdownStrategy::Select => {
-                    Self::run_with(aggregation, candidates, step_ts, &Deadline::default())?
+                    Self::run_with(aggregation, candidates, step_ts, deadline)?
                 }
                 // Counts from different parties add.
                 PushdownStrategy::CountValues => merge_count_values(candidates),
@@ -524,8 +554,12 @@ impl SteppedSelection {
     fn transpose(
         series: Vec<RangeSample<EvalLabels>>,
         into: &mut BTreeMap<Timestamp, Vec<EvalSample>>,
-    ) {
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
+        let mut added = 0;
         for s in series {
+            deadline.checkpoint(SERIES_WORK + s.samples.len())?;
+            added += s.samples.len();
             for point in s.samples {
                 into.entry(point.timestamp).or_default().push(EvalSample {
                     labels: s.labels.clone(),
@@ -535,6 +569,7 @@ impl SteppedSelection {
                 });
             }
         }
+        Ok(added)
     }
 }
 
@@ -801,5 +836,71 @@ mod tests {
             Some(PushdownStrategy::CountValues)
         );
         assert_eq!(AggregationKind::Quantile.pushdown_strategy(), None);
+    }
+
+    /// One point per step at 5,000 steps, all in one group: enough work, folded
+    /// or finalized, for several deadline checkpoints.
+    fn one_point_per_step() -> Vec<RangeSample<EvalLabels>> {
+        (0..5_000)
+            .map(|i| RangeSample {
+                labels: EvalLabels::from_pairs(&[("i", &i.to_string())]),
+                samples: vec![Sample::new(i * 1_000, i as f64)],
+            })
+            .collect()
+    }
+
+    fn passed() -> Deadline {
+        Deadline::until(Some(std::time::Instant::now()))
+    }
+
+    fn is_timeout<T>(result: EvalResult<T>) -> bool {
+        matches!(
+            result.map_err(crate::promql::QueryError::from),
+            Err(crate::promql::QueryError::Timeout)
+        )
+    }
+
+    /// Folding into per-`(group, step)` states and finalizing them each stop
+    /// at a passed deadline: either can walk everything the query kept.
+    #[test]
+    fn stepped_partials_stop_at_a_passed_deadline() {
+        let none = Deadline::default();
+        let mut partials = SteppedPartialGroups::new(AggregationKind::Sum);
+        assert!(is_timeout(partials.accumulate(
+            None,
+            one_point_per_step(),
+            &passed()
+        )));
+
+        let mut partials = SteppedPartialGroups::new(AggregationKind::Sum);
+        assert_eq!(
+            partials
+                .accumulate(None, one_point_per_step(), &none)
+                .unwrap(),
+            5_000
+        );
+        assert!(is_timeout(partials.finalize(&passed())));
+    }
+
+    /// Taking in candidates — run here or merged from another party — and
+    /// re-selecting over them each stop at a passed deadline.
+    #[test]
+    fn stepped_selection_stops_at_a_passed_deadline() {
+        let topk = GridAggregation {
+            kind: AggregationKind::Topk,
+            modifier: None,
+            param: Some(AggregationParam::Scalar(1.0)),
+        };
+        let none = Deadline::default();
+        assert!(is_timeout(
+            SteppedSelection::new(topk.clone()).apply(one_point_per_step(), &passed())
+        ));
+        assert!(is_timeout(
+            SteppedSelection::new(topk.clone()).merge(one_point_per_step(), &passed())
+        ));
+
+        let mut selection = SteppedSelection::new(topk);
+        assert_eq!(selection.merge(one_point_per_step(), &none).unwrap(), 5_000);
+        assert!(is_timeout(selection.finalize(&passed())));
     }
 }

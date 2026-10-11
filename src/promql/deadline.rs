@@ -35,8 +35,7 @@ thread_local! {
 
 /// When an evaluation must stop: its deadline, its client's disconnect, and the memory limit,
 /// or — for a shard's share of a fan-out — when its requester stops waiting ([`Self::until`]).
-/// The default stops nothing: the engine's tests, and a coordinator's merge of what its
-/// shards sent (its query checks its own deadline), run without one.
+/// The default stops nothing: the engine's tests run without one.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Deadline {
     /// Epoch milliseconds; 0 for none.

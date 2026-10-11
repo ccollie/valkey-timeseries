@@ -347,14 +347,15 @@ impl GridRequest {
     /// answer does not depend on who did the work.
     ///
     /// The stage runs a chunk at a time ([`Self::per_series_chunked`]), each
-    /// chunk's output into a [`GridSink`]. Output that is kept — an unfused
-    /// request's — is passed to `charge` as each chunk is built, for what it
-    /// holds beyond the raw samples it was built from: one sample in a long
-    /// window answers at every step, so the output can dwarf the span that was
+    /// chunk's output into a [`GridSink`]. What the sink keeps of a chunk is
+    /// passed to `charge` as the chunk is taken, for what it holds beyond the
+    /// raw samples the chunk was built from: one sample in a long window
+    /// answers at every step, so what is kept can dwarf the span that was
     /// charged for it, and a query over its budget must stop at the chunk that
-    /// crossed it rather than after building the whole grid. A fused request's
-    /// per-series output is folded into its groups chunk by chunk and dropped,
-    /// so only the groups outlive a chunk; those are the caller's to charge.
+    /// crossed it rather than after building the whole grid. That holds for a
+    /// fused request too: its per-series output is dropped once folded, but
+    /// the groups' `(group, step)` states or a selection's candidates it is
+    /// folded into stay until the end, and grow with every chunk.
     pub(in crate::promql) fn evaluate(
         &self,
         series: Vec<RangeSample<EvalLabels>>,
@@ -364,12 +365,10 @@ impl GridRequest {
         let window_ends = self.window_ends();
         let mut sink = GridSink::for_request(self);
         self.per_series_chunked(&window_ends, series, deadline, |output, read| {
-            if sink.keeps_output() {
-                charge(output.points().saturating_sub(read))?;
-            }
-            sink.take(self, output, deadline).map_err(QueryError::from)
+            let added = sink.take(self, output, deadline)?;
+            charge(added.saturating_sub(read))
         })?;
-        sink.finish().map_err(QueryError::from)
+        sink.finish(deadline).map_err(QueryError::from)
     }
 
     /// Run the per-series stage over `series` a chunk at a time, `deadline`
@@ -462,16 +461,46 @@ impl GridSink {
         }
     }
 
-    /// Whether output taken is kept point for point — what a caller bounding
-    /// its memory charges — rather than folded and dropped.
-    pub(in crate::promql) fn keeps_output(&self) -> bool {
-        matches!(self, GridSink::Series(_))
+    /// What the sink holds, in the unit a sample budget charges: points kept,
+    /// `(group, step)` states, or selection candidates. Walks every series or
+    /// step, so for a caller sizing up what arrived before it adds its own;
+    /// [`Self::take`] reports the growth it causes.
+    pub(in crate::promql) fn held(&self) -> usize {
+        match self {
+            GridSink::Series(series) => series.points(),
+            GridSink::Partials(partials) => partials.states(),
+            GridSink::Selection(selection) => selection.candidates(),
+        }
     }
 
-    /// Take one batch of the stage's output, run here over raw spans. Fails
-    /// only for a selection: its operator refuses its parameter, or `deadline`
-    /// passes while it runs.
+    /// Take one batch of the stage's output, run here over raw spans, returning
+    /// how much more the sink holds for it ([`Self::held`]): what a caller
+    /// bounding its memory charges. Fails when `deadline` passes while it
+    /// folds, or a selection's operator refuses its parameter.
     pub(in crate::promql) fn take(
+        &mut self,
+        request: &GridRequest,
+        output: GridSeries,
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
+        Ok(match self {
+            GridSink::Series(series) => {
+                let added = output.points();
+                series.append(output);
+                added
+            }
+            GridSink::Partials(partials) => Self::fold(partials, request, output, deadline)?,
+            GridSink::Selection(selection) => {
+                selection.apply(output.into_step_values(), deadline)?
+            }
+        })
+    }
+
+    /// Take a batch another party already staged — a shard's per-series
+    /// entries, or the candidates its own run of the operator picked — so the
+    /// operator is not run over it again here. Fails when `deadline` passes
+    /// while it folds.
+    pub(in crate::promql) fn merge(
         &mut self,
         request: &GridRequest,
         output: GridSeries,
@@ -479,39 +508,37 @@ impl GridSink {
     ) -> EvalResult<()> {
         match self {
             GridSink::Series(series) => series.append(output),
-            GridSink::Partials(partials) => Self::fold(partials, request, output),
+            GridSink::Partials(partials) => {
+                Self::fold(partials, request, output, deadline)?;
+            }
             GridSink::Selection(selection) => {
-                selection.apply(output.into_step_values(), deadline)?
+                selection.merge(output.into_step_values(), deadline)?;
             }
         }
         Ok(())
     }
 
-    /// Take a batch another party already staged — a shard's per-series
-    /// entries, or the candidates its own run of the operator picked — so the
-    /// operator is not run over it again here.
-    pub(in crate::promql) fn merge(&mut self, request: &GridRequest, output: GridSeries) {
-        match self {
-            GridSink::Series(series) => series.append(output),
-            GridSink::Partials(partials) => Self::fold(partials, request, output),
-            GridSink::Selection(selection) => selection.merge(output.into_step_values()),
-        }
-    }
-
-    fn fold(partials: &mut SteppedPartialGroups, request: &GridRequest, output: GridSeries) {
+    fn fold(
+        partials: &mut SteppedPartialGroups,
+        request: &GridRequest,
+        output: GridSeries,
+        deadline: &Deadline,
+    ) -> EvalResult<usize> {
         let modifier = request
             .aggregation
             .as_ref()
             .and_then(|aggregation| aggregation.modifier.as_ref());
-        partials.accumulate(modifier, output.into_step_values());
+        partials.accumulate(modifier, output.into_step_values(), deadline)
     }
 
-    /// Everything taken, as the request's outcome.
-    pub(in crate::promql) fn finish(self) -> EvalResult<GridOutcome> {
+    /// Everything taken, as the request's outcome. A fused sink walks every
+    /// state or candidate it accumulated to finalize them, `deadline` checked
+    /// as it goes.
+    pub(in crate::promql) fn finish(self, deadline: &Deadline) -> EvalResult<GridOutcome> {
         Ok(match self {
             GridSink::Series(series) => series.into(),
-            GridSink::Partials(partials) => GridOutcome::Reduced(partials.finalize()),
-            GridSink::Selection(selection) => GridOutcome::Reduced(selection.finalize()?),
+            GridSink::Partials(partials) => GridOutcome::Reduced(partials.finalize(deadline)?),
+            GridSink::Selection(selection) => GridOutcome::Reduced(selection.finalize(deadline)?),
         })
     }
 }
@@ -1045,6 +1072,93 @@ mod evaluate_chunk_tests {
         );
     }
 
+    /// The aggregations a fused request can carry, one per strategy, each
+    /// keeping a state or candidate per series per step over [`sparse_series`]:
+    /// grouped by the label every series differs in, or counting its values,
+    /// which differ too.
+    fn per_series_aggregations() -> [GridAggregation; 3] {
+        let by_i = || {
+            Some(LabelModifier::Include(promql_parser::label::Labels::new(
+                vec!["i"],
+            )))
+        };
+        [
+            GridAggregation {
+                kind: AggregationKind::Sum,
+                modifier: by_i(),
+                param: None,
+            },
+            GridAggregation {
+                kind: AggregationKind::Topk,
+                modifier: by_i(),
+                param: Some(AggregationParam::Scalar(1.0)),
+            },
+            GridAggregation {
+                kind: AggregationKind::CountValues,
+                modifier: None,
+                param: Some(AggregationParam::Label("v".to_string())),
+            },
+        ]
+    }
+
+    /// What a fused request's groups or candidates hold past the raw samples
+    /// they were folded from is charged as they grow, chunk by chunk, exactly
+    /// as an unfused request's kept output is: the per-series output is
+    /// dropped once folded, but what it was folded into stays.
+    #[test]
+    fn a_fused_accumulation_is_charged_as_it_grows() {
+        for aggregation in per_series_aggregations() {
+            let kind = aggregation.kind;
+            let series = sparse_series();
+            let count = series.len();
+            let mut charges = Vec::new();
+            let GridOutcome::Reduced(groups) = expanding_request(Some(aggregation))
+                .evaluate(series, &Deadline::default(), &mut |expanded| {
+                    charges.push(expanded);
+                    Ok(())
+                })
+                .unwrap()
+            else {
+                panic!("a fused request answers Reduced");
+            };
+            assert_eq!(groups.len(), count, "{kind:?}");
+            assert!(
+                charges.len() >= 3,
+                "{kind:?}: one charge per chunk: {charges:?}"
+            );
+            assert_eq!(
+                charges.iter().sum::<usize>(),
+                count * (STEPS - 1),
+                "{kind:?}: everything held past the one raw sample each"
+            );
+        }
+    }
+
+    /// A budget stops a fused accumulation at the chunk that crosses it, not
+    /// once every group is whole.
+    #[test]
+    fn a_budget_stops_a_fused_accumulation_at_the_chunk_that_crosses_it() {
+        for aggregation in per_series_aggregations() {
+            let kind = aggregation.kind;
+            let budget = SampleBudget::new(EVALUATE_CHUNK_WORK / 2);
+            let err = expanding_request(Some(aggregation))
+                .evaluate(sparse_series(), &Deadline::default(), &mut |expanded| {
+                    budget.charge(expanded)
+                })
+                .err()
+                .unwrap_or_else(|| panic!("{kind:?}: over budget"));
+            assert!(
+                matches!(err, QueryError::TooManySamples { .. }),
+                "{kind:?}: {err}"
+            );
+            assert!(
+                budget.loaded() <= EVALUATE_CHUNK_WORK + STEPS,
+                "{kind:?}: stopped after the first chunk, not the whole grid: {}",
+                budget.loaded()
+            );
+        }
+    }
+
     /// A fused request folds chunk by chunk, as a shard folds its own series:
     /// the answer is the one fold over every series' output would give.
     #[test]
@@ -1066,9 +1180,7 @@ mod evaluate_chunk_tests {
             let request = expanding_request(Some(aggregation.clone()));
             let series = sparse_series();
             let GridOutcome::Reduced(chunked) = request
-                .evaluate(series.clone(), &Deadline::default(), &mut |_| {
-                    panic!("a fused request keeps only its groups, which the caller charges")
-                })
+                .evaluate(series.clone(), &Deadline::default(), &mut |_| Ok(()))
                 .unwrap()
             else {
                 panic!("a fused request answers Reduced");
@@ -1080,13 +1192,15 @@ mod evaluate_chunk_tests {
             let want = match aggregation.strategy() {
                 PushdownStrategy::Reduce => {
                     let mut partials = SteppedPartialGroups::new(kind);
-                    partials.accumulate(None, whole);
-                    partials.finalize()
+                    partials
+                        .accumulate(None, whole, &Deadline::default())
+                        .unwrap();
+                    partials.finalize(&Deadline::default()).unwrap()
                 }
                 _ => {
                     let mut selection = SteppedSelection::new(aggregation);
                     selection.apply(whole, &Deadline::default()).unwrap();
-                    selection.finalize().unwrap()
+                    selection.finalize(&Deadline::default()).unwrap()
                 }
             };
             assert_eq!(rendered(chunked), rendered(want), "{kind:?}");
