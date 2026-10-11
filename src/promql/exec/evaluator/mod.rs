@@ -394,7 +394,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             evaluation_ts: system_time_to_millis(stmt.end),
             lookback_delta_ms: duration_ms(stmt.lookback_delta),
             step_ms: duration_ms(stmt.interval),
-            deadline: Default::default(),
+            deadline: self.deadline,
         };
 
         self.evaluate_with_context(&stmt.expr, ctx)

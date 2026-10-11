@@ -1780,7 +1780,7 @@ mod tests {
             evaluation_ts: query_time_ms,
             step_ms: 0,
             lookback_delta_ms: 0,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         let result = evaluator
@@ -1896,7 +1896,7 @@ mod tests {
             evaluation_ts: end_time_ms,
             step_ms: 60_000,
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         let result = evaluator.evaluate_call(&call, &ctx, false).unwrap();
@@ -1950,7 +1950,7 @@ mod tests {
             evaluation_ts: end_time_ms,
             step_ms: 60_000,
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
         let result = evaluator.evaluate_call(&call, &ctx, false).unwrap();
         match result {
@@ -2091,7 +2091,7 @@ mod tests {
             evaluation_ts,
             step_ms: 15_000,
             lookback_delta_ms: 5_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         let pipeline_result = evaluator.evaluate_expr(&expr, &ctx, false).unwrap();
@@ -2306,7 +2306,7 @@ mod tests {
             evaluation_ts: query_time,
             step_ms: 0, // ??
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
         let result = evaluator
             .evaluate_matrix_selector(&matrix_selector, &ctx, true)
@@ -2375,7 +2375,7 @@ mod tests {
             evaluation_ts: query_end,
             lookback_delta_ms: 300_000,
             step_ms: 0,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         let result_start = evaluator
@@ -3448,7 +3448,7 @@ mod tests {
             evaluation_ts: eval_time_ms,
             step_ms: 0, // instant query context
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
         let result = evaluator.evaluate_subquery(&subquery, &ctx);
 
@@ -3500,7 +3500,7 @@ mod tests {
             evaluation_ts: eval_time_ms,
             step_ms: 0,
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         let result = evaluator.evaluate_subquery(&subquery, &ctx).unwrap();
@@ -4917,7 +4917,7 @@ mod tests {
             evaluation_ts: 120_000,
             step_ms: 30_000,
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
         evaluator.evaluate_with_context(&expr, ctx).unwrap();
 
@@ -4963,7 +4963,7 @@ mod tests {
             evaluation_ts: start_ms,
             step_ms,
             lookback_delta_ms: 300_000,
-            deadline: Default::default(),
+            ..Default::default()
         };
 
         // `Local` is the baseline: no preload, so every step evaluates live.
@@ -5964,7 +5964,7 @@ mod tests {
                     evaluation_ts: 60_000,
                     step_ms: 30_000,
                     lookback_delta_ms: 30_000,
-                    deadline: Default::default(),
+                    ..Default::default()
                 };
                 if answer != GridAnswer::Local {
                     evaluator.preload_for_range(&expr, &base).unwrap();

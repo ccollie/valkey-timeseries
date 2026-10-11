@@ -244,7 +244,7 @@ pub fn evaluate_range(
         evaluation_ts: end_ms,
         lookback_delta_ms,
         step_ms,
-        deadline: Default::default(),
+        deadline,
     };
     // Before planning, so the tree that is preloaded and the tree that is
     // stepped over are the same narrowed one: see `derived_filters`.
@@ -265,12 +265,8 @@ pub fn evaluate_range(
         deadline.check()?;
 
         let ctx = crate::promql::EvalContext {
-            query_start: start_ms,
-            query_end: end_ms,
             evaluation_ts: t,
-            lookback_delta_ms,
-            step_ms,
-            deadline: Default::default(),
+            ..range_ctx
         };
 
         let result = evaluator
