@@ -90,6 +90,15 @@ impl ProfileWindow {
         Self { start_ms, end_ms }
     }
 
+    /// The smallest window covering both: what one profile of a selector
+    /// read over each of them must cover.
+    pub fn hull(self, other: Self) -> Self {
+        Self::new(
+            self.start_ms.min(other.start_ms),
+            self.end_ms.max(other.end_ms),
+        )
+    }
+
     /// Whether a profile over this window counts `series`: its retained span
     /// meets the window. Looser than "has a sample in it" only for a series
     /// whose gap spans the whole window, which costs a push-down, never a
