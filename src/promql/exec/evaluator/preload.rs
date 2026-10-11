@@ -5,6 +5,7 @@
 use super::subquery::subquery_key;
 use super::*;
 use crate::promql::utils::subquery_step_ms;
+use itertools::Itertools;
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     #[cfg(test)]
@@ -492,9 +493,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             sample_timestamps: grid.sample_timestamps,
         };
 
-        let mut resolved = window_ends.clone();
-        resolved.dedup();
-        (request.window_ends() == resolved).then_some((request, window_ends))
+        let derives_same = window_ends
+            .iter()
+            .copied()
+            .dedup()
+            .eq(request.window_ends_iter());
+        derives_same.then_some((request, window_ends))
     }
 
     /// A rollup or fused request's answer as per-entry `(step, value)` points,

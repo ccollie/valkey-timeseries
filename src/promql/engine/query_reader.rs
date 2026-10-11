@@ -226,7 +226,13 @@ impl From<GridSeries> for GridOutcome {
 impl GridRequest {
     /// The window ends to evaluate at, in ascending order.
     pub(in crate::promql) fn window_ends(&self) -> Vec<i64> {
-        grid_window_ends(
+        self.window_ends_iter().collect()
+    }
+
+    /// [`Self::window_ends`] without collecting them, for a caller that only
+    /// walks or compares them once.
+    pub(in crate::promql) fn window_ends_iter(&self) -> impl Iterator<Item = Timestamp> + use<> {
+        grid_window_ends_iter(
             self.step_ms,
             self.query_start,
             self.query_end,
@@ -246,7 +252,11 @@ impl GridRequest {
     /// The span of raw samples this request's windows cover, or `None` when it
     /// describes no windows at all.
     pub(in crate::promql) fn fetch_bounds(&self) -> Option<(Timestamp, Timestamp)> {
-        grid_fetch_bounds(&self.window_ends(), self.backward_ms())
+        // Only the first and last ends matter: walk them, never collect them.
+        let mut ends = self.window_ends_iter();
+        let first = ends.next()?;
+        let last = ends.last().unwrap_or(first);
+        Some(fetch_span(first, last, self.backward_ms()))
     }
 
     /// Apply the per-series stage — stepped selection, or the rollup — to raw
@@ -543,10 +553,21 @@ pub(in crate::promql) fn grid_window_ends(
     query_end: Timestamp,
     range_end_ms: Timestamp,
 ) -> Vec<Timestamp> {
-    if step_ms <= 0 {
-        return vec![range_end_ms];
-    }
-    crate::promql::time::step_times(query_start, query_end, step_ms).collect()
+    grid_window_ends_iter(step_ms, query_start, query_end, range_end_ms).collect()
+}
+
+/// [`grid_window_ends`], uncollected: the one definition of a request's
+/// windows, so a caller that only walks them need not allocate them.
+pub(in crate::promql) fn grid_window_ends_iter(
+    step_ms: i64,
+    query_start: Timestamp,
+    query_end: Timestamp,
+    range_end_ms: Timestamp,
+) -> impl Iterator<Item = Timestamp> + use<> {
+    let single = (step_ms <= 0).then_some(range_end_ms);
+    let stepped =
+        (step_ms > 0).then(|| crate::promql::time::step_times(query_start, query_end, step_ms));
+    single.into_iter().chain(stepped.into_iter().flatten())
 }
 
 /// The inclusive `[start, end]` span of raw samples `window_ends` covers, for
@@ -560,7 +581,11 @@ pub(in crate::promql) fn grid_fetch_bounds(
     backward_ms: i64,
 ) -> Option<(Timestamp, Timestamp)> {
     let (&first, &last) = (window_ends.first()?, window_ends.last()?);
-    Some((first.saturating_sub(backward_ms).saturating_add(1), last))
+    Some(fetch_span(first, last, backward_ms))
+}
+
+fn fetch_span(first: Timestamp, last: Timestamp, backward_ms: i64) -> (Timestamp, Timestamp) {
+    (first.saturating_sub(backward_ms).saturating_add(1), last)
 }
 
 /// What a data source made of a [`GridRequest`]. Every variant tells the
@@ -818,6 +843,42 @@ mod evaluate_chunk_tests {
             .into_iter()
             .map(|s| (s.labels.to_string(), s.points.len()))
             .collect()
+    }
+
+    /// The uncollected window ends, and the bounds walked from them, are exactly
+    /// what the collected ends give — at a single evaluation, an empty grid, a
+    /// one-step grid, and a grid that ends against `i64::MAX`.
+    #[test]
+    fn walked_window_ends_and_bounds_match_the_collected_ones() {
+        let shapes = [
+            (1_000, 0, 9_000, 9_000),
+            (0, 0, 9_000, 4_000),
+            (-1, 0, 9_000, 4_000),
+            (1_000, 9_000, 0, 0),
+            (1_000, 5_000, 5_000, 5_000),
+            (10, i64::MAX - 25, i64::MAX, i64::MAX),
+        ];
+        for (step_ms, query_start, query_end, range_end_ms) in shapes {
+            let request = GridRequest {
+                step_ms,
+                query_start,
+                query_end,
+                range_end_ms,
+                ..stepped_request()
+            };
+            let collected = request.window_ends();
+            let shape = format!("{step_ms} {query_start}..={query_end} @{range_end_ms}");
+            assert_eq!(
+                request.window_ends_iter().collect::<Vec<_>>(),
+                collected,
+                "{shape}"
+            );
+            assert_eq!(
+                request.fetch_bounds(),
+                grid_fetch_bounds(&collected, request.backward_ms()),
+                "{shape}"
+            );
+        }
     }
 
     /// Chunking is invisible: every series comes out once, in order, exactly as from
