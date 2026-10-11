@@ -21,11 +21,11 @@
 //! no charge of its own: it ships a series raw whenever the grid would be the
 //! larger, so the expansion happens, and is charged, on the coordinator.
 
-use crate::promql::engine::admission::{charge_in_flight, release_in_flight};
+use crate::promql::engine::admission::{ADMISSION, Admission};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SampleBudget {
     /// 0 means unlimited.
     limit: usize,
@@ -35,6 +35,14 @@ pub struct SampleBudget {
     in_flight_limit: usize,
     /// What this budget added to the process-wide count, given back when it is dropped.
     in_flight: AtomicUsize,
+    /// Where the process-wide count is kept: this node's [`ADMISSION`], or a test's own.
+    admission: &'static Admission,
+}
+
+impl Default for SampleBudget {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl SampleBudget {
@@ -48,11 +56,32 @@ impl SampleBudget {
     /// the ones whose samples are held for the work's whole length. Not for a read whose
     /// samples go on to a query budget that charges them again.
     pub fn counted(limit: usize, in_flight_limit: usize) -> Self {
+        Self::counted_against(&ADMISSION, limit, in_flight_limit)
+    }
+
+    /// [`Self::counted`], against `admission` rather than this node's: for a test that
+    /// drives the process-wide count, which on [`ADMISSION`] would refuse every other test's
+    /// queries while it did.
+    #[cfg(test)]
+    pub(crate) fn counted_in(
+        admission: &'static Admission,
+        limit: usize,
+        in_flight_limit: usize,
+    ) -> Self {
+        Self::counted_against(admission, limit, in_flight_limit)
+    }
+
+    fn counted_against(
+        admission: &'static Admission,
+        limit: usize,
+        in_flight_limit: usize,
+    ) -> Self {
         Self {
             limit,
             loaded: AtomicUsize::new(0),
             in_flight_limit,
             in_flight: AtomicUsize::new(0),
+            admission,
         }
     }
 
@@ -77,7 +106,8 @@ impl SampleBudget {
         if self.in_flight_limit > 0 && samples > 0 {
             // Recorded before the check, so `Drop` gives back exactly what was added.
             self.in_flight.fetch_add(samples, Ordering::Relaxed);
-            charge_in_flight(samples, self.in_flight_limit)?;
+            self.admission
+                .charge_in_flight(samples, self.in_flight_limit)?;
         }
         Ok(())
     }
@@ -101,7 +131,7 @@ impl Drop for SampleBudget {
     fn drop(&mut self) {
         let held = *self.in_flight.get_mut();
         if held > 0 {
-            release_in_flight(held);
+            self.admission.release_in_flight(held);
         }
     }
 }
@@ -158,14 +188,14 @@ mod tests {
     /// budget are refused together, and a finished one gives its samples back.
     #[test]
     fn counted_budgets_share_the_process_wide_limit() {
-        use crate::promql::engine::admission::samples_in_flight;
-        // Unit tests share the process-wide count, so this checks what it adds and leaves
-        // behind rather than absolute values, and uses a limit far above anything else's.
-        let base = samples_in_flight();
-        let limit = base + 1_000_000_000;
-        let first = SampleBudget::counted(0, limit);
+        // Its own count: 700 million samples on `ADMISSION` would refuse every concurrent
+        // test's query, at the default limit of 200 million.
+        static COUNTS: Admission = Admission::new();
+        let limit = 1_000_000_000;
+        let first = SampleBudget::counted_in(&COUNTS, 0, limit);
         first.charge(700_000_000).unwrap();
-        let second = SampleBudget::counted(0, limit);
+        assert_eq!(COUNTS.samples_in_flight(), 700_000_000);
+        let second = SampleBudget::counted_in(&COUNTS, 0, limit);
         let err = second
             .charge(400_000_000)
             .expect_err("together past the limit");
@@ -178,8 +208,9 @@ mod tests {
 
         drop(second);
         drop(first);
-        assert!(
-            samples_in_flight() < base + 1_000,
+        assert_eq!(
+            COUNTS.samples_in_flight(),
+            0,
             "dropped budgets give their samples back"
         );
 

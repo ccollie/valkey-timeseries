@@ -25,65 +25,98 @@ use crate::promql::model::{QueryValue, RangeSample};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-/// Samples held, across the node, by budgets that count toward the process-wide limit.
-static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-
-/// The last sampled `used_memory / maxmemory`, as `f32` bits: 0 with no `maxmemory`.
-static MEMORY_RATIO: AtomicU32 = AtomicU32::new(0);
-
-/// Samples currently held by counted budgets.
-pub(crate) fn samples_in_flight() -> usize {
-    IN_FLIGHT.load(Ordering::Relaxed)
+/// The state the process-wide limits are checked against: the samples counted budgets hold,
+/// and the last sampled memory use.
+///
+/// One per node, [`ADMISSION`], which every query and shard read shares. A test that drives
+/// the counts — charging past a limit, or faking memory pressure — makes its own instead:
+/// unit tests run in parallel in one process, and doing it to [`ADMISSION`] refuses every
+/// other test's queries meanwhile, since they run at the default limits.
+#[derive(Debug)]
+pub(crate) struct Admission {
+    /// Samples held by budgets that count toward the process-wide limit.
+    in_flight: AtomicUsize,
+    /// The last sampled `used_memory / maxmemory`, as `f32` bits: 0 with no `maxmemory`.
+    memory_ratio: AtomicU32,
 }
 
-/// Add `samples` to the process-wide count; fail once it passes `limit` (0: no limit). The
-/// samples are added either way: the caller releases what it added when it is done.
-pub(super) fn charge_in_flight(samples: usize, limit: usize) -> QueryResult<()> {
-    let total = IN_FLIGHT
-        .fetch_add(samples, Ordering::Relaxed)
-        .saturating_add(samples);
-    if limit > 0 && total > limit {
-        return Err(QueryError::Overloaded(format!(
-            "{}: PromQL queries would hold {total} > {limit} samples \
-             (ts-promql-max-samples-in-flight)",
-            error_consts::PROMQL_OVERLOADED_ERROR
-        )));
+/// This node's admission state.
+pub(crate) static ADMISSION: Admission = Admission::new();
+
+impl Admission {
+    pub(crate) const fn new() -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            memory_ratio: AtomicU32::new(0),
+        }
     }
-    Ok(())
+
+    /// Samples currently held by counted budgets.
+    pub(crate) fn samples_in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Relaxed)
+    }
+
+    /// Add `samples` to the process-wide count; fail once it passes `limit` (0: no limit).
+    /// The samples are added either way: the caller releases what it added when it is done.
+    pub(super) fn charge_in_flight(&self, samples: usize, limit: usize) -> QueryResult<()> {
+        let total = self
+            .in_flight
+            .fetch_add(samples, Ordering::Relaxed)
+            .saturating_add(samples);
+        if limit > 0 && total > limit {
+            return Err(QueryError::Overloaded(format!(
+                "{}: PromQL queries would hold {total} > {limit} samples \
+                 (ts-promql-max-samples-in-flight)",
+                error_consts::PROMQL_OVERLOADED_ERROR
+            )));
+        }
+        Ok(())
+    }
+
+    /// Give back samples an earlier [`Self::charge_in_flight`] added.
+    pub(super) fn release_in_flight(&self, samples: usize) {
+        self.in_flight.fetch_sub(samples, Ordering::Relaxed);
+    }
+
+    fn store_memory_ratio(&self, ratio: f32) {
+        self.memory_ratio.store(ratio.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Fail if the last sampled memory use is at or past `limit_percent` of `maxmemory`
+    /// (0: no limit).
+    pub(crate) fn check_memory(&self, limit_percent: u32) -> QueryResult<()> {
+        if limit_percent == 0 {
+            return Ok(());
+        }
+        let ratio = f32::from_bits(self.memory_ratio.load(Ordering::Relaxed));
+        let percent = (ratio * 100.0) as u32;
+        if percent >= limit_percent {
+            return Err(QueryError::Overloaded(format!(
+                "{}: memory use is {percent}% of maxmemory, at or past \
+                 ts-promql-max-memory-percent ({limit_percent}%)",
+                error_consts::PROMQL_OVERLOADED_ERROR
+            )));
+        }
+        Ok(())
+    }
 }
 
-/// Give back samples an earlier [`charge_in_flight`] added.
-pub(super) fn release_in_flight(samples: usize) {
-    IN_FLIGHT.fetch_sub(samples, Ordering::Relaxed);
+/// Samples currently held by this node's counted budgets.
+pub(crate) fn samples_in_flight() -> usize {
+    ADMISSION.samples_in_flight()
 }
 
 /// Sample the server's memory use. Main thread only: the server computes the ratio from
 /// state its own thread owns.
 pub(crate) fn sample_memory() {
     let ratio = unsafe { valkey_module::raw::RedisModule_GetUsedMemoryRatio.unwrap()() };
-    store_memory_ratio(ratio);
+    ADMISSION.store_memory_ratio(ratio);
 }
 
-fn store_memory_ratio(ratio: f32) {
-    MEMORY_RATIO.store(ratio.to_bits(), Ordering::Relaxed);
-}
-
-/// Fail if the last sampled memory use is at or past `limit_percent` of `maxmemory`
+/// Fail if this node's last sampled memory use is at or past `limit_percent` of `maxmemory`
 /// (0: no limit).
 pub(crate) fn check_memory(limit_percent: u32) -> QueryResult<()> {
-    if limit_percent == 0 {
-        return Ok(());
-    }
-    let ratio = f32::from_bits(MEMORY_RATIO.load(Ordering::Relaxed));
-    let percent = (ratio * 100.0) as u32;
-    if percent >= limit_percent {
-        return Err(QueryError::Overloaded(format!(
-            "{}: memory use is {percent}% of maxmemory, at or past \
-             ts-promql-max-memory-percent ({limit_percent}%)",
-            error_consts::PROMQL_OVERLOADED_ERROR
-        )));
-    }
-    Ok(())
+    ADMISSION.check_memory(limit_percent)
 }
 
 // The reply's size, estimated from the RESP the reply writers emit. Generous rather than
@@ -149,29 +182,31 @@ pub(crate) fn check_reply_size(bytes: usize, limit: usize) -> QueryResult<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn set_memory_ratio_for_test(ratio: f32) {
-    store_memory_ratio(ratio);
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::Sample;
 
     #[test]
     fn memory_is_refused_at_and_past_the_limit_only() {
-        // Tests share the static: keep to one test that writes it.
-        set_memory_ratio_for_test(0.0);
-        assert!(check_memory(90).is_ok(), "no maxmemory reads as 0");
-        set_memory_ratio_for_test(0.899);
-        assert!(check_memory(90).is_ok());
-        set_memory_ratio_for_test(0.9);
-        let err = check_memory(90).unwrap_err();
+        // Its own state: at 90% on `ADMISSION`, every concurrent test's query would be
+        // refused, since they run at the default 90% limit.
+        let admission = Admission::new();
+        assert!(
+            admission.check_memory(90).is_ok(),
+            "no maxmemory reads as 0"
+        );
+        admission.store_memory_ratio(0.899);
+        assert!(admission.check_memory(90).is_ok());
+        admission.store_memory_ratio(0.9);
+        let err = admission.check_memory(90).unwrap_err();
         assert!(matches!(err, QueryError::Overloaded(_)), "{err}");
         assert!(err.ends_query());
         assert!(err.to_string().contains("90% of maxmemory"), "{err}");
-        assert!(check_memory(0).is_ok(), "0 disables the check");
-        set_memory_ratio_for_test(0.0);
+        assert!(admission.check_memory(0).is_ok(), "0 disables the check");
+        assert!(
+            ADMISSION.check_memory(90).is_ok(),
+            "the node's own state is untouched"
+        );
     }
 
     #[test]

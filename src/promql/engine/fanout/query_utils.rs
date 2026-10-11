@@ -615,13 +615,12 @@ mod tests {
     /// samples it goes on to ship, and gives them back when it is dropped.
     #[test]
     fn an_instant_read_counts_toward_samples_in_flight_until_its_budget_drops() {
-        use crate::promql::engine::admission::samples_in_flight;
-        // Unit tests share the process-wide count: measure what this adds, against a limit
-        // far above anything else's.
-        let base = samples_in_flight();
+        use crate::promql::engine::admission::Admission;
+        // Its own count, so the totals are exact and no other test's queries see them.
+        static COUNTS: Admission = Admission::new();
         let read = INSTANT_CHARGE_BATCH * 3 + 7;
 
-        let budget = SampleBudget::counted(0, base + 1_000_000_000);
+        let budget = SampleBudget::counted_in(&COUNTS, 0, 1_000_000_000);
         let mut samples = ChargedSamples::new(&budget);
         for i in 0..read {
             samples.push(i).unwrap();
@@ -629,12 +628,12 @@ mod tests {
         // An aggregation that reduces the read to one value still holds the read.
         let reduced: usize = samples.finish().unwrap().into_iter().sum();
         assert!(reduced > 0);
-        assert!(samples_in_flight() >= base + read, "charged while held");
+        assert_eq!(COUNTS.samples_in_flight(), read, "charged while held");
         drop(budget);
-        assert!(samples_in_flight() < base + read, "given back when dropped");
+        assert_eq!(COUNTS.samples_in_flight(), 0, "given back when dropped");
 
         // A node whose in-flight limit is already taken refuses the read.
-        let full = SampleBudget::counted(0, 1);
+        let full = SampleBudget::counted_in(&COUNTS, 0, 1);
         let mut samples = ChargedSamples::new(&full);
         let refused = (0..INSTANT_CHARGE_BATCH).try_for_each(|i| samples.push(i));
         let err = refused
