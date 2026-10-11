@@ -11,7 +11,7 @@ use crate::common::threads::LockGil;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::acl::get_fanout_user;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
-use crate::fanout::fanout_command::FanoutResponseCallback;
+use crate::fanout::fanout_command::{FanoutProgress, FanoutResponseCallback};
 use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
 use crate::fanout::serialization::Serializable;
@@ -28,6 +28,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 use valkey_module::{
     Context, DetachedContext, MODULE_CONTEXT, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
@@ -65,6 +66,19 @@ impl InFlightRequest {
             })
     }
 
+    /// Count one target's answer, after which the fan-out stands at `progress`. Returns whether
+    /// the request is finished with: its last remote target has answered and the fan-out has
+    /// completed, so the deadline timer must be stopped and the request dropped.
+    ///
+    /// The last answer can leave the fan-out [`FanoutProgress::Pending`] — its decode is queued
+    /// on the worker lane, or the local share still is. The timer then stays armed, so a lane
+    /// that cannot get to that work in time still ends the fan-out at its deadline; firing
+    /// after the fan-out completed, it is a no-op that drops the request. Stopping it here
+    /// instead left the fan-out, and a caller waiting on it, at the mercy of the lane's queue.
+    fn settle(&self, progress: FanoutProgress) -> bool {
+        self.rpc_done() == Ok(1) && progress == FanoutProgress::Done
+    }
+
     /// Stop the pending timeout timer. Only for a timer that has *not* fired:
     /// the firing timer is consumed by `on_request_timeout` itself, and stopping
     /// it from inside its own callback double-frees its data (see there).
@@ -82,8 +96,8 @@ impl InFlightRequest {
         self.targets.get(&sender)
     }
 
-    /// Delivers one remote target's answer to the fan-out. Returns whether it was accepted, i.e.
-    /// whether it counts toward completing the request.
+    /// Delivers one remote target's answer to the fan-out. Returns where the fan-out stands if
+    /// the answer was accepted, i.e. counts toward completing the request; `None` if not.
     ///
     /// Only the first answer from each remote target counts. A message from a node that is not
     /// a remote target, or a second one from a target that already answered, used to be
@@ -95,7 +109,7 @@ impl InFlightRequest {
         ctx: &Context,
         resp: FanoutResult<&[u8]>,
         sender_id: *const c_char,
-    ) -> bool {
+    ) -> Option<FanoutProgress> {
         let sender = NodeId::from_raw(sender_id);
         let Some(target_node) = self
             .get_target_node_opt(sender_id)
@@ -105,18 +119,17 @@ impl InFlightRequest {
                 "cluster rpc: ignoring response for request {} from unknown sender {sender}",
                 self.id
             ));
-            return false;
+            return None;
         };
         if !lock(&self.responded).insert(sender) {
             ctx.log_warning(&format!(
                 "cluster rpc: ignoring duplicate response for request {} from {sender}",
                 self.id
             ));
-            return false;
+            return None;
         }
 
-        (self.response_handler)(resp, target_node);
-        true
+        Some((self.response_handler)(resp, target_node))
     }
 
     /// Deliver the fanout deadline to the response handler.
@@ -130,7 +143,7 @@ impl InFlightRequest {
     /// blocked-client timeout. A timeout ends the whole fanout regardless of the
     /// node it is reported against.
     fn deliver_timeout(&self) {
-        (self.response_handler)(Err(FanoutError::timeout()), &placeholder_node());
+        let _ = (self.response_handler)(Err(FanoutError::timeout()), &placeholder_node());
     }
 }
 
@@ -216,12 +229,10 @@ fn dispatch_send_failure(ctx: &Context, request_id: u64, target_node_id: *const 
     });
 }
 
-fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
-    if let Ok(v) = request.rpc_done()
-        && v == 1
-    {
-        // Every shard answered before the deadline: the timer is still pending
-        // and this is the one place it is stopped.
+fn finish_inflight_request(ctx: &Context, request: &InFlightRequest, progress: FanoutProgress) {
+    if request.settle(progress) {
+        // Every shard answered and the fan-out completed before the deadline: the
+        // timer is still pending and this is the one place it is stopped.
         request.cancel_timer(ctx);
         let map = INFLIGHT_REQUESTS.pin();
         map.remove(&request.id);
@@ -457,11 +468,15 @@ fn cluster_fingerprint_matches(ctx: &DetachedContext, expected: u64) -> bool {
 /// cluster-map check (for `CLUSTER NODES`) and the handler itself, for as long
 /// as its keyspace/index work needs (see `FanoutCommand::get_local_response`).
 /// Request decoding and response encoding to happen with the GIL released.
+///
+/// `received` is when the request arrived, before it waited in the lane's queue: a
+/// request's time budget counts from then (see `FanoutCommand::time_budget`).
 fn process_request_message(
     header: FanoutMessageHeader,
     handler: RequestHandlerCallback,
     request_buf: &[u8],
     sender_id: NodeId,
+    received: Instant,
 ) {
     let request_id = header.request_id;
 
@@ -491,7 +506,7 @@ fn process_request_message(
 
     // The handler re-selects `db` and resolves `user` on every GIL acquisition
     // (`FanoutContext::lock`); the context tells it which ones.
-    let fanout_ctx = FanoutContext::new(header.user, header.db);
+    let fanout_ctx = FanoutContext::new(header.user, header.db).received_at(received);
     match handler(&fanout_ctx, request_buf, &mut dest) {
         Ok(()) => {
             let ctx = MODULE_CONTEXT.lock_gil();
@@ -612,8 +627,9 @@ extern "C" fn on_request_received(
     let (request_id, db) = (header.request_id, header.db);
 
     // A blocking thread: the handler takes the GIL (R1 in `common::threads`).
+    let received = Instant::now();
     let queued = PEER_REQUEST_EXECUTOR.try_spawn(move || {
-        process_request_message(header, handler, &buf, sender);
+        process_request_message(header, handler, &buf, sender, received);
     });
     if queued.is_err() {
         // Answer now rather than leave the requester waiting out its timeout.
@@ -623,12 +639,12 @@ extern "C" fn on_request_received(
     }
 }
 
-/// Runs `f` against an in-flight request. `f` reports whether it delivered an answer that
-/// counts (see [`InFlightRequest::handle_response`]); only then is the request's outstanding
-/// count decremented.
+/// Runs `f` against an in-flight request. `f` reports where the fan-out stands if it delivered
+/// an answer that counts (see [`InFlightRequest::handle_response`]); only then is the request's
+/// outstanding count decremented.
 fn with_inflight_request<F>(ctx: &Context, request_id: u64, f: F)
 where
-    F: FnOnce(&Context, &InFlightRequest) -> bool,
+    F: FnOnce(&Context, &InFlightRequest) -> Option<FanoutProgress>,
 {
     let map = INFLIGHT_REQUESTS.pin();
     let Some(request) = map.get(&request_id) else {
@@ -638,8 +654,8 @@ where
         return;
     };
 
-    if f(ctx, request) {
-        finish_inflight_request(ctx, request);
+    if let Some(progress) = f(ctx, request) {
+        finish_inflight_request(ctx, request, progress);
     }
 }
 
@@ -766,6 +782,7 @@ mod tests {
                 if let Err(err) = res {
                     seen.lock().unwrap().push(err.kind);
                 }
+                FanoutProgress::Done
             }),
             outstanding: AtomicU64::new(1),
             timer_id: 0,
@@ -785,6 +802,26 @@ mod tests {
         let req = request(HashSet::from_iter([remote]), Arc::clone(&seen));
         req.deliver_timeout();
         assert_eq!(*seen.lock().unwrap(), vec![ErrorKind::Timeout]);
+    }
+
+    #[test]
+    fn the_last_answer_keeps_the_timer_while_the_fanout_is_pending() {
+        let req = request(HashSet::default(), Arc::default());
+        req.outstanding.store(2, Ordering::Release);
+        // Not the last answer: the other target is still owed, whatever the fan-out says.
+        assert!(!req.settle(FanoutProgress::Done));
+        // The last answer, with its decode (or the local share) still queued on the lane:
+        // only the deadline timer can end the fan-out if the lane never gets there.
+        assert!(!req.settle(FanoutProgress::Pending));
+        assert_eq!(req.outstanding.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn the_last_answer_stops_the_timer_once_the_fanout_is_done() {
+        let req = request(HashSet::default(), Arc::default());
+        assert!(req.settle(FanoutProgress::Done));
+        // Anything after the last answer is not counted again.
+        assert!(!req.settle(FanoutProgress::Done));
     }
 
     #[test]

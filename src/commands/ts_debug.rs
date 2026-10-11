@@ -276,6 +276,25 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
     Ok(())
 }
 
+/// The longest `HOLD_FANOUT_LANE` takes: long enough for any deadline test, short enough that
+/// a mistyped argument does not leave a node unable to answer its peers.
+const MAX_LANE_HOLD_MS: u64 = 60_000;
+
+/// `TS._DEBUG HOLD_FANOUT_LANE <milliseconds>`: replies with how many workers it occupied.
+fn hold_fanout_lane(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
+    let millis = args.next_u64()?;
+    args.done()?;
+    if millis == 0 || millis > MAX_LANE_HOLD_MS {
+        return Err(ValkeyError::String(format!(
+            "TSDB: hold must be between 1 and {MAX_LANE_HOLD_MS} milliseconds"
+        )));
+    }
+    let workers = hold_request_lane(Duration::from_millis(millis))
+        .map_err(|rejected| ValkeyError::String(format!("TSDB: {rejected}")))?;
+    reply_with_usize(ctx, workers);
+    Ok(())
+}
+
 /// Main entry point for TS._DEBUG command.
 ///
 /// The whole command surface is gated on `debug-mode`, which is off by default: these

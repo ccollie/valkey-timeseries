@@ -164,6 +164,10 @@ pub const READ_BLOCKING_NOT_ALLOWED: &str = "TSDB: blocking TS.READ (with BLOCK)
 /// TS.QUERY / TS.QUERYRANGE always reply from a query worker, so they block the
 /// client, and they cannot evaluate inline instead: the evaluation waits on
 /// selector reads that need the module lock the calling thread already holds.
+/// A fan-out share stopped because its requester's time budget ran out: the requester
+/// has already answered its client without it.
+pub const FANOUT_REQUESTER_GAVE_UP: &str =
+    "TSDB: fan-out request abandoned: the requester's time budget ran out";
 pub const PROMQL_BLOCKING_NOT_ALLOWED: &str = "TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context";
 // CONDITION is an additive extension with no reference text to match; the wording follows the
 // clause-named style of the probed constants above. A bad operator reuses
@@ -179,6 +183,11 @@ pub const PROMQL_MAX_POINTS_PER_SERIES_ERROR: &str =
     "the query returns a series with more points than the configured max points per series limit";
 pub const PROMQL_TOO_MANY_SAMPLES_ERROR: &str =
     "query processing would load too many samples into memory";
+/// The node refuses PromQL work for load, not for anything the query asked: all running
+/// queries together hold `ts-promql-max-samples-in-flight` samples, or the server's memory
+/// use is past `ts-promql-max-memory-percent` of `maxmemory`. Retrying later can succeed.
+pub const PROMQL_OVERLOADED_ERROR: &str = "PromQL query refused while the node is overloaded";
+pub const PROMQL_REPLY_TOO_LARGE_ERROR: &str = "the query's reply would be too large";
 
 // TS.QUERYLABELS
 pub const UNKNOWN_QUERY_LABELS_SUBTYPE: &str =
