@@ -1163,9 +1163,9 @@ fn test_promoted_members_fold_a_chunk_at_a_time() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
     let mut grid = ShardGrid::new(&request, &ends);
-    grid.add(windows.clone());
+    grid.add(windows.clone()).unwrap();
     assert!(
-        matches!(grid.staged, Staged::Partials(_)),
+        matches!(grid.staged, GridSink::Partials(_)),
         "a fused reduction keeps partials, never per-series output"
     );
     let chunks = std::cell::Cell::new(0);
@@ -1200,7 +1200,7 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     let (request, windows) = promoted_expansion();
     let ends = request.window_ends();
     let mut grid = ShardGrid::new(&request, &ends);
-    grid.add(windows);
+    grid.add(windows).unwrap();
     let err = grid.finish(|| true).expect_err("the requester gave up");
     assert!(
         err.to_string()
@@ -1212,7 +1212,7 @@ fn test_promotion_stops_when_the_requester_gives_up() {
     let (request, mut windows) = promoted_expansion();
     windows.retain(|s| s.samples.len() > 1);
     let mut grid = ShardGrid::new(&request, &ends);
-    grid.add(windows);
+    grid.add(windows).unwrap();
     assert!(grid.finish(|| true).is_ok());
 }
 
@@ -1737,7 +1737,7 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
 
         let mut grid = ShardGrid::new(&request, &ends);
         for batch in windows.chunks(7) {
-            grid.add(batch.to_vec());
+            grid.add(batch.to_vec()).unwrap();
         }
         let split = grid.finish(|| false).unwrap();
 

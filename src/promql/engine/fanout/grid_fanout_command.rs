@@ -43,12 +43,10 @@ use crate::promql::engine::fanout::type_conversions::{
     decode_pushdown_kind, range_sample_from_proto, range_sample_to_proto, wrong_payload,
 };
 use crate::promql::engine::query_reader::{
-    GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, SteppedPoint, SteppedSeries,
-    grid_window_ends,
+    GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
+    SteppedSeries, execution_error, grid_window_ends,
 };
 use crate::promql::engine::sample_budget::SampleBudget;
-use crate::promql::exec::aggregations::PushdownStrategy;
-use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSelection};
 use crate::promql::functions::RollupKind;
 use crate::promql::generated::{
     AggregationKind as ProtoAggregationKind, GridAggregation as ProtoGridAggregation,
@@ -59,7 +57,7 @@ use crate::promql::generated::{
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::model::RangeSample;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count};
-use crate::promql::{EvalLabels, EvaluationError, QueryError, QueryResult};
+use crate::promql::{EvalLabels, QueryError, QueryResult};
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
 use std::time::Duration;
@@ -153,20 +151,14 @@ pub(in crate::promql) struct GridFanoutCommand {
     max_series: u64,
     max_points_per_series: u64,
     timeout: Duration,
-    /// Stepped series from the shards, for an unfused request without a
-    /// rollup. Series are shard-local, so these accumulate by concatenation.
-    stepped: Vec<SteppedSeries>,
-    /// Rolled-up series from the shards, for an unfused rollup request.
-    rolled: Vec<RangeSample<EvalLabels>>,
+    /// What the shards staged, in the request's shape: per-series entries, a
+    /// reduction's per-`(group, step)` partials, or a selection's per-step
+    /// candidates. Series are shard-local, so entries accumulate by
+    /// concatenation; partials and candidates merge.
+    sink: GridSink,
     /// Raw spans a shard chose to ship instead, run through the per-series
     /// stage by [`Self::into_result`].
     raw: Vec<RangeSample<EvalLabels>>,
-    /// Per-`(group, step)` states from the shards, for a request fused with a
-    /// reduction. `None` otherwise.
-    partials: Option<SteppedPartialGroups>,
-    /// Per-step candidates from the shards, for a request fused with a
-    /// selecting or counting operator. `None` otherwise.
-    selection: Option<SteppedSelection>,
     /// A peer refused the operation as unknown: it runs an older build that
     /// has no grid push-down (a rolling upgrade). The caller then evaluates
     /// without it, over the selector operations every build has.
@@ -204,14 +196,8 @@ impl GridFanoutCommand {
         max_points_per_series: u64,
         timeout: Duration,
     ) -> Self {
-        let (partials, selection) = match request.aggregation.as_ref() {
-            Some(agg) if agg.strategy() == PushdownStrategy::Reduce => {
-                (Some(SteppedPartialGroups::new(agg.kind)), None)
-            }
-            Some(agg) => (None, Some(SteppedSelection::new(agg.clone()))),
-            None => (None, None),
-        };
         let window_ends = request.window_ends();
+        let sink = GridSink::for_request(&request);
         Self {
             matchers,
             request,
@@ -219,11 +205,8 @@ impl GridFanoutCommand {
             max_series,
             max_points_per_series,
             timeout,
-            stepped: Vec::new(),
-            rolled: Vec::new(),
+            sink,
             raw: Vec::new(),
-            partials,
-            selection,
             unsupported_peer: false,
         }
     }
@@ -253,76 +236,25 @@ impl GridFanoutCommand {
     /// evaluator charges at least that many to the query's budget once it has
     /// the result, so a request over the limit on its own is refused at the
     /// chunk that crosses it rather than after the whole grid is built.
-    pub fn into_result(
-        mut self,
-        deadline: &Deadline,
-        max_samples: usize,
-    ) -> QueryResult<GridOutcome> {
-        let raw = std::mem::take(&mut self.raw);
-        let stepped = std::mem::take(&mut self.stepped);
-        let rolled = std::mem::take(&mut self.rolled);
-        let selection = self.selection.take();
-        let partials = self.partials.take();
-        let request = &self.request;
-        let window_ends = &self.window_ends;
-        let shard_output = || {
-            if request.rollup.is_some() {
-                GridSeries::Rolled(rolled)
-            } else {
-                GridSeries::Stepped(stepped)
-            }
-        };
-        let execution = |e: EvaluationError| QueryError::Execution(e.to_string());
-
-        if let Some(mut selection) = selection {
-            // Fused with a selecting or counting operator: the shards'
-            // outputs are candidates; whatever arrived raw or un-selected is
-            // run through the operator here and joins them.
-            let unselected = shard_output().into_step_values();
-            if !unselected.is_empty() {
-                selection.apply(unselected).map_err(execution)?;
-            }
-            request.per_series_chunked(window_ends, raw, deadline, |output, _| {
-                selection
-                    .apply(output.into_step_values())
-                    .map_err(execution)
-            })?;
-            return selection
-                .finalize()
-                .map(GridOutcome::Reduced)
-                .map_err(execution);
-        }
-
-        if let Some(mut partials) = partials {
-            // Fused: fold in whatever arrived un-grouped, then finalize every
-            // (group, step).
-            let modifier = request
-                .aggregation
-                .as_ref()
-                .and_then(|agg| agg.modifier.as_ref());
-            let ungrouped = shard_output().into_step_values();
-            if !ungrouped.is_empty() {
-                partials.accumulate(modifier, ungrouped);
-            }
-            request.per_series_chunked(window_ends, raw, deadline, |output, _| {
-                partials.accumulate(modifier, output.into_step_values());
-                Ok(())
-            })?;
-            return Ok(GridOutcome::Reduced(partials.finalize()));
-        }
-
-        let mut output = shard_output();
+    pub fn into_result(self, deadline: &Deadline, max_samples: usize) -> QueryResult<GridOutcome> {
+        let Self {
+            request,
+            window_ends,
+            raw,
+            mut sink,
+            ..
+        } = self;
         let budget = SampleBudget::new(max_samples);
-        budget.charge(output.points())?;
-        request.per_series_chunked(window_ends, raw, deadline, |chunk, _| {
-            budget.charge(chunk.points())?;
-            output.append(chunk);
-            Ok(())
+        if let GridSink::Series(output) = &sink {
+            budget.charge(output.points())?;
+        }
+        request.per_series_chunked(&window_ends, raw, deadline, |chunk, _| {
+            if sink.keeps_output() {
+                budget.charge(chunk.points())?;
+            }
+            sink.take(&request, chunk).map_err(execution_error)
         })?;
-        Ok(match output {
-            GridSeries::Stepped(series) => GridOutcome::Stepped(series),
-            GridSeries::Rolled(series) => GridOutcome::Rolled(series),
-        })
+        sink.finish().map_err(execution_error)
     }
 }
 
@@ -422,81 +354,66 @@ impl FanoutCommand for GridFanoutCommand {
         // series are the shard's per-step picks or counts. A response carrying
         // the wrong list would be folded in twice, or grouped when the query
         // asked for series.
-        match self.partials.as_mut() {
-            Some(partials) => {
-                if !resp.series.is_empty() {
-                    return Err(wrong_payload(
-                        target,
-                        resp.series.len(),
-                        "series",
-                        "a grid query fused with a reduction",
-                        "partial states",
-                    ));
-                }
-                for mut partial in resp.partials {
-                    let labels = resolver.resolve(&mut partial).map_err(malformed)?;
-                    let state = decode_peer_partial(
-                        partial.state,
-                        target,
-                        "a grid query fused with a reduction",
-                    )?;
-                    partials.merge(partial.step_ts, labels, state);
+        if let GridSink::Partials(partials) = &mut self.sink {
+            if !resp.series.is_empty() {
+                return Err(wrong_payload(
+                    target,
+                    resp.series.len(),
+                    "series",
+                    "a grid query fused with a reduction",
+                    "partial states",
+                ));
+            }
+            for mut partial in resp.partials {
+                let labels = resolver.resolve(&mut partial).map_err(malformed)?;
+                let state = decode_peer_partial(
+                    partial.state,
+                    target,
+                    "a grid query fused with a reduction",
+                )?;
+                partials.merge(partial.step_ts, labels, state);
+            }
+        } else {
+            if !resp.partials.is_empty() {
+                return Err(wrong_payload(
+                    target,
+                    resp.partials.len(),
+                    "partial states",
+                    "a grid query not fused with a reduction",
+                    "series",
+                ));
+            }
+            // Decoded into the stage's own output shape whatever the shard
+            // ran over it: a selection's candidates are its per-step picks,
+            // which the sink reads from either form alike.
+            let mut output = self.request.empty_output();
+            for mut series in resp.series {
+                let labels = resolver.resolve(&mut series).map_err(malformed)?;
+                let points = decode_columns(&self.window_ends, &series).map_err(|why| {
+                    FanoutError::custom(format!(
+                        "TSDB: peer {} returned a malformed grid series: {why}",
+                        target.socket_address,
+                    ))
+                })?;
+                match &mut output {
+                    GridSeries::Rolled(rolled) => rolled.push(RangeSample {
+                        labels,
+                        samples: points
+                            .map(|(step_ts, _, value)| Sample::new(step_ts, value))
+                            .collect(),
+                    }),
+                    GridSeries::Stepped(stepped) => stepped.push(SteppedSeries {
+                        labels,
+                        points: points
+                            .map(|(step_ts, sample_ts, value)| SteppedPoint {
+                                step_ts,
+                                sample: Sample::new(sample_ts, value),
+                            })
+                            .collect(),
+                    }),
                 }
             }
-            None => {
-                if !resp.partials.is_empty() {
-                    return Err(wrong_payload(
-                        target,
-                        resp.partials.len(),
-                        "partial states",
-                        "a grid query not fused with a reduction",
-                        "series",
-                    ));
-                }
-                let mut candidates = Vec::new();
-                for mut series in resp.series {
-                    let labels = resolver.resolve(&mut series).map_err(malformed)?;
-                    let points: Vec<(i64, i64, f64)> = decode_columns(&self.window_ends, &series)
-                        .map_err(|why| {
-                            FanoutError::custom(format!(
-                                "TSDB: peer {} returned a malformed grid series: {why}",
-                                target.socket_address,
-                            ))
-                        })?
-                        .collect();
-                    if self.selection.is_some() {
-                        candidates.push(RangeSample {
-                            labels,
-                            samples: points
-                                .into_iter()
-                                .map(|(step_ts, _, value)| Sample::new(step_ts, value))
-                                .collect(),
-                        });
-                    } else if self.request.rollup.is_some() {
-                        self.rolled.push(RangeSample {
-                            labels,
-                            samples: points
-                                .into_iter()
-                                .map(|(step_ts, _, value)| Sample::new(step_ts, value))
-                                .collect(),
-                        });
-                    } else {
-                        self.stepped.push(SteppedSeries {
-                            labels,
-                            points: points
-                                .into_iter()
-                                .map(|(step_ts, sample_ts, value)| SteppedPoint {
-                                    step_ts,
-                                    sample: Sample::new(sample_ts, value),
-                                })
-                                .collect(),
-                        });
-                    }
-                }
-                if let Some(selection) = self.selection.as_mut() {
-                    selection.merge(candidates);
-                }
-            }
+            self.sink.merge(&self.request, output);
         }
 
         for raw in resp.raw {
@@ -594,7 +511,7 @@ fn shard_response(
     windows: Vec<RangeSample<EvalLabels>>,
 ) -> ValkeyResult<GridQueryResponse> {
     let mut grid = ShardGrid::new(request, window_ends);
-    grid.add(windows);
+    grid.add(windows)?;
     grid.finish(|| false)
 }
 
@@ -612,7 +529,7 @@ fn shard_response(
 /// a long window answers at every step, and promotion is decided on wire
 /// bytes, which a group of many sparse members wins however much they expand.
 /// That output is never kept: under a fused reduction every staged series is
-/// folded into its group's partials as it is staged ([`Staged::Partials`]),
+/// folded into its group's partials as it is staged ([`GridSink::Partials`]),
 /// promoted spans a chunk at a time ([`GridRequest::per_series_chunked`]). What
 /// outlives a chunk is the partials, which are the response itself, so nothing
 /// here needs charging beyond the raw samples the read charged.
@@ -624,35 +541,21 @@ pub(super) struct ShardGrid<'a> {
     request: &'a GridRequest,
     window_ends: &'a [i64],
     raw: Vec<RangeSample<EvalLabels>>,
-    staged: Staged,
+    /// What the shard keeps of the series it stages, in the request's shape.
+    /// Per-series output lands here only from series [`ships_raw`] keeps, so
+    /// it is never larger than their spans; a fused aggregation folds it as
+    /// it arrives and keeps only its groups or picks.
+    staged: GridSink,
     staged_groups: FingerprintHashSet,
-}
-
-/// What a shard keeps of the series it stages.
-enum Staged {
-    /// Their per-series output, which is what the response carries: for an
-    /// unfused request, or one fused with a selecting or counting operator
-    /// (which [`respond`] runs over all of it at once). Only series that
-    /// [`ships_raw`] keeps land here, so it is never larger than their spans.
-    Series(GridSeries),
-    /// The per-`(group, step)` partials of a fused reduction, folded into as
-    /// each series is staged: the per-series output is dropped once folded.
-    Partials(SteppedPartialGroups),
 }
 
 impl<'a> ShardGrid<'a> {
     pub(super) fn new(request: &'a GridRequest, window_ends: &'a [i64]) -> Self {
-        let staged = match request.aggregation.as_ref() {
-            Some(agg) if agg.strategy() == PushdownStrategy::Reduce => {
-                Staged::Partials(SteppedPartialGroups::new(agg.kind))
-            }
-            _ => Staged::Series(request.empty_output()),
-        };
         Self {
             request,
             window_ends,
             raw: Vec::new(),
-            staged,
+            staged: GridSink::for_request(request),
             staged_groups: FingerprintHashSet::default(),
         }
     }
@@ -664,7 +567,9 @@ impl<'a> ShardGrid<'a> {
     /// holds at least as many samples as there are steps ([`ships_raw`]), so
     /// its stage output is never the larger. A sparse series that would expand
     /// waits for [`Self::finish`], which ships it raw or folds it.
-    pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) {
+    ///
+    /// Fails only when a fused selection refuses its parameter.
+    pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) -> ValkeyResult<()> {
         let (raw, staged): (Vec<_>, Vec<_>) = windows
             .into_iter()
             .partition(|series| ships_raw(self.window_ends, series));
@@ -675,8 +580,11 @@ impl<'a> ShardGrid<'a> {
         ));
         if !staged.is_empty() {
             let output = self.request.per_series(self.window_ends, staged);
-            self.staged.take(self.request, output);
+            self.staged
+                .take(self.request, output)
+                .map_err(|e| ValkeyError::String(e.to_string()))?;
         }
+        Ok(())
     }
 
     /// The response, once every batch is in: the raw spans that stay raw, and
@@ -706,31 +614,20 @@ impl<'a> ShardGrid<'a> {
         let staged = &mut self.staged;
         request
             .per_series_chunked(window_ends, folded, &Deadline::default(), |output, _| {
-                staged.take(request, output);
+                staged.take(request, output).map_err(execution_error)?;
                 if expired() {
                     return Err(QueryError::Timeout);
                 }
                 Ok(())
             })
-            .map_err(|_| ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP))?;
+            .map_err(|err| match err {
+                // Only `expired` says so: the chunker's own deadline here is
+                // the default, which never fires.
+                QueryError::Timeout => ValkeyError::Str(error_consts::FANOUT_REQUESTER_GAVE_UP),
+                QueryError::Execution(message) => ValkeyError::String(message),
+                other => ValkeyError::String(other.to_string()),
+            })?;
         respond(request, window_ends, raw, self.staged)
-    }
-}
-
-impl Staged {
-    /// Keep one batch of per-series output: append it, or fold it into the
-    /// partials and drop it.
-    fn take(&mut self, request: &GridRequest, output: GridSeries) {
-        match self {
-            Staged::Series(series) => series.append(output),
-            Staged::Partials(partials) => {
-                let modifier = request
-                    .aggregation
-                    .as_ref()
-                    .and_then(|agg| agg.modifier.as_ref());
-                partials.accumulate(modifier, output.into_step_values());
-            }
-        }
     }
 }
 
@@ -739,7 +636,7 @@ fn respond(
     request: &GridRequest,
     window_ends: &[i64],
     raw: Vec<RangeSample<EvalLabels>>,
-    staged: Staged,
+    staged: GridSink,
 ) -> ValkeyResult<GridQueryResponse> {
     // One symbol table for every labelled element of the response.
     let mut symbols = SymbolTableBuilder::default();
@@ -749,9 +646,9 @@ fn respond(
         .collect::<ValkeyResult<Vec<_>>>()?;
 
     let staged = match staged {
-        Staged::Series(series) => series,
+        GridSink::Series(series) => series,
         // A fused reduction: the partials were folded as the series were staged.
-        Staged::Partials(groups) => {
+        GridSink::Partials(groups) => {
             let partials = groups
                 .into_partials()
                 .map(|(step_ts, labels, state)| {
@@ -772,26 +669,21 @@ fn respond(
                 labels: Some(symbols.finish()),
             });
         }
-    };
-
-    if let Some(aggregation) = request.aggregation.as_ref()
-        && aggregation.strategy() != PushdownStrategy::Reduce
-    {
-        // A selecting or counting operator: run it per step over this
-        // shard's series and ship its output as candidates — k series per
-        // step, or one count per value — rather than every series.
-        let mut selection = SteppedSelection::new(aggregation.clone());
-        return selection
-            .apply(staged.into_step_values())
-            .and_then(|()| selection.finalize())
-            .map_err(|e| ValkeyError::String(e.to_string()))
-            .map(|selected| GridQueryResponse {
+        // A fused selecting or counting operator: its picks over everything
+        // staged here — k series per step, or one count per value — ship as
+        // candidates rather than every series.
+        GridSink::Selection(selection) => {
+            let selected = selection
+                .finalize()
+                .map_err(|e| ValkeyError::String(e.to_string()))?;
+            return Ok(GridQueryResponse {
                 series: columnar_series(window_ends, selected, &mut symbols),
                 partials: Vec::new(),
                 raw,
                 labels: Some(symbols.finish()),
             });
-    }
+        }
+    };
 
     let series = match staged {
         GridSeries::Stepped(series) => series

@@ -8,7 +8,7 @@ use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSele
 use crate::promql::exec::pipeline::for_each_step_sample;
 use crate::promql::functions::RollupKind;
 use crate::promql::{
-    EvaluationError, ExprResult, PromqlResult, QueryError, QueryOptions,
+    EvalResult, EvaluationError, ExprResult, PromqlResult, QueryError, QueryOptions,
     model::{InstantSample, RangeSample},
 };
 use orx_parallel::Par;
@@ -214,6 +214,15 @@ impl GridSeries {
     }
 }
 
+impl From<GridSeries> for GridOutcome {
+    fn from(series: GridSeries) -> Self {
+        match series {
+            GridSeries::Stepped(series) => GridOutcome::Stepped(series),
+            GridSeries::Rolled(series) => GridOutcome::Rolled(series),
+        }
+    }
+}
+
 impl GridRequest {
     /// The window ends to evaluate at, in ascending order.
     pub(in crate::promql) fn window_ends(&self) -> Vec<i64> {
@@ -327,15 +336,15 @@ impl GridRequest {
     /// shard chose to ship raw. It runs the same kernels a shard would, so the
     /// answer does not depend on who did the work.
     ///
-    /// The stage runs a chunk at a time ([`Self::per_series_chunked`]). Output
-    /// that is kept — an unfused request's — is passed to `charge` as each
-    /// chunk is built, for what it holds beyond the raw samples it was built
-    /// from: one sample in a long window answers at every step, so the output
-    /// can dwarf the span that was charged for it, and a query over its budget
-    /// must stop at the chunk that crossed it rather than after building the
-    /// whole grid. A fused request's per-series output is folded into its
-    /// groups chunk by chunk and dropped, so only the groups outlive a chunk;
-    /// those are the caller's to charge.
+    /// The stage runs a chunk at a time ([`Self::per_series_chunked`]), each
+    /// chunk's output into a [`GridSink`]. Output that is kept — an unfused
+    /// request's — is passed to `charge` as each chunk is built, for what it
+    /// holds beyond the raw samples it was built from: one sample in a long
+    /// window answers at every step, so the output can dwarf the span that was
+    /// charged for it, and a query over its budget must stop at the chunk that
+    /// crossed it rather than after building the whole grid. A fused request's
+    /// per-series output is folded into its groups chunk by chunk and dropped,
+    /// so only the groups outlive a chunk; those are the caller's to charge.
     pub(in crate::promql) fn evaluate(
         &self,
         series: Vec<RangeSample<EvalLabels>>,
@@ -343,43 +352,14 @@ impl GridRequest {
         charge: &mut dyn FnMut(usize) -> PromqlResult<()>,
     ) -> PromqlResult<GridOutcome> {
         let window_ends = self.window_ends();
-        let Some(aggregation) = self.aggregation.as_ref() else {
-            let mut done = self.empty_output();
-            self.per_series_chunked(&window_ends, series, deadline, |output, read| {
+        let mut sink = GridSink::for_request(self);
+        self.per_series_chunked(&window_ends, series, deadline, |output, read| {
+            if sink.keeps_output() {
                 charge(output.points().saturating_sub(read))?;
-                done.append(output);
-                Ok(())
-            })?;
-            return Ok(match done {
-                GridSeries::Stepped(series) => GridOutcome::Stepped(series),
-                GridSeries::Rolled(series) => GridOutcome::Rolled(series),
-            });
-        };
-        let groups = match aggregation.strategy() {
-            PushdownStrategy::Reduce => {
-                let modifier = aggregation.modifier.as_ref();
-                let mut partials = SteppedPartialGroups::new(aggregation.kind);
-                self.per_series_chunked(&window_ends, series, deadline, |output, _| {
-                    partials.accumulate(modifier, output.into_step_values());
-                    Ok(())
-                })?;
-                partials.finalize()
             }
-            // Applied per chunk, as a shard applies it to its own series: each
-            // chunk's output is a candidate set that `finalize` re-selects from
-            // (or, for counts, adds up).
-            PushdownStrategy::Select | PushdownStrategy::CountValues => {
-                let execution = |e: EvaluationError| QueryError::Execution(e.to_string());
-                let mut selection = SteppedSelection::new(aggregation.clone());
-                self.per_series_chunked(&window_ends, series, deadline, |output, _| {
-                    selection
-                        .apply(output.into_step_values())
-                        .map_err(execution)
-                })?;
-                selection.finalize().map_err(execution)?
-            }
-        };
-        Ok(GridOutcome::Reduced(groups))
+            sink.take(self, output).map_err(execution_error)
+        })?;
+        sink.finish().map_err(execution_error)
     }
 
     /// Run the per-series stage over `series` a chunk at a time, `deadline`
@@ -431,6 +411,100 @@ impl GridRequest {
             None => GridSeries::Stepped(Vec::new()),
         }
     }
+}
+
+/// Where a [`GridRequest`]'s per-series output goes once the stage has made
+/// it: kept, as the entries an unfused request answers with, or folded into
+/// the fused aggregation the request carries and dropped. It is the one fold
+/// for the three places stage output arises — a shard staging its own batches
+/// (`ShardGrid`), a coordinator finishing what its shards sent
+/// (`GridFanoutCommand::into_result`), and a node evaluating a raw span
+/// ([`GridRequest::evaluate`]) — so each is written once and the answer does
+/// not depend on who did the work.
+pub(in crate::promql) enum GridSink {
+    /// Per-series output, kept whole: an unfused request's answer.
+    Series(GridSeries),
+    /// A fused reduction's per-`(group, step)` partials. Output is folded in
+    /// as it arrives, so nothing larger than the groups outlives a batch.
+    Partials(SteppedPartialGroups),
+    /// A fused selecting or counting operator's per-step candidates. Output
+    /// is run through the operator as it arrives and only its picks (or
+    /// counts) are kept; [`Self::finish`] re-selects over their union, as the
+    /// coordinator does over its shards' candidates. The top-k of a union lies
+    /// within the union of the parts' top-k's, and counts add, so the answer
+    /// is the one a single pass over everything would give.
+    Selection(SteppedSelection),
+}
+
+impl GridSink {
+    /// The sink `request`'s output belongs in.
+    pub(in crate::promql) fn for_request(request: &GridRequest) -> Self {
+        match request.aggregation.as_ref() {
+            None => GridSink::Series(request.empty_output()),
+            Some(aggregation) => match aggregation.strategy() {
+                PushdownStrategy::Reduce => {
+                    GridSink::Partials(SteppedPartialGroups::new(aggregation.kind))
+                }
+                PushdownStrategy::Select | PushdownStrategy::CountValues => {
+                    GridSink::Selection(SteppedSelection::new(aggregation.clone()))
+                }
+            },
+        }
+    }
+
+    /// Whether output taken is kept point for point — what a caller bounding
+    /// its memory charges — rather than folded and dropped.
+    pub(in crate::promql) fn keeps_output(&self) -> bool {
+        matches!(self, GridSink::Series(_))
+    }
+
+    /// Take one batch of the stage's output, run here over raw spans. Fails
+    /// only for a selection whose operator refuses its parameter.
+    pub(in crate::promql) fn take(
+        &mut self,
+        request: &GridRequest,
+        output: GridSeries,
+    ) -> EvalResult<()> {
+        match self {
+            GridSink::Series(series) => series.append(output),
+            GridSink::Partials(partials) => Self::fold(partials, request, output),
+            GridSink::Selection(selection) => selection.apply(output.into_step_values())?,
+        }
+        Ok(())
+    }
+
+    /// Take a batch another party already staged — a shard's per-series
+    /// entries, or the candidates its own run of the operator picked — so the
+    /// operator is not run over it again here.
+    pub(in crate::promql) fn merge(&mut self, request: &GridRequest, output: GridSeries) {
+        match self {
+            GridSink::Series(series) => series.append(output),
+            GridSink::Partials(partials) => Self::fold(partials, request, output),
+            GridSink::Selection(selection) => selection.merge(output.into_step_values()),
+        }
+    }
+
+    fn fold(partials: &mut SteppedPartialGroups, request: &GridRequest, output: GridSeries) {
+        let modifier = request
+            .aggregation
+            .as_ref()
+            .and_then(|aggregation| aggregation.modifier.as_ref());
+        partials.accumulate(modifier, output.into_step_values());
+    }
+
+    /// Everything taken, as the request's outcome.
+    pub(in crate::promql) fn finish(self) -> EvalResult<GridOutcome> {
+        Ok(match self {
+            GridSink::Series(series) => series.into(),
+            GridSink::Partials(partials) => GridOutcome::Reduced(partials.finalize()),
+            GridSink::Selection(selection) => GridOutcome::Reduced(selection.finalize()?),
+        })
+    }
+}
+
+/// A kernel's error as the query reports it.
+pub(in crate::promql) fn execution_error(err: EvaluationError) -> QueryError {
+    QueryError::Execution(err.to_string())
 }
 
 /// The most points the per-series stage can produce from `samples` over

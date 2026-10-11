@@ -344,7 +344,7 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     max_series: u64,
     max_points_per_series: u64,
     budget: &SampleBudget,
-    mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>),
+    mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>) -> ValkeyResult<()>,
 ) -> ValkeyResult<()> {
     check_local_memory()?;
     let Some((start_time, end_time)) = grid_fetch_bounds(window_ends, backward_ms) else {
@@ -384,7 +384,7 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
                 return Ok(ControlFlow::Break(()));
             }
             if !windows.is_empty() {
-                sink(windows);
+                sink(windows)?;
             }
             Ok(ControlFlow::Continue(()))
         },
