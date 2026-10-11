@@ -173,12 +173,21 @@ const PROMQL_MAX_SAMPLES_PER_QUERY_MIN: i64 = 0;
 const PROMQL_MAX_SAMPLES_PER_QUERY_MAX: i64 = i64::MAX;
 /// Prometheus' `--query.max-samples` default. 0 = unlimited.
 pub const PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT: i64 = 50_000_000;
+// Four queries at the per-query default: two would leave six of the eight workers unable to
+// run a large query at all. 0 = unlimited.
+pub const PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT: i64 = 4 * PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT;
+pub const PROMQL_MAX_MEMORY_PERCENT_DEFAULT: i64 = 90;
+pub const PROMQL_MAX_REPLY_BYTES_DEFAULT: i64 = 256 * 1024 * 1024;
+// See `check_subquery_cost` for why 20 million. 0 = unlimited.
+pub const PROMQL_MAX_SUBQUERY_STEPS_DEFAULT: i64 = 20_000_000;
 const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
 const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
 const PROMQL_MAX_LOOKBACK_MIN_MS: i64 = 0;
 const PROMQL_MAX_LOOKBACK_MAX_MS: i64 = ONE_YEAR_MS;
-const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 0; // 0 = use lookback-delta
+// 0 = no limit. An hour covers series sampled down to every few minutes; a store of sparser
+// series (hourly, daily) raises it. See `check_requested_lookback` in the command parser.
+pub(crate) const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 60 * 60 * 1000; // 1h
 const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
 const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_MAX_QUERY_DURATION_DEFAULT_MS: i64 = 30 * 1000; // 30s
@@ -1413,6 +1422,10 @@ fn sync_promql_config() {
         cfg.max_points_per_timeseries =
             PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
         cfg.max_samples_per_query = PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed) as usize;
+        cfg.max_samples_in_flight = PROMQL_MAX_SAMPLES_IN_FLIGHT.load(Ordering::Relaxed) as usize;
+        cfg.max_memory_percent = PROMQL_MAX_MEMORY_PERCENT.load(Ordering::Relaxed) as u32;
+        cfg.max_reply_bytes = PROMQL_MAX_REPLY_BYTES.load(Ordering::Relaxed) as usize;
+        cfg.max_subquery_steps = PROMQL_MAX_SUBQUERY_STEPS.load(Ordering::Relaxed) as u64;
         cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
         cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
         cfg.derived_filter_pushdown = PROMQL_DERIVED_FILTER_PUSHDOWN.load(Ordering::Relaxed);
@@ -1495,8 +1508,12 @@ mod tests {
         ("ts-promql-max-response-series", "1000"),
         ("ts-promql-max-points-per-timeseries", "0"),
         ("ts-promql-max-samples-per-query", "50000000"),
+        ("ts-promql-max-samples-in-flight", "200000000"),
+        ("ts-promql-max-memory-percent", "90"),
+        ("ts-promql-max-reply-bytes", "268435456"),
+        ("ts-promql-max-subquery-steps", "20000000"),
         ("ts-promql-lookback-delta", "300000"),
-        ("ts-promql-max-lookback", "0"),
+        ("ts-promql-max-lookback", "3600000"),
         ("ts-promql-max-query-duration", "30000"),
     ];
 
