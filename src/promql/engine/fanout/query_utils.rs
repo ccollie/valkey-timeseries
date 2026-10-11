@@ -9,10 +9,10 @@ use crate::promql::engine::admission;
 use crate::promql::engine::label_profile::{LabelProfile, LabelProfileBuilder};
 use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
-use crate::promql::engine::sample_budget::{SampleBudget, too_many_samples};
+use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{
-    exceeds_max_series, get_snapshot_range, instant_lookback_start_ms, validate_max_points,
-    validate_max_series,
+    decode_within_budget, exceeds_max_series, get_snapshot_range, instant_lookback_start_ms,
+    validate_max_points, validate_max_series,
 };
 use crate::promql::generated::{
     InstantQueryResponse, InstantSample, RangeQueryResponse, RangeSample,
@@ -378,8 +378,8 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
             let candidates = snapshots
                 .into_par_rayon()
                 .map(|(labels, snapshot)| {
-                    if budget.exhausted() {
-                        return Err(too_many_samples(budget.loaded(), budget.limit()).to_string());
+                    if !decode_within_budget(budget, &snapshot).map_err(|err| err.to_string())? {
+                        return Ok(None);
                     }
                     let samples = snapshot.get_range();
                     budget
@@ -541,8 +541,8 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
             let batch = snapshots
                 .into_par_rayon()
                 .map(|(labels, snapshot)| {
-                    if budget.exhausted() {
-                        return Err(too_many_samples(budget.loaded(), budget.limit()).to_string());
+                    if !decode_within_budget(&budget, &snapshot).map_err(|err| err.to_string())? {
+                        return Ok(None);
                     }
                     // Streams against the per-series point limit, so an
                     // over-wide span is rejected having kept at most the

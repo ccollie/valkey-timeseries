@@ -17,13 +17,13 @@ use crate::promql::engine::label_profile::{
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationRequest, GridOutcome, GridRequest,
 };
-use crate::promql::engine::sample_budget::{SampleBudget, too_many_samples, validate_max_samples};
+use crate::promql::engine::sample_budget::{SampleBudget, validate_max_samples};
 use crate::promql::engine::{
     AggregationFanoutCommand, GridFanoutCommand, InstantVectorParams,
     InstantVectorSelectorFanoutCommand, LabelProfileFanoutCommand,
     RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, decode_range_series,
-    exceeds_max_series, get_snapshot_range, instant_lookback_start_ms, validate_max_points,
-    validate_max_series,
+    decode_within_budget, exceeds_max_series, get_snapshot_range, instant_lookback_start_ms,
+    validate_max_points, validate_max_series,
 };
 use crate::promql::{InstantSample, QueryError, QueryOptions, QueryResult, RangeSample};
 use crate::series::chunks::ChunkOps;
@@ -1405,8 +1405,10 @@ fn decode_snapshot_batch(
     series
         .into_par_on(&MATERIALIZE_POOL)
         .filter_map(|(labels, snapshot)| {
-            if budget.exhausted() {
-                return Some(Err(too_many_samples(budget.loaded(), budget.limit())));
+            match decode_within_budget(budget, &snapshot) {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(err) => return Some(Err(err)),
             }
             let samples = match get_snapshot_range(&snapshot, max_points) {
                 Ok(samples) => samples,

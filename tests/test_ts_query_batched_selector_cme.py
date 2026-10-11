@@ -405,6 +405,38 @@ class TestBatchedCopyBudgetCluster(ValkeyTimeSeriesClusterTestCase):
         finally:
             self.set_config(MAX_SAMPLES_CONFIG, '50000000')
 
+    def test_sample_limit_spent_exactly_skips_series_empty_in_the_window(self):
+        """A shard read already at its limit skips a series whose chunk only
+        straddles the window, rather than refusing with `1 > 1`: on the raw
+        range read and on the grid push-down. All the series are on one shard,
+        so its budget is the one spent; decode order is the pool's, so each
+        query is repeated to reach the order where the sample is charged first."""
+        shard = self.new_client_for_primary(1)
+        hit = f'gap:hit:{{{WIDE_TAG}}}'
+        shard.execute_command('TS.CREATE', hit, 'METRIC', 'gap{k="hit"}')
+        shard.execute_command('TS.ADD', hit, (T0 + 50) * 1000, 1)
+        for n in range(16):
+            key = f'gap:miss{n}:{{{WIDE_TAG}}}'
+            shard.execute_command('TS.CREATE', key, 'METRIC', f'gap{{k="miss{n}"}}')
+            shard.execute_command('TS.MADD', key, T0 * 1000, 1, key, (T0 + 100) * 1000, 2)
+        # The window (T0+30, T0+70] holds one sample in all.
+        at = T0 + 70
+        client = self.new_client_for_primary(0)
+        try:
+            for limit in ('1', '2', '0'):
+                self.set_config(MAX_SAMPLES_CONFIG, limit)
+                for _ in range(10):
+                    result = self.instant_query('gap[40s]', at)
+                    assert result.is_matrix() and len(result.result) == 1, limit
+                    assert len(result.result[0].values) == 1, limit
+
+                    result = QueryResult.from_raw(client.execute_command(
+                        'TS.QUERYRANGE', 'count_over_time(gap[40s])',
+                        'START', str(at * 1000), 'END', str(at * 1000), 'STEP', '10s'))
+                    assert len(result.result) == 1, limit
+        finally:
+            self.set_config(MAX_SAMPLES_CONFIG, '50000000')
+
     def test_shard_limit_refusals_reach_the_client_verbatim(self):
         """A shard refusing its share for a query limit must not collapse into
         the generic fan-out failure: its message names the limit and both
