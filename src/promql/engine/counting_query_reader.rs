@@ -1088,7 +1088,9 @@ mod tests {
             "1",
             "vector(1)",
             "absent(nonexistent)",
-            "sum_over_time(vector(1)[1h:1s])",
+            // Builds 3 points per evaluation: under the per-evaluation subquery
+            // cap at every limit here, so the result is what is charged.
+            "sum_over_time(vector(1)[3s:1s])",
         ] {
             let err = try_range(reader.clone(), query, 1).expect_err(query);
             assert!(
@@ -1128,6 +1130,46 @@ mod tests {
         run(points).expect("exactly the grid fits");
         let err = run(points - 1).expect_err("one sample short of the grid");
         assert!(err.to_string().contains("too many samples"), "{err}");
+    }
+
+    /// A subquery's result is built whole for each outer step, then reduced by
+    /// the function around it, so the query's own result never sees it. It is
+    /// capped per evaluation — at most what one outer step builds — not summed
+    /// over the outer steps.
+    #[test]
+    fn a_subquerys_materialization_is_capped_per_evaluation() {
+        let (_, reader) = build_reader();
+        let instant = |query: &str, max_samples: usize| {
+            let stmt = EvalStmt {
+                expr: promql_parser::parser::parse(query).unwrap(),
+                start: ms(RANGE_END_MS),
+                end: ms(RANGE_END_MS),
+                interval: Duration::ZERO,
+                lookback_delta: options().lookback_delta,
+            };
+            let options = QueryOptions {
+                max_samples,
+                ..options()
+            };
+            evaluate_instant(reader.clone(), stmt, ms(RANGE_END_MS), options)
+        };
+        // What one evaluation of the subquery builds.
+        let Ok(crate::promql::QueryValue::Matrix(grid)) = instant("vector(1)[1m:1s]", 0) else {
+            panic!("a subquery answers a matrix");
+        };
+        let built: usize = grid.iter().map(|s| s.samples.len()).sum();
+
+        // One point returned, `built` built: the cap is what refuses it.
+        const SUMMED: &str = "sum_over_time(vector(1)[1m:1s])";
+        instant(SUMMED, built).expect("one evaluation's worth fits");
+        let err = instant(SUMMED, built - 1).expect_err("one sample short of the subquery");
+        assert!(err.to_string().contains("too many samples"), "{err}");
+
+        // Every outer step builds it again; only one evaluation's worth counts.
+        try_range(reader.clone(), SUMMED, built).expect("per evaluation, not per query");
+        try_range(reader.clone(), SUMMED, built - 1).expect_err("each evaluation is capped");
+
+        try_range(reader, SUMMED, 0).expect("0 is unlimited");
     }
 
     /// The reply's size is checked as the range result grows, from a floor on
