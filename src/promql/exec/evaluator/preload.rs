@@ -449,13 +449,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// expanded to, or 0 for a pushed-down answer: the grids are charged only
     /// past it, for the holes they add, so the request costs the larger of its
     /// span and its grids.
+    ///
+    /// How much of `charged` each grid may spend: see [`GridCover`].
     pub(super) fn scatter_charged(
         &self,
         window_ends: &[Timestamp],
         entries: Vec<RangeSample<EvalLabels>>,
         charged: usize,
     ) -> EvalResult<Vec<PreloadedGridSeries>> {
-        let mut covered = charged;
+        let mut cover = GridCover::new(charged, &entries);
         entries
             .into_iter()
             .map(|s| {
@@ -463,8 +465,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     window_ends,
                     s.samples.iter().map(|p| (p.timestamp, p.value)),
                 );
-                let used = values.stored_len().min(covered);
-                covered -= used;
+                let used = cover.spend(s.samples.len(), values.stored_len());
                 self.charge_grid(&values, used)?;
                 Ok(PreloadedGridSeries {
                     labels: s.labels,
@@ -858,5 +859,114 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         cache.insert(key, data);
         drop(cache);
         self.note_preloaded();
+    }
+}
+
+/// What has already been charged for a batch of entries, spent on their grids
+/// as [`Evaluator::scatter_charged`] builds them one at a time.
+///
+/// A grid spends only what is left beyond the points of the entries still to
+/// come, which stay live until their own grids are built. So what has been
+/// charged never falls below what is held — the grids built so far and the
+/// points not yet scattered — even when one grid has many more holes than
+/// points (two points far apart, or one pinned by `@` to every step) and would
+/// otherwise spend what still pays for the later entries.
+struct GridCover {
+    /// Charged and not yet spent on a grid.
+    covered: usize,
+    /// The points of the entries not yet scattered.
+    pending: usize,
+}
+
+impl GridCover {
+    fn new(charged: usize, entries: &[RangeSample<EvalLabels>]) -> Self {
+        Self {
+            covered: charged,
+            pending: entries.iter().map(|s| s.samples.len()).sum(),
+        }
+    }
+
+    /// How much of a grid of `stored` slots, built from an entry of `points`,
+    /// is already paid for; the rest is the grid's to charge.
+    fn spend(&mut self, points: usize, stored: usize) -> usize {
+        self.pending -= points;
+        let used = stored.min(self.covered.saturating_sub(self.pending));
+        self.covered -= used;
+        used
+    }
+}
+
+#[cfg(test)]
+mod grid_cover_tests {
+    use super::*;
+    use crate::common::Sample;
+
+    fn entries(points: &[usize]) -> Vec<RangeSample<EvalLabels>> {
+        points
+            .iter()
+            .map(|&n| RangeSample {
+                labels: EvalLabels::empty(),
+                samples: (0..n as i64).map(|t| Sample::new(t, 0.0)).collect(),
+            })
+            .collect()
+    }
+
+    /// Replays a scatter, returning the total charged after each grid and what
+    /// is held then: the grids built so far and the points not yet scattered.
+    fn replay(charged: usize, shapes: &[(usize, usize)]) -> Vec<(usize, usize)> {
+        let points: Vec<usize> = shapes.iter().map(|&(points, _)| points).collect();
+        let mut cover = GridCover::new(charged, &entries(&points));
+        let (mut total, mut grids) = (charged, 0);
+        let mut pending: usize = points.iter().sum();
+        shapes
+            .iter()
+            .map(|&(points, stored)| {
+                total += stored - cover.spend(points, stored);
+                grids += stored;
+                pending -= points;
+                (total, grids + pending)
+            })
+            .collect()
+    }
+
+    /// A first grid with far more holes than points does not spend what still
+    /// pays for the second entry's points: they are held while it is built.
+    #[test]
+    fn a_holey_grid_does_not_spend_what_pays_for_later_points() {
+        // Two points at the ends of a thousand steps, then a dense entry.
+        let steps = replay(1_002, &[(2, 1_000), (1_000, 1_000)]);
+        assert_eq!(steps, vec![(2_000, 2_000), (2_000, 2_000)]);
+    }
+
+    /// A raw span charged beyond the points it rolled up to was dropped once
+    /// evaluated, so the grids may spend it.
+    #[test]
+    fn a_freed_raw_span_pays_for_grids() {
+        let steps = replay(10_000, &[(10, 10), (10, 1_000)]);
+        assert_eq!(steps, vec![(10_000, 20), (10_000, 1_010)]);
+    }
+
+    /// A pushed-down answer whose points were never charged covers nothing:
+    /// every grid is charged in full.
+    #[test]
+    fn uncharged_points_cover_nothing() {
+        let steps = replay(0, &[(2, 1_000), (1_000, 1_000)]);
+        assert_eq!(steps, vec![(1_000, 2_000), (2_000, 2_000)]);
+    }
+
+    /// Whatever the shapes, what has been charged never falls below what is
+    /// held, once the entries' points were charged.
+    #[test]
+    fn charged_never_falls_below_held() {
+        let shapes = [(1, 500), (300, 300), (2, 900), (50, 60), (700, 700), (1, 1)];
+        let points: usize = shapes.iter().map(|&(points, _)| points).sum();
+        for extra in [0, 1, 100, 10_000] {
+            for (step, (total, held)) in replay(points + extra, &shapes).into_iter().enumerate() {
+                assert!(
+                    total >= held,
+                    "extra {extra}, grid {step}: {total} < {held}"
+                );
+            }
+        }
     }
 }
