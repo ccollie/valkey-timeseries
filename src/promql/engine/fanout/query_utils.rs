@@ -28,10 +28,71 @@ use orx_parallel::ParResult;
 use std::ops::ControlFlow;
 use valkey_module::ValkeyResult;
 
+/// How many samples an instant read keeps between charges to its budget. Charging per
+/// sample would cost three atomic updates per series under the module lock, one of them on
+/// the process-wide count every query shares; between charges, [`ChargedSamples::push`]
+/// still refuses a sample the read's own limit has no room for.
+const INSTANT_CHARGE_BATCH: usize = 512;
+
+/// The samples an instant read keeps, charged to `budget` as they are kept: one per matched
+/// series, so the series count is what an instant read holds — and what a pushed-down
+/// aggregation holds on the shard however few groups it ships back.
+struct ChargedSamples<'b, T> {
+    budget: &'b SampleBudget,
+    samples: Vec<T>,
+    uncharged: usize,
+}
+
+impl<'b, T> ChargedSamples<'b, T> {
+    fn new(budget: &'b SampleBudget) -> Self {
+        Self {
+            budget,
+            samples: Vec::new(),
+            uncharged: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Keep `sample`, failing first if the read's limit has no room for it.
+    fn push(&mut self, sample: T) -> ValkeyResult<()> {
+        self.budget
+            .check_ahead(self.uncharged + 1)
+            .map_err(budget_error)?;
+        self.samples.push(sample);
+        self.uncharged += 1;
+        if self.uncharged >= INSTANT_CHARGE_BATCH {
+            self.charge()?;
+        }
+        Ok(())
+    }
+
+    fn charge(&mut self) -> ValkeyResult<()> {
+        let samples = std::mem::take(&mut self.uncharged);
+        self.budget.charge(samples).map_err(budget_error)
+    }
+
+    /// Every sample kept, all of them charged. The charge outlives this: it stays on `budget`.
+    fn finish(mut self) -> ValkeyResult<Vec<T>> {
+        self.charge()?;
+        Ok(self.samples)
+    }
+}
+
+/// A sample-budget refusal as a shard read reports it, in the words the coordinator relays.
+fn budget_error(err: crate::promql::QueryError) -> valkey_module::ValkeyError {
+    valkey_module::ValkeyError::String(err.to_string())
+}
+
 /// This shard's share of an instant-vector selector: the newest sample in the
 /// lookback window of every matched series, read one batch per lock hold. The
 /// head chunk's cached last sample usually answers without a decode, so all of
 /// it runs under the lock.
+///
+/// The samples are charged to `budget` as they are read (see [`local_budget`]); the caller
+/// holds it for as long as it holds them.
 pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
     src: &S,
     selector: SeriesSelector,
@@ -39,6 +100,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
     lookback_delta: u64,
     max_series: u64,
     _max_points_per_series: u64,
+    budget: &SampleBudget,
 ) -> ValkeyResult<InstantQueryResponse> {
     check_local_memory()?;
     // in prometheus, given a timestamp and delta, we select the latest sample in the range
@@ -51,7 +113,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
     // each batch's lock is safe across them: the builder keeps every entry it
     // has keyed alive, so an address cannot be reused by another label.
     let mut symbol_table = symbol_table::SymbolTableBuilder::default();
-    let mut samples = Vec::new();
+    let mut samples = ChargedSamples::new(budget);
     for_each_series(
         src,
         &[selector],
@@ -66,7 +128,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
                     timestamp: sample.timestamp,
                     label_name_refs,
                     label_value_refs,
-                });
+                })?;
                 // Refused below whatever the rest holds: stop opening series.
                 if exceeds_max_series(samples.len(), max_series as usize) {
                     return Ok(ControlFlow::Break(()));
@@ -75,6 +137,7 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
             Ok(ControlFlow::Continue(()))
         },
     )?;
+    let samples = samples.finish()?;
     let symbol_table = symbol_table.finish();
 
     validate_max_series(samples.len(), max_series as usize)
@@ -92,18 +155,23 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
 /// evaluator-native samples so the aggregation operators can be applied to them
 /// directly instead of round-tripping through the wire types. Only the
 /// aggregated result crosses the wire, which is the point of the push-down.
+///
+/// The samples are charged to `budget` as they are read, as for an instant query. The
+/// coordinator only ever counts the aggregated result, so this is the one place the
+/// aggregation's input is counted: the caller holds `budget` until it has aggregated them.
 pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
     src: &S,
     selector: SeriesSelector,
     timestamp: Timestamp,
     lookback_delta: u64,
     max_series: u64,
+    budget: &SampleBudget,
 ) -> ValkeyResult<Vec<EvalSample>> {
     check_local_memory()?;
     // Prometheus selects the latest sample in (ts - delta, ts].
     let start_time = instant_lookback_start_ms(timestamp, lookback_delta as i64);
 
-    let mut samples = Vec::new();
+    let mut samples = ChargedSamples::new(budget);
     for_each_series(
         src,
         &[selector],
@@ -117,7 +185,7 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
                     value: sample.value,
                     timestamp_ms: sample.timestamp,
                     drop_name: false,
-                });
+                })?;
                 // Refused below whatever the rest holds: stop opening series.
                 if exceeds_max_series(samples.len(), max_series as usize) {
                     return Ok(ControlFlow::Break(()));
@@ -126,6 +194,7 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
             Ok(ControlFlow::Continue(()))
         },
     )?;
+    let samples = samples.finish()?;
 
     // Bound the shard's own working set, exactly as the unaggregated instant
     // query does. The coordinator additionally bounds the aggregated result.
@@ -263,6 +332,10 @@ where
 /// the read, after `sink` has seen the batches before it: once every batch is
 /// in, or, for `max_series`, at the batch that takes the count over it (see
 /// [`WindowBounds`]).
+///
+/// The samples are charged to `budget` as they are decoded. `sink` keeps what it makes of
+/// them past this call, so the caller holds `budget` until it has built its response.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     src: &S,
     selector: SeriesSelector,
@@ -270,6 +343,7 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     backward_ms: i64,
     max_series: u64,
     max_points_per_series: u64,
+    budget: &SampleBudget,
     mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>),
 ) -> ValkeyResult<()> {
     check_local_memory()?;
@@ -277,14 +351,13 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
         return Ok(());
     };
 
-    let budget = local_budget();
     let mut bounds = WindowBounds::new(max_series, max_points_per_series);
     for_each_snapshot_batch(
         src,
         selector,
         start_time,
         end_time,
-        &budget,
+        budget,
         |s| EvalLabels::interned(&s.labels),
         |snapshots| {
             let candidates = snapshots
@@ -323,7 +396,11 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
 /// The sample budget for a read this node performs on another node's behalf: this node's
 /// `ts-promql-max-samples-per-query`, counted toward its `ts-promql-max-samples-in-flight`,
 /// since the read's samples are held here for as long as it runs.
-fn local_budget() -> SampleBudget {
+///
+/// Every shard read takes one — range, grid, instant, and the aggregation push-down's input,
+/// which the coordinator never sees — and is held until what the read produced has been
+/// consumed into the response.
+pub(super) fn local_budget() -> SampleBudget {
     let config = promql_config();
     SampleBudget::counted(config.max_samples_per_query, config.max_samples_in_flight)
 }
@@ -514,6 +591,59 @@ mod tests {
 
     fn sample(timestamp: Timestamp, value: f64) -> Sample {
         Sample { timestamp, value }
+    }
+
+    /// An instant read stops at the sample its limit has no room for, before keeping it,
+    /// though it charges only every `INSTANT_CHARGE_BATCH` samples.
+    #[test]
+    fn an_instant_read_is_refused_at_its_sample_limit() {
+        let budget = SampleBudget::new(3);
+        let mut samples = ChargedSamples::new(&budget);
+        for i in 0..3 {
+            samples.push(i).unwrap();
+        }
+        let err = samples.push(3).unwrap_err().to_string();
+        assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
+        assert_eq!(samples.len(), 3, "the refused sample is not kept");
+        assert_eq!(samples.finish().unwrap(), vec![0, 1, 2]);
+        assert_eq!(budget.loaded(), 3);
+    }
+
+    /// The finding this pins: an instant read on another node's behalf — a plain selector,
+    /// or a pushed-down aggregation's input — counts toward this node's
+    /// `ts-promql-max-samples-in-flight` for as long as its budget is held, however few
+    /// samples it goes on to ship, and gives them back when it is dropped.
+    #[test]
+    fn an_instant_read_counts_toward_samples_in_flight_until_its_budget_drops() {
+        use crate::promql::engine::admission::samples_in_flight;
+        // Unit tests share the process-wide count: measure what this adds, against a limit
+        // far above anything else's.
+        let base = samples_in_flight();
+        let read = INSTANT_CHARGE_BATCH * 3 + 7;
+
+        let budget = SampleBudget::counted(0, base + 1_000_000_000);
+        let mut samples = ChargedSamples::new(&budget);
+        for i in 0..read {
+            samples.push(i).unwrap();
+        }
+        // An aggregation that reduces the read to one value still holds the read.
+        let reduced: usize = samples.finish().unwrap().into_iter().sum();
+        assert!(reduced > 0);
+        assert!(samples_in_flight() >= base + read, "charged while held");
+        drop(budget);
+        assert!(samples_in_flight() < base + read, "given back when dropped");
+
+        // A node whose in-flight limit is already taken refuses the read.
+        let full = SampleBudget::counted(0, 1);
+        let mut samples = ChargedSamples::new(&full);
+        let refused = (0..INSTANT_CHARGE_BATCH).try_for_each(|i| samples.push(i));
+        let err = refused
+            .and_then(|()| samples.finish().map(drop))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("ts-promql-max-samples-in-flight"),
+            "{err}"
+        );
     }
 
     /// A series the selector matched that holds samples in the queried span.

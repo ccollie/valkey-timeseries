@@ -26,7 +26,7 @@ use crate::fanout::{
 };
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::Deadline;
-use crate::promql::engine::fanout::query_utils::local_instant_eval_samples;
+use crate::promql::engine::fanout::query_utils::{local_budget, local_instant_eval_samples};
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
     decode_pushdown_kind, wrong_payload,
@@ -250,6 +250,9 @@ impl FanoutCommand for AggregationFanoutCommand {
             return Ok(AggregationQueryResponse::default());
         };
         let series_selector: SeriesSelector = (&selector).try_into()?;
+        // Held to the end, through the aggregation: the coordinator counts only the groups
+        // that come back, so this is all that counts the input while it is held here.
+        let budget = local_budget();
         // Locks per batch of matched series, not for the whole read.
         let samples = local_instant_eval_samples(
             ctx,
@@ -257,6 +260,7 @@ impl FanoutCommand for AggregationFanoutCommand {
             query.timestamp,
             query.lookback_delta,
             query.max_series,
+            &budget,
         )?;
 
         // An unrecognized operator means the coordinator is newer than this
