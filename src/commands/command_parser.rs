@@ -13,7 +13,7 @@ use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
 use crate::join::{AsOfJoinOptions, AsOfJoinStrategy, JoinOptions, JoinType};
 use crate::labels::filters::SeriesSelector;
-use crate::labels::{Label, MAX_LABELS_PER_SERIES, parse_series_selector};
+use crate::labels::{Label, MAX_LABELS_PER_SERIES, parse_series_selector, validate_query_regexes};
 use crate::parser::number::parse_number;
 use crate::parser::{
     metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
@@ -21,7 +21,6 @@ use crate::parser::{
     timestamp::timestamp_error,
 };
 use crate::promql::engine::promql_config::PromqlConfig;
-use crate::promql::engine::validate_query_regexes;
 use crate::promql::{check_query_depth, duration_ms};
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
