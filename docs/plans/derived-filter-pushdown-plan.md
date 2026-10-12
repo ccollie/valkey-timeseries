@@ -292,12 +292,34 @@ generalization, one for tests, half to measure.
 
 Re-checked against the code on 2026-10-11; every item below is settled.
 
-- **In-range profiles — done (2026-10-11), not yet measured.** Landed as steps 1–7
-  below, with two differences from the text. Both local walks needed the check: the
-  single-node executor read (`ReadState::Profile` in `selector_batch_executor.rs`) as
-  well as the shard-side `local_label_profile`. And `derive_filters_in_place` became
-  `pub(crate)`, since it now takes the crate-private `PreloadGrid`. Step 8, the churn
-  benchmark, is still to do. The original text follows as the record of the design.
+- **In-range profiles — done (2026-10-11).** Landed as steps 1–8 below, with two
+  differences from the text. Both local walks needed the check: the single-node
+  executor read (`ReadState::Profile` in `selector_batch_executor.rs`) as well as the
+  shard-side `local_label_profile`. And `derive_filters_in_place` became `pub(crate)`,
+  since it now takes the crate-private `PreloadGrid`. Measured single node, criterion
+  `promql_engine`, three interleaved pairs of two binaries (the commit before the
+  change against the one after, same bench source), Apple M2:
+
+  | case | before | after | after/before per pair |
+  |---|---|---|---|
+  | `churn_join/churned` — `info * on(pod) group_left live{namespace="ns-0"}`, 360 steps | 4.54–5.12 ms | 2.28–2.39 ms | 0.50, 0.45, 0.50 |
+  | `churn_join/steady` — same, no retired generations | 2.30–2.39 ms | 2.30–2.38 ms | 1.01, 0.98, 1.00 |
+  | `churn_join/churned,pushdown=off` | 4.31–4.53 ms | 4.31–4.74 ms | 1.00, 1.03, 1.05 |
+  | `range_query` `a_hundred - b_hundred`, 1000 steps | 16.8–17.9 ms | 16.9–17.7 ms | 1.04, 0.95, 1.03 |
+  | `range_query` `a_hundred and b_hundred{l=~'.*[0-4]$'}` | 5.53–5.68 ms | 5.60–6.13 ms | 0.99, 1.07, 1.09; re-run 1.03, 1.02, 1.00 |
+  | `range_query` `a_hundred and b_hundred{l='notfound'}` | 0.61–0.66 ms | 0.61–0.66 ms | 1.00, 0.92, 1.08 |
+  | `range_query` `rate(a_hundred[1m]) + rate(b_hundred[1m])` | 17.7–19.2 ms | 17.7–19.3 ms | 1.00, 1.03, 1.01 |
+  | `range_query` `a_hundred + on(l) group_right a_one` | 4.91–4.96 ms | 4.88–5.15 ms | 0.99, 0.98, 1.05 |
+
+  The churn fixture is 10 namespaces × 20 pods, plus five retired generations of `live`:
+  over the index `live{namespace="ns-0"}` carries 120 `pod` values, past the 60-value
+  cap, so before the change nothing was derived and `info` was read for all 200 pods.
+  Over the window it carries 20, and `churned` now runs as fast as `steady`. Every
+  shape without churn is within noise. The first `and`-regex pass had one noisy head
+  run (CI 5.7–6.8 ms); three more pairs read 1.00–1.03, and both builds do the same work
+  for it, since all its series are live. Not measured on the cluster harness, where
+  every series spans the range and the change can only show overhead. The original
+  text follows as the record of the design.
 
   Profiling each leaf over the window its reads cover, not the whole index, would drop
   retired series (a rolled-out pod, a region that stopped reporting). That tightens three
