@@ -5,7 +5,7 @@
 //! memory section to walk the term dictionary.
 
 use crate::common::string_interner::InternedString;
-use crate::promql::engine::{admission, query_workers};
+use crate::promql::engine::{admission, query_cache, query_workers};
 use crate::series::index::index_memory_usage;
 use valkey_module::{InfoContext, ValkeyResult};
 use valkey_module_macros::info_command_handler;
@@ -64,9 +64,14 @@ fn memory_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
 /// `ts-promql-max-samples-in-flight`: running totals, not samples resident now. A non-zero,
 /// growing `queries_queued` with `queries_rejected` climbing is the pool being overrun:
 /// either the queries are too slow or there are too few workers for the load.
+///
+/// The `query_cache_*` fields describe the parsed-query cache: `entries` and `bytes` (the
+/// estimated memory charged for them) now, and since startup the `hits` and `misses` of
+/// lookups made while it was enabled and the `evictions` that kept it within its limits.
 #[info_command_handler]
 fn promql_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
     let pool = query_workers::stats();
+    let cache = query_cache::stats();
 
     ctx.builder()
         .add_section("promql")
@@ -75,6 +80,11 @@ fn promql_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
         .field("queries_rejected", pool.rejected)?
         .field("queries_cancelled", query_workers::cancelled_count())?
         .field("samples_in_flight", admission::samples_in_flight() as u64)?
+        .field("query_cache_entries", cache.entries as u64)?
+        .field("query_cache_bytes", cache.bytes as u64)?
+        .field("query_cache_hits", cache.hits)?
+        .field("query_cache_misses", cache.misses)?
+        .field("query_cache_evictions", cache.evictions)?
         .build_section()?
         .build_info()?;
 

@@ -1835,7 +1835,15 @@ fn check_promql_query_text(query: &str, config: &PromqlConfig) -> ValkeyResult<(
 /// 0.11.0 (release, Apple M2), a chain of 4,000 unary minus signs took 54 ms and one of
 /// 16,000 took 0.76 s, and the depth check that refuses both runs only after the parse. The
 /// regex pre-check costs up to about 75 ms on its own.
+///
+/// A query text prepared before, and still cached, is not prepared again: see
+/// [`query_cache`](crate::promql::engine::query_cache).
 fn parse_promql_query(query: &str) -> ValkeyResult<Expr> {
+    crate::promql::engine::query_cache::prepare_cached(query, prepare_promql_query)
+}
+
+/// What [`parse_promql_query`] does for a query that is not cached.
+fn prepare_promql_query(query: &str) -> ValkeyResult<Expr> {
     // Before parsing: the parser compiles every regex matcher without a size limit.
     validate_query_regexes(query).map_err(ValkeyError::String)?;
     // TODO: it may be helpful to return the exact error
