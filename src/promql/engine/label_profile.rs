@@ -170,9 +170,10 @@ impl ProfileWindow {
     }
 
     /// Whether a profile over this window counts `series`: its retained span
-    /// meets the window. Looser than "has a sample in it" only for a series
-    /// whose gap spans the whole window, which costs a push-down, never a
-    /// result.
+    /// meets the window. Looser than "has a sample in it" only where the
+    /// window falls in a gap between visible samples — including the stretch
+    /// from the retention floor to the first one, while an expired prefix is
+    /// still stored — which costs a push-down, never a result.
     pub fn admits(&self, series: &TimeSeries) -> bool {
         series.overlaps_retained(self.start_ms, self.end_ms)
     }

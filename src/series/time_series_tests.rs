@@ -2191,6 +2191,28 @@ mod tests {
     }
 
     #[test]
+    fn test_overlaps_retained_is_looser_from_the_floor_to_the_first_retained_sample() {
+        // Stored {100, 1000} with a floor of 800: the span reads can see starts at the floor,
+        // but the first sample in it is 1000.
+        let mut ts = TimeSeries::new();
+        for t in [100, 1_000] {
+            assert!(ts.add(t, 1.0, None).is_ok());
+        }
+        // Retention is set only now, so no write has trimmed against it yet.
+        ts.retention = Duration::from_millis(200);
+        assert_eq!(ts.get_min_timestamp(), 800);
+        assert_eq!(
+            ts.first_timestamp, 100,
+            "the expired sample is still stored"
+        );
+
+        assert!(ts.overlaps_retained(850, 900));
+        assert!(!ts.has_samples_in_range(850, 900));
+        // Nothing before the floor counts.
+        assert!(!ts.overlaps_retained(100, 799));
+    }
+
+    #[test]
     fn test_overlaps_retained_bounds_has_samples_in_range() {
         // Samples at 0..10 and 1000..1010: the windows inside the gap are where the cheap
         // answer is looser than the decoding one, and nowhere else.

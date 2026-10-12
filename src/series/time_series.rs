@@ -938,7 +938,9 @@ impl TimeSeries {
     /// expired sample the write path has not trimmed yet does not count.
     ///
     /// O(1) and decodes nothing, unlike [`Self::has_samples_in_range`], which it bounds from
-    /// above: it differs only for a series whose gap between two samples spans the window.
+    /// above: it differs only where the window falls in a gap between visible samples,
+    /// including the stretch from the retention floor to the first one while an expired
+    /// prefix is still stored.
     pub fn overlaps_retained(&self, start_ts: Timestamp, end_ts: Timestamp) -> bool {
         !self.is_empty()
             && self.last_timestamp() >= start_ts
