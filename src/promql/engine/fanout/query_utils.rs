@@ -28,6 +28,7 @@ use crate::series::index::{
 use crate::series::{RangeSnapshot, TimeSeries};
 use orx_parallel::Par;
 use orx_parallel::ParResult;
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 use valkey_module::ValkeyResult;
 
@@ -241,7 +242,9 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
 /// No sample is read, and the window is checked without decoding: handing it
 /// to the index walk instead would decode a chunk per series under the lock.
 /// Every matched key is opened, as a read of the same selector would, until
-/// a cap is passed; the walk stops there. Refused before it starts, and
+/// a cap is passed; the walk stops there. A batch's keys are all opened
+/// before the first is stepped, so no batch is larger than the key cap: the
+/// walk opens at most one batch past it. Refused before it starts, and
 /// stopped between series, once `deadline` has passed or this node's memory
 /// is past its limit ([`super::shard_deadline`]).
 pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
@@ -254,30 +257,26 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
     deadline.check().map_err(super::shard_error)?;
     let mut builder = LabelProfileBuilder::new();
     let mut walk = ProfileWalk::new(window, max_series);
+    let batch_size = NonZeroUsize::new(walk.keys_left().min(DEFAULT_SERIES_BATCH_SIZE.get()))
+        .unwrap_or(DEFAULT_SERIES_BATCH_SIZE);
     let mut overflow = false;
-    for_each_series(
-        src,
-        &[selector],
-        None,
-        DEFAULT_SERIES_BATCH_SIZE,
-        |_, series, _| {
-            deadline
-                .checkpoint(SERIES_WORK)
-                .map_err(super::shard_error)?;
-            match walk.step(&series) {
-                ProfileStep::Skip => {}
-                ProfileStep::Stop => {
-                    overflow = true;
-                    return Ok(ControlFlow::Break(()));
-                }
-                // The builder copies what it keeps, so nothing outlives the lock.
-                ProfileStep::Take => {
-                    builder.add_series(series.labels.iter().map(|l| (l.name, l.value)))
-                }
+    for_each_series(src, &[selector], None, batch_size, |_, series, _| {
+        deadline
+            .checkpoint(SERIES_WORK)
+            .map_err(super::shard_error)?;
+        match walk.step(&series) {
+            ProfileStep::Skip => {}
+            ProfileStep::Stop => {
+                overflow = true;
+                return Ok(ControlFlow::Break(()));
             }
-            Ok(ControlFlow::Continue(()))
-        },
-    )?;
+            // The builder copies what it keeps, so nothing outlives the lock.
+            ProfileStep::Take => {
+                builder.add_series(series.labels.iter().map(|l| (l.name, l.value)))
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
     Ok((!overflow).then(|| builder.finish()))
 }
 

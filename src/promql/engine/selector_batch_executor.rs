@@ -1299,6 +1299,10 @@ impl LocalRead {
                     builder,
                     overflow,
                 } => {
+                    // Every key of a batch is opened before the first is
+                    // stepped, so the batch is no larger than the walk may
+                    // still open: the key cap bounds the keys opened.
+                    let share = share.min(walk.keys_left());
                     cursor.next_batch(ctx, share, &mut |_, batch| {
                         for (s, _) in batch.iter() {
                             // The window is checked without decoding: the

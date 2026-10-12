@@ -138,6 +138,19 @@ impl ProfileWalk {
         }
         ProfileStep::Take
     }
+
+    /// How many more keys the walk may open: one past the key cap, so that
+    /// the key which passes it is seen and stops the walk. A caller sizes its
+    /// next batch by this, since every key of a batch is opened before the
+    /// first is stepped. Unbounded without a cap; at least 1 while the walk
+    /// has not stopped.
+    pub fn keys_left(&self) -> usize {
+        if self.key_cap == 0 {
+            usize::MAX
+        } else {
+            (self.key_cap + 1).saturating_sub(self.opened)
+        }
+    }
 }
 
 /// The span of sample time a profile covers, both ends inclusive: a profile
@@ -899,5 +912,30 @@ mod tests {
             assert_eq!(walk.step(&retired), Skip);
         }
         assert_eq!(walk.step(&live), Take);
+    }
+
+    #[test]
+    fn keys_left_sizes_a_batch_to_what_the_walk_may_still_open() {
+        let window = Some(ProfileWindow::new(1_000, 2_000));
+        let retired = series_at(10);
+
+        // A cap of one series is four keys: a batch of five reaches the key
+        // that stops the walk, and nothing past it.
+        let mut walk = ProfileWalk::new(window, 1);
+        let batch = walk.keys_left();
+        assert_eq!(batch, MAX_PROFILED_KEYS_PER_SERIES + 1);
+        let steps: Vec<_> = (0..batch).map(|_| walk.step(&retired)).collect();
+        let (last, before) = steps.split_last().unwrap();
+        assert_eq!(*last, ProfileStep::Stop);
+        assert!(before.iter().all(|s| *s == ProfileStep::Skip), "{steps:?}");
+        assert_eq!(walk.keys_left(), 0);
+
+        // It shrinks as keys are opened.
+        let mut walk = ProfileWalk::new(window, 1);
+        walk.step(&retired);
+        assert_eq!(walk.keys_left(), MAX_PROFILED_KEYS_PER_SERIES);
+
+        // No cap, no bound.
+        assert_eq!(ProfileWalk::new(window, 0).keys_left(), usize::MAX);
     }
 }
