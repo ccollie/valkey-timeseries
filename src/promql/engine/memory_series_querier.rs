@@ -6,7 +6,7 @@ use crate::labels::{Labels, SeriesFingerprint};
 use crate::promql::EvalLabels;
 use crate::promql::engine::QueryReader;
 use crate::promql::engine::label_profile::{
-    LabelProfile, LabelProfileBuilder, ProfileWindow, profiled_series_cap,
+    LabelProfile, LabelProfileBuilder, ProfileStep, ProfileWalk, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_reader::{AggregationOutcome, AggregationRequest};
 use crate::promql::model::InstantSample;
@@ -226,20 +226,19 @@ impl QueryReader for MemorySeriesQuerier {
             .postings
             .postings_for_selectors(&[selector])
             .map_err(|e| QueryError::Execution(e.to_string()))?;
-        let cap = profiled_series_cap(&options);
+        let mut walk = ProfileWalk::new(window, profiled_series_cap(&options));
         let mut builder = LabelProfileBuilder::new();
         for id in ids.iter() {
             let Some(series) = inner.series.get(&id) else {
                 continue;
             };
-            // Only the series the profile describes count against the cap.
-            if !window.is_none_or(|w| w.admits(series)) {
-                continue;
+            match walk.step(series) {
+                ProfileStep::Skip => {}
+                ProfileStep::Stop => return Ok(None),
+                ProfileStep::Take => {
+                    builder.add_series(series.labels.iter().map(|l| (l.name, l.value)))
+                }
             }
-            if builder.series() as usize >= cap {
-                return Ok(None);
-            }
-            builder.add_series(series.labels.iter().map(|l| (l.name, l.value)));
         }
         Ok(Some(builder.finish()))
     }
@@ -248,6 +247,7 @@ impl QueryReader for MemorySeriesQuerier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::promql::engine::label_profile::MAX_PROFILED_KEYS_PER_SERIES;
     use promql_parser::parser::{Expr, parse};
 
     fn selector(query: &str) -> VectorSelector {
@@ -322,5 +322,32 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(windowed.series, 1);
+    }
+
+    /// `n` series of `m` retired at 10 ms, then one live from 1 s on.
+    fn mostly_retired(n: usize) -> MemorySeriesQuerier {
+        let querier = MemorySeriesQuerier::new();
+        for i in 0..n {
+            let retired = Labels::from_pairs(&[("__name__", "m"), ("gen", &i.to_string())]);
+            querier.add_sample(&retired, Sample::new(10, 1.0));
+        }
+        let live = Labels::from_pairs(&[("__name__", "m"), ("gen", "live")]);
+        querier.add_sample(&live, Sample::new(1_000, 1.0));
+        querier
+    }
+
+    #[test]
+    fn retired_series_count_against_the_keys_a_profile_opens() {
+        let m = selector("m");
+        let live = Some(ProfileWindow::new(500, 2_000));
+        // A cap of one series opens at most four keys: three retired and the
+        // live one are profiled, a fourth retired one gives the profile up.
+        let fits = mostly_retired(MAX_PROFILED_KEYS_PER_SERIES - 1);
+        let profile = fits.label_profile(&m, live, options(1)).unwrap().unwrap();
+        assert_eq!(profile.series, 1);
+        assert_eq!(filters(&profile), vec![r#"gen="live""#]);
+
+        let past = mostly_retired(MAX_PROFILED_KEYS_PER_SERIES);
+        assert_eq!(past.label_profile(&m, live, options(1)).unwrap(), None);
     }
 }

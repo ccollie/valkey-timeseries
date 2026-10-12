@@ -300,6 +300,23 @@ class TestPromQLDerivedFilterPushdownLimitsCluster(DerivedFilterPushdownBase):
         expected = {i: _series_points(i) for i in _instances('api')}
         self.assert_steps_exact(got, expected, 'narrowed by live app_info')
 
+    def test_a_mostly_retired_operand_past_the_key_cap_is_read_as_written(self):
+        """A profile's walk opens at most four keys per series it may be
+        built from, retired ones included: sixteen per shard under this
+        limit. Seventeen more retired `app_info` series on one shard pass
+        that, so `app_info` goes unprofiled rather than walked whole, and
+        `mem_usage` is read in full and refused, as with the push-down off."""
+        self.setup_fleet()
+        self.setup_app_info()
+        cluster_client = self.new_cluster_client()
+        for n in range(17):
+            key = f'info:old-{n}:{{h0}}'
+            cluster_client.execute_command(
+                'TS.CREATE', key, 'METRIC', f'app_info{{instance="old-{n}"}}')
+            cluster_client.execute_command('TS.ADD', key, _rfc3339(RETIRED_T0), 1)
+        with pytest.raises(ResponseError, match='max series'):
+            self.range_query('mem_usage and on(instance) app_info')
+
 
 class TestPromQLDerivedFilterPushdownOffLimitsCluster(DerivedFilterPushdownBase):
     """The same limit with the push-down off refuses the wide operand."""

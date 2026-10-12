@@ -12,7 +12,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::label_profile::{
-    LabelProfile, LabelProfileBuilder, ProfileWindow, profiled_series_cap,
+    LabelProfile, LabelProfileBuilder, ProfileStep, ProfileWalk, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationRequest, GridOutcome, GridRequest,
@@ -1078,11 +1078,9 @@ enum ReadState {
         ranges: Vec<RangeSample<EvalLabels>>,
     },
     /// The label profile of the matched series — those with a retained
-    /// sample in `window`, when there is one — up to `cap` of them.
+    /// sample in its window, when there is one — within `walk`'s caps.
     Profile {
-        window: Option<ProfileWindow>,
-        cap: usize,
-        matched: usize,
+        walk: ProfileWalk,
         builder: LabelProfileBuilder,
         overflow: bool,
     },
@@ -1172,9 +1170,7 @@ impl LocalRead {
             }
             SelectorTaskKind::Profile(pc) => {
                 let state = ReadState::Profile {
-                    window: pc.window,
-                    cap: profiled_series_cap(&pc.options),
-                    matched: 0,
+                    walk: ProfileWalk::new(pc.window, profiled_series_cap(&pc.options)),
                     builder: LabelProfileBuilder::new(),
                     overflow: false,
                 };
@@ -1299,34 +1295,31 @@ impl LocalRead {
                     })?
                 }
                 ReadState::Profile {
-                    window,
-                    cap,
-                    matched,
+                    walk,
                     builder,
                     overflow,
                 } => {
-                    let (window, cap) = (*window, *cap);
                     cursor.next_batch(ctx, share, &mut |_, batch| {
                         for (s, _) in batch.iter() {
-                            // Only the series the profile describes count
-                            // against the cap. Checked without decoding: the
+                            // The window is checked without decoding: the
                             // cursor's own range filter would decode a chunk
                             // per series under the lock.
-                            if !window.is_none_or(|w| w.admits(s)) {
-                                continue;
+                            match walk.step(s) {
+                                ProfileStep::Skip => {}
+                                ProfileStep::Stop => {
+                                    *overflow = true;
+                                    break;
+                                }
+                                // The builder copies what it keeps.
+                                ProfileStep::Take => {
+                                    builder.add_series(s.labels.iter().map(|l| (l.name, l.value)))
+                                }
                             }
-                            *matched += 1;
-                            if cap > 0 && *matched > cap {
-                                *overflow = true;
-                                break;
-                            }
-                            // The builder copies what it keeps.
-                            builder.add_series(s.labels.iter().map(|l| (l.name, l.value)));
                         }
                         Ok(())
                     })?;
                     if *overflow {
-                        // Past the cap the profile is not worth finishing.
+                        // Past a cap the profile is not worth finishing.
                         cursor.finish();
                     }
                     None

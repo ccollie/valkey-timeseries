@@ -90,8 +90,12 @@ it is marked `truncated` — and neither cap costs a common filter while the fir
 fit: a label every series carries is carried by the first one added, which normally has at most
 128 labels (`TS.CREATE … LABELS` does not enforce that; past it a common label can be missed,
 costing a push-down, never a result). So a profile, and a shard's reply, stays within about 1 MiB. A profile is **unavailable** when `|S|`
-exceeds `MAX_PROFILED_SERIES` (min of `options.max_series` and 50 000) or the source cannot
-answer; unavailable means "derive nothing from this leaf", never an error.
+exceeds `MAX_PROFILED_SERIES` (min of `options.max_series` and 50 000), when the walk opens
+more than `MAX_PROFILED_KEYS_PER_SERIES` (4) times that many matched keys, retired ones outside
+the window included (`ProfileWalk`; added 2026-10-11, since a series outside the window does
+not count toward `|S|` and a selector of millions of retired keys was otherwise walked whole),
+or when the source cannot answer. Unavailable means "derive nothing from this leaf", never an
+error.
 
 The profile covers the leaf's window: the span its reads cover over the whole query
 (offset, `@`, lookback or matrix range, and each enclosing subquery's grid applied), and
@@ -219,7 +223,8 @@ is cheap (labels only, no samples), keeps preload parallel, and applies uniforml
   `count_values`/`label_replace`/`label_join` synthesized labels are dropped by the
   existing structural rules before they reach a leaf.
 - **Budgets.** Profiles are not samples: nothing is charged to
-  `ts-promql-max-samples-per-query`; `max_series` bounds the walk via `MAX_PROFILED_SERIES`.
+  `ts-promql-max-samples-per-query`; `max_series` bounds the walk via `MAX_PROFILED_SERIES`,
+  and the keys it opens to 4× that.
 
 ## 4. Configuration
 

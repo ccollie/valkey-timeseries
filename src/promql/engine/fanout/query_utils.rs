@@ -7,7 +7,9 @@ use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::EvalSample;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
-use crate::promql::engine::label_profile::{LabelProfile, LabelProfileBuilder, ProfileWindow};
+use crate::promql::engine::label_profile::{
+    LabelProfile, LabelProfileBuilder, ProfileStep, ProfileWalk, ProfileWindow,
+};
 use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
 use crate::promql::engine::sample_budget::SampleBudget;
@@ -231,13 +233,15 @@ pub(super) fn local_instant_eval_samples<S: GilSource + ?Sized>(
 /// The labels of the series `selector` matches on this node: the local half
 /// of [`super::LabelProfileFanoutCommand`]. With a `window`, only the series
 /// with a retained sample in it count ([`ProfileWindow::admits`]). `None`
-/// past `max_series` of those, and for the same reason the coordinator has: a
-/// selector that large is not worth walking to narrow another.
+/// past `max_series` of those, or past opening [`ProfileWalk`]'s multiple of
+/// that many keys, retired ones included, and for the same reason the
+/// coordinator has: a selector that large is not worth walking to narrow
+/// another.
 ///
 /// No sample is read, and the window is checked without decoding: handing it
 /// to the index walk instead would decode a chunk per series under the lock.
 /// Every matched key is opened, as a read of the same selector would, until
-/// the cap is passed; the walk stops there. Refused before it starts, and
+/// a cap is passed; the walk stops there. Refused before it starts, and
 /// stopped between series, once `deadline` has passed or this node's memory
 /// is past its limit ([`super::shard_deadline`]).
 pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
@@ -249,7 +253,7 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
 ) -> ValkeyResult<Option<LabelProfile>> {
     deadline.check().map_err(super::shard_error)?;
     let mut builder = LabelProfileBuilder::new();
-    let mut matched = 0usize;
+    let mut walk = ProfileWalk::new(window, max_series);
     let mut overflow = false;
     for_each_series(
         src,
@@ -260,16 +264,17 @@ pub(in crate::promql) fn local_label_profile<S: GilSource + ?Sized>(
             deadline
                 .checkpoint(SERIES_WORK)
                 .map_err(super::shard_error)?;
-            if !window.is_none_or(|w| w.admits(&series)) {
-                return Ok(ControlFlow::Continue(()));
+            match walk.step(&series) {
+                ProfileStep::Skip => {}
+                ProfileStep::Stop => {
+                    overflow = true;
+                    return Ok(ControlFlow::Break(()));
+                }
+                // The builder copies what it keeps, so nothing outlives the lock.
+                ProfileStep::Take => {
+                    builder.add_series(series.labels.iter().map(|l| (l.name, l.value)))
+                }
             }
-            matched += 1;
-            if max_series > 0 && matched > max_series {
-                overflow = true;
-                return Ok(ControlFlow::Break(()));
-            }
-            // The builder copies what it keeps, so nothing outlives the lock.
-            builder.add_series(series.labels.iter().map(|l| (l.name, l.value)));
             Ok(ControlFlow::Continue(()))
         },
     )?;

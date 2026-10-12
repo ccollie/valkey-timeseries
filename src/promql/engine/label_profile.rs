@@ -76,6 +76,70 @@ pub fn profiled_series_cap(options: &crate::promql::engine::QueryOptions) -> usi
     }
 }
 
+/// How many matched keys a windowed profile may open per series it may be
+/// built from. A series outside the window is skipped without counting
+/// against the series cap, so without this a selector of millions of retired
+/// keys and a few live ones would be walked whole under the module lock. Past
+/// it the profile is unavailable, as past the series cap: a selector at most a
+/// quarter live past [`MAX_PROFILED_SERIES`] is read as written.
+pub const MAX_PROFILED_KEYS_PER_SERIES: usize = 4;
+
+/// What a profile walk does with the next key its selector matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileStep {
+    /// Add the series to the profile.
+    Take,
+    /// Outside the window: leave it out and go on.
+    Skip,
+    /// A cap is passed: stop, the profile is unavailable.
+    Stop,
+}
+
+/// A profile walk's two caps: the series it is built from, and the keys it
+/// opens to find them — the first bounds the profile, the second the walk.
+/// The single-node, shard and in-memory walks all count through this, so they
+/// agree on where a selector is given up.
+#[derive(Clone, Copy, Debug)]
+pub struct ProfileWalk {
+    window: Option<ProfileWindow>,
+    /// 0 for no cap.
+    series_cap: usize,
+    key_cap: usize,
+    taken: usize,
+    opened: usize,
+}
+
+impl ProfileWalk {
+    /// A walk building a profile over `window` from at most `series_cap`
+    /// series (0: no cap), opening at most [`MAX_PROFILED_KEYS_PER_SERIES`]
+    /// times that many keys.
+    pub fn new(window: Option<ProfileWindow>, series_cap: usize) -> Self {
+        Self {
+            window,
+            series_cap,
+            key_cap: series_cap.saturating_mul(MAX_PROFILED_KEYS_PER_SERIES),
+            taken: 0,
+            opened: 0,
+        }
+    }
+
+    /// Count one more matched key, `series`, and say what to do with it.
+    pub fn step(&mut self, series: &TimeSeries) -> ProfileStep {
+        self.opened += 1;
+        if self.key_cap > 0 && self.opened > self.key_cap {
+            return ProfileStep::Stop;
+        }
+        if !self.window.is_none_or(|w| w.admits(series)) {
+            return ProfileStep::Skip;
+        }
+        self.taken += 1;
+        if self.series_cap > 0 && self.taken > self.series_cap {
+            return ProfileStep::Stop;
+        }
+        ProfileStep::Take
+    }
+}
+
 /// The span of sample time a profile covers, both ends inclusive: a profile
 /// over a window is built from only the series a read of it could return
 /// anything from. Without one, every series the selector matches counts.
@@ -786,5 +850,53 @@ mod tests {
             ..profile(&[&[("job", "api")]])
         });
         assert!(builder.finish().truncated);
+    }
+
+    fn series_at(timestamp: Timestamp) -> TimeSeries {
+        let mut series = TimeSeries::new();
+        let _ = series.add(timestamp, 1.0, None);
+        series
+    }
+
+    #[test]
+    fn a_walk_counts_retired_keys_against_its_key_cap() {
+        use ProfileStep::{Skip, Stop, Take};
+        let window = Some(ProfileWindow::new(1_000, 2_000));
+        let (live, retired) = (series_at(1_500), series_at(10));
+
+        // One series, so four keys: three retired ones and the live one fit,
+        // and the fifth key is past the cap whether or not it is live.
+        let mut walk = ProfileWalk::new(window, 1);
+        let steps: Vec<_> = [&retired, &retired, &retired, &live]
+            .into_iter()
+            .map(|s| walk.step(s))
+            .collect();
+        assert_eq!(steps, vec![Skip, Skip, Skip, Take]);
+        assert_eq!(walk.step(&retired), Stop);
+
+        let mut walk = ProfileWalk::new(window, 1);
+        for _ in 0..MAX_PROFILED_KEYS_PER_SERIES {
+            assert_eq!(walk.step(&retired), Skip);
+        }
+        assert_eq!(walk.step(&live), Stop);
+
+        // The series cap still applies on its own.
+        let mut walk = ProfileWalk::new(window, 1);
+        assert_eq!(walk.step(&live), Take);
+        assert_eq!(walk.step(&live), Stop);
+
+        // Without a window every key is a series, so the series cap is the
+        // one reached, where it always was.
+        let mut walk = ProfileWalk::new(None, 2);
+        assert_eq!(walk.step(&retired), Take);
+        assert_eq!(walk.step(&retired), Take);
+        assert_eq!(walk.step(&retired), Stop);
+
+        // No series cap, no key cap.
+        let mut walk = ProfileWalk::new(window, 0);
+        for _ in 0..1_000 {
+            assert_eq!(walk.step(&retired), Skip);
+        }
+        assert_eq!(walk.step(&live), Take);
     }
 }

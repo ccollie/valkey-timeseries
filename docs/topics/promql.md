@@ -307,8 +307,9 @@ do this, and they differ in where the label values come from:
 
 Both are exact: a filter only ever removes series that could not have matched at any
 step. A selector matching more than 50 000 series (or the query's
-`ts-promql-max-response-series`, whichever is lower) is left as written, as is a label
-with more than 60 distinct values.
+`ts-promql-max-response-series`, whichever is lower) is left as written, as is one
+matching more than four times that many series in total, counting those that stopped
+reporting before the query, and a label with more than 60 distinct values.
 
 ## Configuration and safeguards
 
