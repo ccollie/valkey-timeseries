@@ -208,9 +208,13 @@ is cheap (labels only, no samples), keeps preload parallel, and applies uniforml
   2026-10-11, §7), and the fail-closed rule itself is unchanged. With windowed profiles a
   wide operand whose read would have failed is also skipped when the other side matches
   only series retired before its window (the short-circuit below). The empty operand
-  itself stays in the tree, so the result is right; the copy planted in the other
-  operand's place is read over that position's window, where it may not be empty — a
-  small read, never a wrong result.
+  itself stays in the tree, so the result is right. The copy planted in the other
+  operand's place is the bare selector, read over that position's window, so it is
+  planted only where that window lies within the one it was proved empty over (2026-10-11).
+  Before that, `max_over_time(a[5m:1m] offset 1h) + b` planted today's `a` for `b`, which
+  read live series the original never did and could fail a query that fit
+  `ts-promql-max-samples-per-query`. An enclosing subquery's `offset`/`@`, or a matrix
+  range shorter than the lookback, now keeps the other operand as written.
 - **`__name__`** is never derived (binop matching ignores it), the 60-value cap holds, and
   `count_values`/`label_replace`/`label_join` synthesized labels are dropped by the
   existing structural rules before they reach a leaf.

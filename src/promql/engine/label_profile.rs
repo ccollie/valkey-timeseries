@@ -99,6 +99,12 @@ impl ProfileWindow {
         )
     }
 
+    /// Whether `other` lies wholly within this window: a profile over this
+    /// one that counted no series counts none over `other` either.
+    pub fn contains(&self, other: Self) -> bool {
+        self.start_ms <= other.start_ms && other.end_ms <= self.end_ms
+    }
+
     /// Whether a profile over this window counts `series`: its retained span
     /// meets the window. Looser than "has a sample in it" only for a series
     /// whose gap spans the whole window, which costs a push-down, never a
