@@ -6,7 +6,7 @@ use crate::labels::filters::{
     PredicateMatch, PredicateValue, RegexMatcher, validate_contains_value,
     validate_starts_with_value,
 };
-use crate::labels::regex::build_with_repeat_fallback;
+use crate::labels::regex::build_cached;
 use crate::parser::{ParseError, ParseResult};
 use regex::Error as RegexError;
 use regex::Regex;
@@ -539,7 +539,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
 
 pub fn compile_regex(expr: &str) -> Result<Regex, RegexError> {
     let anchored = format!("^(?:{})$", expr);
-    build_with_repeat_fallback(&anchored)
+    build_cached(&anchored)
 }
 
 pub(crate) fn compile_prefixed_regex(
