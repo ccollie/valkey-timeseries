@@ -237,32 +237,35 @@ impl ProfiledLeaves {
         collect_operand_leaves(expr, Some(grid), &mut leaves);
 
         let mut by_node = AHashMap::with_capacity(leaves.len());
-        // Per key, the hull of its occurrences' windows: `SelectorKey` leaves
-        // out offset and `@`, so `cpu - cpu offset 5m` is one profile over
-        // both windows rather than one fan-out each.
-        let mut windows: AHashMap<SelectorKey, Option<ProfileWindow>> = AHashMap::new();
-        let mut unique = Vec::new();
+        // Per key, the selector and the hull of its occurrences' windows:
+        // `SelectorKey` leaves out offset and `@`, so `cpu - cpu offset 5m` is
+        // one profile over both windows rather than one fan-out each.
+        let mut unique: AHashMap<SelectorKey, (VectorSelector, Option<ProfileWindow>)> =
+            AHashMap::new();
         for (vs, window) in leaves {
             // The pass folds a `__name__="m"` matcher into the selector's
             // name before any lookup, so key the normalized form.
             let normalized = normalized(vs);
             let key = SelectorKey::from_selector(&normalized);
             by_node.insert(node_id(vs), key);
-            match windows.entry(key) {
+            match unique.entry(key) {
                 Entry::Vacant(entry) => {
-                    entry.insert(window);
-                    unique.push((key, normalized));
+                    entry.insert((normalized, window));
                 }
                 Entry::Occupied(mut entry) => {
-                    let hull = (*entry.get()).zip(window).map(|(a, b)| a.hull(b));
-                    entry.insert(hull);
+                    let hull = &mut entry.get_mut().1;
+                    *hull = (*hull).zip(window).map(|(a, b)| a.hull(b));
                 }
             }
         }
+        let windows = unique
+            .iter()
+            .map(|(key, (_, window))| (*key, *window))
+            .collect();
 
         let profiles: Vec<(SelectorKey, Option<LabelProfile>)> = unique
             .into_iter()
-            .map(|(key, vs)| (key, vs, windows[&key]))
+            .map(|(key, (vs, window))| (key, vs, window))
             .collect::<Vec<_>>()
             .into_par_rayon()
             .map(
