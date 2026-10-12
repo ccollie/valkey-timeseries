@@ -68,6 +68,7 @@ mod pushdown;
 mod subquery;
 
 use pushdown::{fusable_aggregation, stepped_aggregation_key};
+use subquery::SubqueryKey;
 
 /// How many preload requests may be in flight at once.
 ///
@@ -113,10 +114,14 @@ impl PreparedQuery {
 }
 
 /// One subquery's evaluator, prepared for the union of every outer step's
-/// inner grid. Keyed by the subquery node (the expression tree outlives the
-/// evaluator) and the resolved step, which is all that distinguishes two
-/// grids of the same subquery within one outer query.
-type SubqueryPreloadMap = ahash::AHashMap<(usize, i64), Arc<PreparedQuery>>;
+/// inner grid. Keyed by the subquery's content ([`SubqueryKey`]), so that two
+/// identical subqueries — `max_over_time(x[30m:1m]) - min_over_time(x[30m:1m])`
+/// — share one union, read once and charged to the budget once.
+///
+/// Content is enough: each map belongs to one evaluator, whose grid is fixed,
+/// and a subquery's union follows from that grid and the subquery alone (its
+/// range, step and modifiers are all part of the content).
+type SubqueryPreloadMap = ahash::AHashMap<SubqueryKey, Arc<PreparedQuery>>;
 
 /// The keys the step loop looks preloaded data up by, computed once per node of
 /// the expression instead of once per step.
@@ -131,12 +136,19 @@ type SubqueryPreloadMap = ahash::AHashMap<(usize, i64), Arc<PreparedQuery>>;
 /// it misses here and computes its key as before: a miss is slower, never
 /// wrong. `None` records a node that has no such key (not a pushable rollup,
 /// not a fusable aggregation), so that question is answered once too.
+///
+/// A twin subquery answered from another's union ([`SubqueryPreloadMap`])
+/// evaluates its own nodes over that union's evaluator, whose table holds the
+/// first twin's addresses: the twin's nodes miss too, the same way.
 #[derive(Default)]
 pub(crate) struct NodeKeys {
     selectors: ahash::AHashMap<usize, PreloadKey>,
     rollups: ahash::AHashMap<usize, Option<GridPreloadKey>>,
     stepped: ahash::AHashMap<usize, Option<GridPreloadKey>>,
     fused: ahash::AHashMap<usize, Option<GridPreloadKey>>,
+    /// Building a [`SubqueryKey`] formats the whole subtree, and the lookup
+    /// runs at every outer step.
+    subqueries: ahash::AHashMap<usize, SubqueryKey>,
 }
 
 /// A node's address, the key of [`NodeKeys`].
@@ -284,6 +296,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                                 .insert(addr, stepped_aggregation_key(aggregate));
                             let fused = self.evaluator.fused_rollup_key(aggregate);
                             self.keys.fused.insert(addr, fused);
+                        }
+                        Expr::Subquery(subquery) => {
+                            self.keys
+                                .subqueries
+                                .insert(node_addr(subquery), SubqueryKey::of(subquery));
                         }
                         _ => {}
                     }
@@ -702,8 +719,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// making when there is no grid to lose. An instant query never calls
     /// `preload_for_range`, so both maps stay empty and pushdown costs nothing.
     ///
-    /// Subquery preloads count too: they are keyed by node address, so a
-    /// pushed-down copy of a subquery would miss its prepared union.
+    /// Subquery preloads count too: they are keyed by content, which the
+    /// rewritten matchers change, so a pushed-down copy of a subquery would
+    /// miss its prepared union.
     fn has_preloaded_data(&self) -> bool {
         self.any_preloaded.load(Ordering::Acquire)
     }
