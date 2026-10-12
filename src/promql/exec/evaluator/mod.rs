@@ -138,8 +138,9 @@ type SubqueryPreloadMap = ahash::AHashMap<SubqueryKey, Arc<PreparedQuery>>;
 /// not a fusable aggregation), so that question is answered once too.
 ///
 /// A twin subquery answered from another's union ([`SubqueryPreloadMap`])
-/// evaluates its own nodes over that union's evaluator, whose table holds the
-/// first twin's addresses: the twin's nodes miss too, the same way.
+/// evaluates its own nodes over that union's evaluator, so that evaluator's
+/// table holds every twin's nodes, not only the first's (see
+/// [`PlannedQuery::twins`]).
 #[derive(Default)]
 pub(crate) struct NodeKeys {
     selectors: ahash::AHashMap<usize, PreloadKey>,
@@ -147,7 +148,8 @@ pub(crate) struct NodeKeys {
     stepped: ahash::AHashMap<usize, Option<GridPreloadKey>>,
     fused: ahash::AHashMap<usize, Option<GridPreloadKey>>,
     /// Building a [`SubqueryKey`] formats the whole subtree, and the lookup
-    /// runs at every outer step.
+    /// runs at every outer step. Each is the union map's own copy of the key
+    /// where it has one, so the lookup compares by identity.
     subqueries: ahash::AHashMap<usize, SubqueryKey>,
 }
 
@@ -267,13 +269,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         self.any_preloaded.store(true, Ordering::Release);
     }
 
-    /// Compute [`NodeKeys`] for every node of `expr`. Called once the preload
-    /// phase is done; a second call (a second grid on one evaluator) keeps the
-    /// first table, whose misses still compute.
-    fn fill_node_keys(&self, expr: &Expr) {
+    /// Compute [`NodeKeys`] for every node of `expr` and of its `twins`.
+    /// Called once the preload phase is done; a second call (a second grid on
+    /// one evaluator) keeps the first table, whose misses still compute.
+    fn fill_node_keys(&self, expr: &Expr, twins: &[&Expr]) {
         self.node_keys.get_or_init(|| {
             struct Collect<'e, 'r, R: QueryReader + ?Sized> {
                 evaluator: &'e Evaluator<'r, R>,
+                unions: &'e SubqueryPreloadMap,
                 keys: NodeKeys,
             }
             impl<R: QueryReader + ?Sized> ExprVisitor for Collect<'_, '_, R> {
@@ -298,20 +301,27 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                             self.keys.fused.insert(addr, fused);
                         }
                         Expr::Subquery(subquery) => {
-                            self.keys
-                                .subqueries
-                                .insert(node_addr(subquery), SubqueryKey::of(subquery));
+                            let key = SubqueryKey::of(subquery);
+                            let key = match self.unions.get_key_value(&key) {
+                                Some((shared, _)) => shared.clone(),
+                                None => key,
+                            };
+                            self.keys.subqueries.insert(node_addr(subquery), key);
                         }
                         _ => {}
                     }
                     Ok(true)
                 }
             }
+            let unions = self.preloaded_subqueries.read().unwrap();
             let mut collect = Collect {
                 evaluator: self,
+                unions: &unions,
                 keys: NodeKeys::default(),
             };
-            let Ok(_) = walk_expr(&mut collect, expr);
+            for expr in std::iter::once(expr).chain(twins.iter().copied()) {
+                let Ok(_) = walk_expr(&mut collect, expr);
+            }
             collect.keys
         });
     }

@@ -5452,6 +5452,71 @@ mod tests {
         assert_eq!(rendered_steps(steps), rendered_steps(local), "{query}");
     }
 
+    /// A second twin is evaluated over the first's union, so that union's
+    /// node table covers the second twin's nodes too, its nested subquery
+    /// included; without them every lookup there formatted the subtree again.
+    /// Each memoized subquery key is the union map's own copy, so a lookup
+    /// compares by identity, not by text.
+    #[test]
+    fn twin_subqueries_are_memoized_in_the_union_they_share() {
+        use super::super::{PreparedQuery, SubqueryKey, node_addr};
+        use crate::promql::exec::utils::collect_subqueries;
+        use std::sync::Arc;
+
+        let twin = "max_over_time(sum_over_time(metric[1m])[2m:1m])[4m:2m]";
+        let query = format!("max_over_time({twin}) - min_over_time({twin})");
+        let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);
+        let evaluator = Evaluator::new(&reader, rollup_test_options());
+        let expr = promql_parser::parser::parse(&query).unwrap();
+        let ctx = crate::promql::EvalContext {
+            query_start: 120_000,
+            query_end: 240_000,
+            evaluation_ts: 120_000,
+            step_ms: 60_000,
+            lookback_delta_ms: 300_000,
+            ..Default::default()
+        };
+        evaluator.preload_for_range(&expr, &ctx).unwrap();
+
+        // The union `evaluator`'s table memoizes `node`'s key for, checking
+        // that the key is the union map's own copy.
+        fn memoized_union<R: QueryReader + ?Sized>(
+            evaluator: &Evaluator<'_, R>,
+            node: &promql_parser::parser::SubqueryExpr,
+        ) -> Arc<PreparedQuery> {
+            let keys = evaluator.node_keys.get().expect("node keys filled");
+            let memo = keys
+                .subqueries
+                .get(&node_addr(node))
+                .expect("subquery node memoized");
+            let unions = evaluator.preloaded_subqueries.read().unwrap();
+            let (shared, union) = unions.get_key_value(memo).expect("a prepared union");
+            assert!(
+                memo.same_copy(shared),
+                "memoized a separate copy of the key"
+            );
+            assert!(*memo == SubqueryKey::of(node));
+            Arc::clone(union)
+        }
+
+        let twins = collect_subqueries(&expr);
+        assert_eq!(twins.len(), 2);
+        let union = memoized_union(&evaluator, twins[0]);
+        assert!(Arc::ptr_eq(&union, &memoized_union(&evaluator, twins[1])));
+
+        let over_union = Evaluator::with_shared(&reader, rollup_test_options(), union);
+        let nested: Vec<_> = twins
+            .iter()
+            .map(|twin| {
+                let [nested] = collect_subqueries(&twin.expr)[..] else {
+                    panic!("one nested subquery");
+                };
+                memoized_union(&over_union, nested)
+            })
+            .collect();
+        assert!(Arc::ptr_eq(&nested[0], &nested[1]));
+    }
+
     /// Samples the preload phase charges to the query's budget for `query`.
     fn preload_charge(query: &str) -> usize {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);

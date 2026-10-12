@@ -259,9 +259,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     }
 
     /// The union `preload_subqueries` prepared for `subquery`, if any: by the
-    /// key [`NodeKeys`] memoized for the node, else by one built here — a
-    /// subquery inside a twin evaluated over another twin's union, or a node
-    /// built during evaluation.
+    /// key [`NodeKeys`] memoized for the node, else by one built here — for a
+    /// node built during evaluation.
     fn prepared_union(&self, subquery: &SubqueryExpr) -> Option<Arc<PreparedQuery>> {
         let unions = self.preloaded_subqueries.read().unwrap();
         // An instant query, or a range query without subquery unions: not worth
@@ -293,11 +292,46 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 /// one union; see [`SubqueryPreloadMap`]. Nested subqueries are keyed the same
 /// way, so a twin evaluated over another twin's union finds that union's
 /// nested preloads too, rather than preparing them again at every outer step.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(super) struct SubqueryKey(Arc<str>);
+///
+/// The step loop looks a union up at every outer step, so a lookup must not
+/// cost the subtree's size: the text is hashed once, here, and [`Hash`] feeds
+/// the map that one word. Equality checks identity first — [`NodeKeys`] holds
+/// the map's own copy of each key — and compares text only on a hash match
+/// between separate copies (a node [`NodeKeys`] has no entry for).
+#[derive(Clone)]
+pub(super) struct SubqueryKey {
+    hash: u64,
+    text: Arc<str>,
+}
 
 impl SubqueryKey {
     pub(super) fn of(subquery: &SubqueryExpr) -> Self {
-        Self(format!("{subquery:?}").into())
+        let text: Arc<str> = format!("{subquery:?}").into();
+        // Fixed keys: every key must hash alike, and the map rehashes the word.
+        let hash = std::hash::BuildHasher::hash_one(
+            &std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default(),
+            &*text,
+        );
+        Self { hash, text }
+    }
+
+    /// Whether `self` and `other` are copies of one key, not merely equal.
+    #[cfg(test)]
+    pub(super) fn same_copy(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.text, &other.text)
+    }
+}
+
+impl PartialEq for SubqueryKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.text, &other.text) || (self.hash == other.hash && self.text == other.text)
+    }
+}
+
+impl Eq for SubqueryKey {}
+
+impl std::hash::Hash for SubqueryKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
     }
 }
