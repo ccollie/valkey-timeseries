@@ -11,14 +11,13 @@ use crate::config::is_strict_rts_compat;
 use crate::error_consts;
 use crate::join::{AsOfJoinOptions, AsOfJoinStrategy, JoinOptions, JoinReducer, JoinType};
 use crate::labels::filters::SeriesSelector;
-use crate::labels::{Label, MAX_LABELS_PER_SERIES, parse_series_selector};
+use crate::labels::{Label, MAX_LABELS_PER_SERIES, parse_series_selector, validate_query_regexes};
 use crate::parser::number::parse_number;
 use crate::parser::{
     ParseError, metric_name::parse_metric_name as parse_metric, parse_nonnegative_duration_value,
     timestamp::parse_timestamp as parse_timestamp_internal, timestamp::timestamp_error,
 };
 use crate::promql::engine::promql_config::PromqlConfig;
-use crate::promql::engine::validate_query_regexes;
 use crate::promql::{check_query_depth, duration_ms};
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
@@ -1766,7 +1765,15 @@ fn check_promql_query_text(query: &str, config: &PromqlConfig) -> ValkeyResult<(
 /// 0.11.0 (release, Apple M2), a chain of 4,000 unary minus signs took 54 ms and one of
 /// 16,000 took 0.76 s, and the depth check that refuses both runs only after the parse. The
 /// regex pre-check costs up to about 75 ms on its own.
+///
+/// A query text prepared before, and still cached, is not prepared again: see
+/// [`query_cache`](crate::promql::engine::query_cache).
 fn parse_promql_query(query: &str) -> ValkeyResult<Expr> {
+    crate::promql::engine::query_cache::prepare_cached(query, prepare_promql_query)
+}
+
+/// What [`parse_promql_query`] does for a query that is not cached.
+fn prepare_promql_query(query: &str) -> ValkeyResult<Expr> {
     // Before parsing: the parser compiles every regex matcher without a size limit.
     validate_query_regexes(query).map_err(ValkeyError::String)?;
     // TODO: it may be helpful to return the exact error

@@ -62,6 +62,12 @@ regex = "1"
 # The engine `regex` wraps, used directly for label matchers so the caches can weigh them.
 regex-automata = "0.4"
 simd-json = "0.19.0"
+# The engine behind `regex`: the PromQL query cache sizes the parser's compiled matchers with
+# it (`meta::Regex::memory_usage`), which `regex::Regex` does not expose. Only the features
+# it needs, so this entry adds none to the build: the engines `regex::Regex` builds from stay
+# whatever the rest of the graph enables (`cargo tree -e normal,features -i regex-automata`).
+regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "meta"] }
+simd-json = "0.18.1"
 # Only `StudentsT` is used; the default features pull in nalgebra and rand for nothing.
 statrs = { version = "0.19.1", default-features = false, features = ["std"] }
 welch-sde = "0.1.0"
