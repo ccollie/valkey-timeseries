@@ -770,6 +770,70 @@ fn extract_trailing_literal_sequence(sre: &Hir) -> Option<String> {
     Some(suffix_parts.concat())
 }
 
+/// The `=~` predicate for `value`, compiled with the module's size limits.
+pub(crate) fn try_regex_predicate(value: &str) -> Result<PredicateMatch, ParseError> {
+    // The anchored empty regex matches only the empty value, which is what
+    // `=""` means: the label is absent.
+    if value.is_empty() {
+        return Ok(PredicateMatch::Equal(PredicateValue::Empty));
+    }
+    if let Some(mut values) = literal_alternatives(value) {
+        let value = if values.len() == 1 {
+            PredicateValue::String(values.swap_remove(0))
+        } else {
+            PredicateValue::from(values)
+        };
+        return Ok(PredicateMatch::Equal(value));
+    }
+    RegexMatcher::create(value).map(PredicateMatch::RegexEqual)
+}
+
+/// Rejects a query whose regex matchers the module cannot compile, before
+/// the query is parsed.
+///
+/// promql-parser compiles each `=~`/`!~` with the regex crate's defaults (a
+/// 10 MiB program), on the thread that parses the command, and carries on
+/// after one fails. A heavy matcher such as `\w{2000}` takes about 100 ms to
+/// build or refuse, so a 4 KiB query of them held the event loop for about
+/// 30 s. Under the module's 64 KiB limit the same matcher is refused in well
+/// under a millisecond, and the check stops at the first refusal; what it
+/// admits is small enough that the parser's second compile stays cheap.
+///
+/// Uses promql-parser's own lexer, so strings and comments are tokenized
+/// exactly as the parser will see them. Input the lexer rejects is left for
+/// the parser to report: it fails before compiling any regex.
+pub(crate) fn validate_query_regexes(query: &str) -> Result<(), String> {
+    use lrpar::{Lexeme, Lexer, NonStreamingLexer, Span};
+    use promql_parser::parser::token::{T_EQL_REGEX, T_NEQ_REGEX, T_STRING, TokenId};
+    use promql_parser::util::unquote_string;
+
+    let Ok(lexer) = promql_parser::parser::lexer(query) else {
+        return Ok(());
+    };
+    // The previous token (the operator, when the current one is a regex) and
+    // the one before it (the label name).
+    let mut previous: Option<(TokenId, Span)> = None;
+    let mut label_span: Option<Span> = None;
+    for lexeme in lexer.iter().flatten() {
+        let token = lexeme.tok_id();
+        if token == T_STRING
+            && matches!(previous, Some((T_EQL_REGEX | T_NEQ_REGEX, _)))
+            // Unquoting only fails on input the parser rejects as well.
+            && let Ok(pattern) = unquote_string(lexer.span_str(lexeme.span()))
+            && try_regex_predicate(&pattern).is_err()
+        {
+            let label = label_span.map_or("", |span| lexer.span_str(span));
+            let label = unquote_string(label).unwrap_or_else(|_| label.to_string());
+            return Err(format!(
+                "TSDB: the regex for label '{label}' is invalid or too large"
+            ));
+        }
+        label_span = previous.map(|(_, span)| span);
+        previous = Some((token, lexeme.span()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::{RegexDecomposition, decompose_regex, parse_regex_matcher};
