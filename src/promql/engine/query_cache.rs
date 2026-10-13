@@ -14,9 +14,11 @@
 //!
 //! Each entry is charged an estimate of the memory it keeps, regex programs included, and
 //! the cache is bounded by both `ts-promql-query-cache-max-entries` and
-//! `ts-promql-query-cache-max-bytes`, read when a query is admitted so a preparation that
-//! started under older limits cannot overfill it. A change to either trims the cache at once
-//! ([`apply_limits`]). Failed preparations are not cached.
+//! `ts-promql-query-cache-max-bytes`. A change to either trims the cache at once
+//! ([`apply_limits`]). Admission and trimming read the limits only while holding the cache
+//! lock, so a preparation that started under older limits cannot overfill the cache: an
+//! admission that takes the lock before a trim is trimmed by it, and one that takes it after
+//! sees the new limits. Failed preparations are not cached.
 //!
 //! A query is kept from the second time its text is seen, not the first. Sizing an entry
 //! compiles each regex matcher's program once more, and a workload of one-off texts (ad hoc
@@ -50,7 +52,7 @@ pub(crate) fn prepare_cached<E>(
 /// Brings the cache within the current limits, emptying it if either is 0. Called after
 /// either limit is changed. What it evicts is freed off the calling thread.
 pub(crate) fn apply_limits() {
-    let evicted = QUERY_CACHE.trim(current_limits());
+    let evicted = QUERY_CACHE.trim(current_limits);
     if !evicted.is_empty() {
         crate::common::threads::spawn_background("ts-promql-cache-trim", move || drop(evicted));
     }
@@ -199,7 +201,7 @@ impl QueryCache {
         if admit {
             // Sized outside the lock: it compiles each regex matcher's program once more.
             if let Some(charge) = template_charge(query, &expr) {
-                let evicted = self.admit(query, Arc::new(expr.clone()), charge, limits());
+                let evicted = self.admit(query, Arc::new(expr.clone()), charge, limits);
                 // Freed outside the lock as well.
                 drop(evicted);
             }
@@ -227,13 +229,24 @@ impl QueryCache {
         }
     }
 
-    /// Caches `expr` under `query` if it fits `limits`, evicting the least recently used
-    /// entries to make room. Returns the evicted expressions, for the caller to drop.
-    fn admit(&self, query: &str, expr: Arc<Expr>, charge: usize, limits: Limits) -> Vec<Arc<Expr>> {
+    /// Caches `expr` under `query` if it fits the current limits, evicting the least recently
+    /// used entries to make room. Returns the evicted expressions, for the caller to drop.
+    ///
+    /// `limits` is read under the lock, as [`trim`](Self::trim) reads it: read before, a
+    /// `CONFIG SET` could lower a limit and finish its trim in between, and this would then
+    /// insert under the old limits and leave the cache above the new ones.
+    fn admit(
+        &self,
+        query: &str,
+        expr: Arc<Expr>,
+        charge: usize,
+        limits: impl Fn() -> Limits,
+    ) -> Vec<Arc<Expr>> {
+        let mut inner = self.lock();
+        let limits = limits();
         if limits.disabled() || charge > limits.max_entry_bytes() {
             return Vec::new();
         }
-        let mut inner = self.lock();
         inner.clock += 1;
         let now = inner.clock;
         if let Some(entry) = inner.entries.get_mut(query) {
@@ -263,10 +276,11 @@ impl QueryCache {
         evicted
     }
 
-    /// Evicts the least recently used entries until the cache is within `limits`; all of
-    /// them if the cache is now disabled.
-    fn trim(&self, limits: Limits) -> Vec<Arc<Expr>> {
+    /// Evicts the least recently used entries until the cache is within `limits`, read under
+    /// the lock (see [`admit`](Self::admit)); all of them if the cache is now disabled.
+    fn trim(&self, limits: impl Fn() -> Limits) -> Vec<Arc<Expr>> {
         let mut inner = self.lock();
+        let limits = limits();
         let (max_entries, max_bytes) = if limits.disabled() {
             inner.seen.clear();
             (0, 0)
@@ -557,8 +571,8 @@ impl PatternCharges {
 mod tests {
     use super::*;
     use promql_parser::parser::parse;
-    use std::sync::Barrier;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::{Barrier, mpsc};
 
     const ROOMY: Limits = Limits {
         max_entries: 64,
@@ -776,7 +790,7 @@ mod tests {
         for i in 0..20 {
             warm(&cache, &format!("m{i}"), ROOMY);
         }
-        let evicted = cache.trim(Limits {
+        let evicted = cache.trim(|| Limits {
             max_entries: 5,
             ..ROOMY
         });
@@ -789,7 +803,7 @@ mod tests {
             .unwrap();
         assert_eq!(parses.load(Ordering::Relaxed), 0);
 
-        let evicted = cache.trim(Limits {
+        let evicted = cache.trim(|| Limits {
             max_bytes: 0,
             ..ROOMY
         });
@@ -825,6 +839,56 @@ mod tests {
             })
             .unwrap();
         assert_eq!(cache.stats().entries, 0);
+    }
+
+    /// A limit lowered while a query is being admitted still binds. The worker's admission
+    /// reads the limits (the old ones), and a `CONFIG SET` then lowers the entry limit and
+    /// trims. Admission reads the limits under the lock the trim takes, so the trim waits for
+    /// it and evicts what it inserted. Were they read before the lock, the trim could finish
+    /// first and the insertion leave the cache above the new limit.
+    #[test]
+    fn a_limit_lowered_during_admission_still_binds() {
+        let cache = QueryCache::default();
+        let max_entries = AtomicUsize::new(ROOMY.max_entries);
+        let current = || Limits {
+            max_entries: max_entries.load(Ordering::SeqCst),
+            ..ROOMY
+        };
+        for i in 0..4 {
+            warm(&cache, &format!("m{i}"), ROOMY);
+        }
+        cache.get_or_prepare("late", current, parse).unwrap();
+
+        let reads = AtomicUsize::new(0);
+        let (trimmed, trim_done) = mpsc::channel();
+        std::thread::scope(|scope| {
+            // Its first read is the enabled check before the lookup; the second decides
+            // admission, and that is where the `CONFIG SET` lands.
+            let limits = || {
+                let read = current();
+                if reads.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let trimmed = trimmed.clone();
+                    let (cache, max_entries) = (&cache, &max_entries);
+                    scope.spawn(move || {
+                        max_entries.store(2, Ordering::SeqCst);
+                        drop(cache.trim(|| Limits {
+                            max_entries: max_entries.load(Ordering::SeqCst),
+                            ..ROOMY
+                        }));
+                        let _ = trimmed.send(());
+                    });
+                    // Long enough for an unblocked trim to finish; a blocked one waits for
+                    // the lock, and the outcome is the same either way.
+                    let _ = trim_done.recv_timeout(std::time::Duration::from_millis(100));
+                }
+                read
+            };
+            cache.get_or_prepare("late", limits, parse).unwrap();
+        });
+
+        let stats = cache.stats();
+        assert!(stats.entries <= 2, "{stats:?}");
+        assert_eq!(cache.lock().entries.len(), stats.entries);
     }
 
     #[test]
