@@ -98,8 +98,6 @@ use crate::fanout::register_fanout_operation;
 use ts_card_fanout_command::CardFanoutCommand;
 use ts_index_memory_fanout_command::IndexMemoryFanoutCommand;
 use ts_label_search_fanout_command::LabelSearchFanoutCommand;
-use ts_labelnames_fanout_command::LabelNamesFanoutCommand;
-use ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use ts_labelstats_fanout_command::LabelStatsFanoutCommand;
 use ts_mdel_fanout_command::MDelFanoutCommand;
 use ts_mget_fanout_command::MGetFanoutCommand;

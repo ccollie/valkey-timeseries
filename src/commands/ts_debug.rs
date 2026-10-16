@@ -6,12 +6,17 @@ use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::panic_next_analysis_job;
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::context::get_current_db;
-use crate::common::replies::*;
+use crate::common::replies::{
+    reply_with_array, reply_with_bulk_string, reply_with_double, reply_with_simple_string,
+    reply_with_usize, reply_with_valkey_string,
+};
 use crate::common::string_interner::{BucketStats, saved_pct};
 use crate::config::is_debug_mode_enabled;
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, is_clustered};
+use crate::fanout::{FanoutClientCommand, hold_request_lane, is_clustered};
+use crate::promql::engine::query_workers::panic_next_evaluation;
 use crate::series::index::{IndexMemory, series_keys_by_selectors};
+use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// Dumps a bucket's statistics to the reply.
@@ -206,7 +211,7 @@ pub(super) fn reply_with_index_memory(ctx: &Context, memory: &IndexMemory, nodes
 
     reply_with_array(ctx, fields.len() * 2);
     for (name, value) in fields {
-        reply_with_str(ctx, name);
+        reply_with_simple_string(ctx, name);
         reply_with_usize(ctx, value);
     }
 }
@@ -260,6 +265,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
         (
             "TS._DEBUG PANIC_NEXT_ANALYSIS_JOB",
             "Make the next job on the analysis lane panic (tests the error reply)",
+        ),
+        (
+            "TS._DEBUG HOLD_FANOUT_LANE <milliseconds>",
+            "Occupy every fan-out request worker for that long (tests deadlines under a busy lane)",
         ),
         (
             "TS._DEBUG FAIL_NEXT_COMPACTION",
@@ -332,10 +341,11 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             reply_with_simple_string(ctx, "OK");
             Ok(())
         }
+        "HOLD_FANOUT_LANE" => hold_fanout_lane(ctx, &mut itr),
         "FAIL_NEXT_COMPACTION" => {
             itr.done()?;
             crate::series::fail_next_compaction();
-            reply_with_str(ctx, "OK");
+            reply_with_simple_string(ctx, "OK");
             Ok(())
         }
         _ => Err(ValkeyError::String(format!(
