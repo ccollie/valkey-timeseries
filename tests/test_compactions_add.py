@@ -49,6 +49,91 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         """Helper to add a sample to a series"""
         self.client.execute_command("TS.ADD", key, timestamp, value)
 
+    @staticmethod
+    def info_debug(client, key):
+        """`TS.INFO key DEBUG` as a dict (the RESP2 flat list, pairwise)."""
+        flat = client.execute_command("TS.INFO", key, "DEBUG")
+        return {flat[i]: flat[i + 1] for i in range(0, len(flat), 2)}
+
+    def test_info_debug_reports_rule_state(self):
+        """The open-bucket state a rule carries is otherwise invisible: a wrong accumulator only
+        shows downstream, one bucket later. DEBUG exposes it so tests can compare nodes."""
+        src, dst = "state:src", "state:dst"
+        self.create_source_and_dest_series(src, dst)
+        self.add_compaction_rule(src, dst, "sum", 1000)
+
+        assert self.info_debug(self.client, src)[b"rulesState"] == [[dst.encode(), None, 0, None, 0]]
+        assert self.info_debug(self.client, dst)[b"rulesState"] == []
+
+        self.add_sample(src, 100, 1.5)
+        self.add_sample(src, 200, 2.0)
+        assert self.info_debug(self.client, src)[b"rulesState"] == [[dst.encode(), 0, 1, b"3.5", 0]]
+
+        self.add_sample(src, 1000, 7.0)  # closes bucket 0
+        assert self.info_debug(self.client, src)[b"rulesState"] == [[dst.encode(), 1000, 1, b"7", 0]]
+
+    # Every aggregator a rule accepts. The conditional ones take an inline condition.
+    RULE_AGGREGATORS = [
+        "avg", "sum", "min", "max", "range", "count", "countall", "countnan", "first", "last",
+        "std.p", "std.s", "var.p", "var.s", "rate", "irate", "increase",
+        "sum<100", "count<100", "all<100", "any<100", "none<100", "share<100",
+    ]
+
+    # Per aggregator: (samples fed before DEBUG RELOAD, the one in-bucket sample fed after it).
+    # The sequence must leave state that shows in the bucket's published value, and state that
+    # only a later update of the reloaded rule can expose:
+    #   - Unconditional aggregators: a NaN (countnan counts it, the rest skip it), and a counter
+    #     that never decreases (a reset leaves irate with dt = 0, so no value). The post-reload
+    #     sample reads last_value (increase, rate) and last_sample (irate).
+    #   - Conditional aggregators: no NaN, since all/any/none count it as a non-match and one in
+    #     the prefix would pin `all` at false. The post-reload sample is above the comparand, so
+    #     a lost or reset filter (the default one matches everything) changes the outcome:
+    #     sum/count/share/all start with matching values (`all` is still true, to be flipped),
+    #     any/none with non-matching ones (`any` is still false, `none` still true).
+    UNCONDITIONAL_SAMPLES = (((0, 1), (300, 50), (450, "nan"), (700, 60)), (900, 150))
+    MATCHING_FIRST_SAMPLES = (((0, 1), (300, 50), (700, 60)), (900, 150))
+    NON_MATCHING_FIRST_SAMPLES = (((0, 200), (300, 150), (700, 120)), (900, 150))
+    RULE_SAMPLES = {
+        "sum<100": MATCHING_FIRST_SAMPLES,
+        "count<100": MATCHING_FIRST_SAMPLES,
+        "share<100": MATCHING_FIRST_SAMPLES,
+        "all<100": MATCHING_FIRST_SAMPLES,
+        "any<100": NON_MATCHING_FIRST_SAMPLES,
+        "none<100": NON_MATCHING_FIRST_SAMPLES,
+    }
+
+    @pytest.mark.parametrize("agg", RULE_AGGREGATORS)
+    def test_rule_state_survives_reload(self, agg):
+        """Mid-bucket rule state round-trips through RDB for every aggregator: the observable
+        state is unchanged by DEBUG RELOAD, and after one more sample lands in the reloaded rule's
+        open bucket, closing it publishes the same value as a twin rule created *after* the
+        reload and fed the whole sequence."""
+        c = self.client
+        pre_samples, post_sample = self.RULE_SAMPLES.get(agg, self.UNCONDITIONAL_SAMPLES)
+        closing_sample = (1000, 5)
+        c.execute_command("TS.CREATE", "rl:src")
+        c.execute_command("TS.CREATE", "rl:dst")
+        c.execute_command("TS.CREATERULE", "rl:src", "rl:dst", "AGGREGATION", agg, 1000)
+        for ts, value in pre_samples:
+            c.execute_command("TS.ADD", "rl:src", ts, value)
+        before = self.info_debug(c, "rl:src")[b"rulesState"]
+
+        c.execute_command("DEBUG", "RELOAD")
+        assert self.info_debug(c, "rl:src")[b"rulesState"] == before, agg
+
+        c.execute_command("TS.CREATE", "rl:twin:src")
+        c.execute_command("TS.CREATE", "rl:twin:dst")
+        c.execute_command("TS.CREATERULE", "rl:twin:src", "rl:twin:dst", "AGGREGATION", agg, 1000)
+        for ts, value in pre_samples + (post_sample, closing_sample):
+            c.execute_command("TS.ADD", "rl:twin:src", ts, value)
+        # The reloaded rule keeps aggregating its open bucket (state that only later updates
+        # read: a filter's operator and comparand, a counter's last value), then closes it.
+        c.execute_command("TS.ADD", "rl:src", *post_sample)
+        c.execute_command("TS.ADD", "rl:src", *closing_sample)
+        twin_range = c.execute_command("TS.RANGE", "rl:twin:dst", "-", "+")
+        assert twin_range, f"{agg}: the twin published nothing, so the comparison would be vacuous"
+        assert c.execute_command("TS.RANGE", "rl:dst", "-", "+") == twin_range, agg
+
     def get_samples(
         self, key: str, start_ts: int = 0, end_ts: int = None
     ) -> List[Tuple[int, float]]:
@@ -535,3 +620,26 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         for ts, value in ((900, 15), (1100, 20)):
             c.execute_command("TS.ADD", "rate:src", ts, value)
         assert c.execute_command("TS.RANGE", "rate:dst", "-", "+") == [[0, b"10"], [500, b"10"]]
+
+    def test_incrby_at_the_last_timestamp_recalculates_the_bucket(self):
+        """Review focus 3: an in-place increment of the last sample is an upsert; streaming it
+        as a new sample would average 0 and 1 to 0.5."""
+        c = self.client
+        self.create_source_and_dest_series("inc:src", "inc:dst")
+        self.add_compaction_rule("inc:src", "inc:dst", "avg", 1000)
+        c.execute_command("TS.ADD", "inc:src", 0, 0)
+        c.execute_command("TS.INCRBY", "inc:src", 1, "TIMESTAMP", 0)
+        assert c.execute_command("TS.GET", "inc:dst", "LATEST") == [0, b"1"]
+        c.execute_command("TS.ADD", "inc:src", 1000, 5)
+        assert c.execute_command("TS.RANGE", "inc:dst", "-", "+") == [[0, b"1"]]
+
+    def test_ignored_sample_runs_no_compaction(self):
+        """Review focus 4: a sample IGNORE suppresses must not reach the rule."""
+        c = self.client
+        c.execute_command("TS.CREATE", "ign:src", "DUPLICATE_POLICY", "LAST", "IGNORE", 10, 0.5)
+        c.execute_command("TS.CREATE", "ign:dst")
+        self.add_compaction_rule("ign:src", "ign:dst", "sum", 1000)
+        c.execute_command("TS.ADD", "ign:src", 0, 1)
+        c.execute_command("TS.ADD", "ign:src", 5, 1.2)   # within both thresholds: ignored
+        c.execute_command("TS.ADD", "ign:src", 1000, 2)
+        assert c.execute_command("TS.RANGE", "ign:dst", "-", "+") == [[0, b"1"]]

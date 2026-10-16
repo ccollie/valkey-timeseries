@@ -1,7 +1,10 @@
+use crate::aggregators::AggregationHandler;
 use crate::common::replies::ReplyContext;
 use crate::common::replies::is_resp3_client;
 use crate::common::rounding::RoundingStrategy;
-use crate::series::{TimeSeries, chunks::ChunkOps, get_timeseries, try_get_timeseries};
+use crate::series::{
+    TimeSeries, chunks::ChunkOps, get_timeseries, live_source_key, try_get_timeseries,
+};
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{AclPermissions, Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
@@ -69,7 +72,8 @@ pub fn ts_info_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 }
 
 /// The order TS.INFO reports its fields in: the reference's, with this module's additions
-/// (`encoding`, `metric`, `rounding`) beside their nearest relatives. DEBUG adds the last two.
+/// (`encoding`, `metric`, `rounding`) beside their nearest relatives. DEBUG adds the last three
+/// (`keySelfName`, `rulesState`, `Chunks`).
 const INFO_FIELD_ORDER: &[&str] = &[
     "totalSamples",
     "memoryUsage",
@@ -89,8 +93,39 @@ const INFO_FIELD_ORDER: &[&str] = &[
     "ignoreMaxValDiff",
     "rounding",
     "keySelfName",
+    "rulesState",
     "Chunks",
 ];
+
+/// Per-rule aggregation state for `TS.INFO … DEBUG`: one `[destKey, bucketStart, hasSamples,
+/// current, dirty]` entry per rule, in rule order. `bucketStart` and `current` are nil while the
+/// rule has no open bucket; `dirty` is 1 while a failed application is waiting for the next write
+/// to rebuild the open bucket. This is the state a primary and its replica must agree on, and it
+/// is otherwise invisible — a wrong open bucket only shows up downstream, one bucket later. (A
+/// healthy pair agrees on `dirty` too, but a failure is node-local, so it may differ after one.)
+fn get_rules_state(ts: &TimeSeries) -> ValkeyValue {
+    let entries = ts
+        .rules
+        .iter()
+        .map(|rule| {
+            let current = if rule.has_samples {
+                AggregationHandler::current(&rule.aggregator)
+                    .map_or(ValkeyValue::Null, ValkeyValue::Float)
+            } else {
+                ValkeyValue::Null
+            };
+            ValkeyValue::Array(vec![
+                ValkeyValue::BulkString(String::from_utf8_lossy(rule.dest.key()).into_owned()),
+                rule.bucket_start
+                    .map_or(ValkeyValue::Null, ValkeyValue::Integer),
+                ValkeyValue::Integer(i64::from(rule.has_samples)),
+                current,
+                ValkeyValue::Integer(i64::from(rule.dirty)),
+            ])
+        })
+        .collect();
+    ValkeyValue::Array(entries)
+}
 
 /// `Chunks` for TS.INFO DEBUG: one map per chunk, its fields in a fixed order.
 fn reply_with_chunks_info(reply: &ReplyContext, ts: &TimeSeries) {
@@ -132,11 +167,7 @@ fn get_ts_info(ctx: &Context, ts: &TimeSeries, debug: bool, key: &ValkeyString) 
         "firstTimestamp".into(),
         ValkeyValue::Integer(ts.visible_first_timestamp()),
     );
-    // `reported_last_sample`, not `last_sample`: under `ts-compatibility-mode strict` a
-    // compaction destination reports the last bucket closed by forward progress, and
-    // TS.INFO must agree with the TS.GET/TS.MGET it gates (DIV-0023). Extended mode is
-    // unaffected — there the two are the same sample.
-    if let Some(last_sample) = ts.reported_last_sample() {
+    if let Some(last_sample) = ts.last_sample {
         map.insert(
             "lastTimestamp".into(),
             ValkeyValue::Integer(last_sample.timestamp),
@@ -212,6 +243,7 @@ fn get_ts_info(ctx: &Context, ts: &TimeSeries, debug: bool, key: &ValkeyString) 
 
     if debug {
         map.insert("keySelfName".into(), ValkeyValue::from(key));
+        map.insert("rulesState".into(), get_rules_state(ts));
         // yes, I know its title case, but that's what redis does. Written by
         // `reply_with_chunks_info`; only the key is needed here, for its place in the reply.
         map.insert("Chunks".into(), ValkeyValue::Null);
@@ -322,17 +354,10 @@ fn get_rules_info(ctx: &Context, series: &TimeSeries, is_resp3: bool) -> ValkeyV
 
 /// The key of the series that feeds `series`, if it still has a rule for it.
 fn get_source_key(ctx: &Context, series: &TimeSeries) -> Option<String> {
-    let source_key = series.src_series.as_ref()?.to_key_string(ctx);
-    let feeds_series = matches!(
-        try_get_timeseries(ctx, &source_key, None),
-        Ok(Some(source)) if source
-            .rules
-            .iter()
-            .any(|rule| rule.dest.points_to(&series.key))
-    );
-    if !feeds_series {
+    series.src_series.as_ref()?;
+    let Some(source_key) = live_source_key(ctx, series) else {
         ctx.log_warning("Compaction source series not found");
         return None;
-    }
+    };
     Some(source_key.to_string_lossy())
 }

@@ -26,6 +26,15 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         self.set_config("ts-duplicate-policy", DEFAULT_DUPLICATE_POLICY)
         self.set_config("ts-retention-policy", DEFAULT_RETENTION)
 
+    @pytest.fixture(autouse=True)
+    def restore_compaction_policy(self, setup, setup_test):
+        """Most tests here set `ts-compaction-policy`; put back the one in force before the test,
+        whether it passed or not. Requesting `setup_test` runs this after the server is up, and
+        `setup` (named first) keeps the framework's own setup ahead of `setup_test`."""
+        original = self.get_config("ts-compaction-policy")
+        yield
+        self.set_compaction_policy(original)
+
     def test_config_chunk_size_applies_to_new_series(self):
         key = "ts_cfg_chunksize"
         new_chunk_size = 8192
@@ -355,6 +364,54 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         for key in post_policy_non_matching:
             self.assert_no_compaction_rules(key)
 
+    def test_policy_filtered_aggregations_need_a_condition(self):
+        """A filtered aggregation without its inline condition (or a condition on an aggregator
+        that takes none) is refused at CONFIG SET, alone or within a mixed policy, and the
+        previous policy stays in effect."""
+        self.set_compaction_policy("max:1M:1h")
+        for policy in ("countif:1M:1h", "sumif:1M:1h", "all:1M:1h", "any:1M:1h", "share:1M:1h",
+                       "none:1M:1h", "avg:1M:1h;countif:2M:1h", "min:1M:1h|^cpu;sumif:1M:1h|^cpu"):
+            with pytest.raises(ResponseError, match="requires a condition"):
+                self.set_compaction_policy(policy)
+            assert self.get_config("ts-compaction-policy") == b"max:1M:1h", policy
+        for policy in ("avg>0:1M:1h", "countif>:1M:1h", "countif>x:1M:1h"):
+            with pytest.raises(ResponseError):
+                self.set_compaction_policy(policy)
+            assert self.get_config("ts-compaction-policy") == b"max:1M:1h", policy
+
+        self.client.execute_command("TS.ADD", "policy:after_rejected", 0, 1)
+        self.assert_compaction_rule("policy:after_rejected", "max", 60000, expected_rule_count=1)
+
+    def test_policy_filtered_aggregations_with_a_condition(self):
+        """With an inline condition (`countif>5`, the TS.CREATERULE syntax) every filtered
+        aggregation is accepted and builds a rule applying that condition."""
+        self.set_compaction_policy(
+            "countif>5:1M:1h;sumif<=2:1M:1h;all>=0:1M:1h;any==3:1M:1h;share!=0:1M:1h;none<0:1M:1h;"
+            "count>5:2M:1h"
+        )
+        for ts, value in enumerate([1, 2, 3, 6, 7, 8]):
+            self.client.execute_command("TS.ADD", "policy:filtered", ts * 1000, value)
+        self.client.execute_command("TS.ADD", "policy:filtered", 120_000, 0)  # closes both buckets
+
+        info = self.ts_info("policy:filtered")
+        assert sorted(r.aggregation.lower() for r in info["rules"]) == \
+            ["all", "any", "countif", "countif", "none", "share", "sumif"]
+        expected = {
+            "policy:filtered_COUNTIF_GT_5_60000": b"3",
+            "policy:filtered_SUMIF_LTE_2_60000": b"3",
+            "policy:filtered_ALL_GTE_0_60000": b"1",
+            "policy:filtered_ANY_EQ_3_60000": b"1",
+            "policy:filtered_SHARE_NE_0_60000": b"1",
+            "policy:filtered_NONE_LT_0_60000": b"1",
+            # count>5 runs as countif>5, and is named so.
+            "policy:filtered_COUNTIF_GT_5_120000": b"3",
+        }
+        for dest, value in expected.items():
+            assert self.client.execute_command("TS.RANGE", dest, "-", "+") == [[0, value]], dest
+        labels = self.ts_info("policy:filtered_SUMIF_LTE_2_60000")["labels"]
+        assert labels["aggregation"] == "sumif"
+        assert labels["condition"] == "<=2"
+
     def test_mixed_global_and_filtered_policies(self):
         """Test combination of global and filtered policies"""
 
@@ -486,6 +543,91 @@ class TestTimeseriesRoundingConfig(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command("TS.ADD", "round_from_arg", 1000, 3.7)
 
         assert self.sample_value("round_from_config") == self.sample_value("round_from_arg") == 4.0
+
+    def test_explicit_rounding_overrides_the_configured_default(self):
+        """A configured default is a default, not a rounding the command has already set: naming
+        DECIMAL_DIGITS or SIGNIFICANT_DIGITS replaces it. (Replicating an auto-created series
+        spells its rounding out in a TS.CREATE, which a node with the same configured default
+        would otherwise reject.) Naming both in one command is still an error."""
+        self.set_config("ts-decimal-digits", "2")
+        try:
+            self.client.execute_command("TS.CREATE", "round_over_dec", "DECIMAL_DIGITS", 1)
+            self.client.execute_command("TS.ADD", "round_over_dec", 1000, 3.76)
+            assert self.sample_value("round_over_dec") == 3.8
+
+            self.client.execute_command("TS.CREATE", "round_over_sig", "SIGNIFICANT_DIGITS", 3)
+            self.client.execute_command("TS.ADD", "round_over_sig", 1000, 3.7654)
+            assert self.sample_value("round_over_sig") == 3.77
+
+            self.client.execute_command("TS.ADD", "round_over_add", 1000, 3.76, "DECIMAL_DIGITS", 1)
+            assert self.sample_value("round_over_add") == 3.8
+
+            for args in (
+                ("DECIMAL_DIGITS", 1, "SIGNIFICANT_DIGITS", 3),
+                ("SIGNIFICANT_DIGITS", 3, "DECIMAL_DIGITS", 1),
+                ("DECIMAL_DIGITS", 1, "DECIMAL_DIGITS", 2),
+            ):
+                with pytest.raises(ResponseError, match="rounding already set"):
+                    self.client.execute_command("TS.CREATE", "round_over_both", *args)
+        finally:
+            self.set_config("ts-decimal-digits", "none")
+
+    def test_decimal_digits_none_means_no_rounding_over_a_configured_default(self):
+        """`DECIMAL_DIGITS none` switches rounding off for the series, whatever the node's
+        configured default is, and is a rounding choice like the other two."""
+        for config, value in (("ts-decimal-digits", "2"), ("ts-significant-digits", "3")):
+            self.set_config(config, value)
+            try:
+                self.client.execute_command("TS.CREATE", f"none_create:{config}", "DECIMAL_DIGITS", "none")
+                self.client.execute_command("TS.ADD", f"none_create:{config}", 1000, 3.7654321)
+                assert self.sample_value(f"none_create:{config}") == 3.7654321
+
+                self.client.execute_command("TS.ADD", f"none_add:{config}", 1000, 3.7654321, "DECIMAL_DIGITS", "NONE")
+                assert self.sample_value(f"none_add:{config}") == 3.7654321
+
+                # A series created without it still takes the configured default.
+                self.client.execute_command("TS.CREATE", f"none_absent:{config}")
+                self.client.execute_command("TS.ADD", f"none_absent:{config}", 1000, 3.7654321)
+                assert self.sample_value(f"none_absent:{config}") != 3.7654321
+
+                for args in (
+                    ("DECIMAL_DIGITS", "none", "SIGNIFICANT_DIGITS", 3),
+                    ("SIGNIFICANT_DIGITS", 3, "DECIMAL_DIGITS", "none"),
+                    ("DECIMAL_DIGITS", "none", "DECIMAL_DIGITS", 2),
+                    ("DECIMAL_DIGITS", 2, "DECIMAL_DIGITS", "none"),
+                ):
+                    with pytest.raises(ResponseError, match="rounding already set"):
+                        self.client.execute_command("TS.CREATE", "none_both", *args)
+                assert self.client.execute_command("EXISTS", "none_both") == 0
+
+                # Only the keyword is special: anything else must still be a digit count.
+                for bad in ("nonee", "no", "-1", "17"):
+                    with pytest.raises(ResponseError):
+                        self.client.execute_command("TS.CREATE", "none_bad", "DECIMAL_DIGITS", bad)
+            finally:
+                self.set_config(config, "none")
+
+    def test_alter_decimal_digits_none_clears_rounding(self):
+        self.client.execute_command("TS.CREATE", "alter_none", "DECIMAL_DIGITS", 1)
+        self.client.execute_command("TS.ADD", "alter_none", 1000, 3.76)
+        assert self.sample_value("alter_none") == 3.8
+
+        assert self.client.execute_command("TS.ALTER", "alter_none", "DECIMAL_DIGITS", "none") == b"OK"
+        self.client.execute_command("TS.ADD", "alter_none", 2000, 3.76)
+        assert self.sample_value("alter_none") == 3.76
+        # The sample stored before the change keeps what it was stored as.
+        assert self.client.execute_command("TS.RANGE", "alter_none", 1000, 1000) == [[1000, b"3.8"]]
+
+        # Idempotent, and naming it on a series without rounding is not an error.
+        assert self.client.execute_command("TS.ALTER", "alter_none", "DECIMAL_DIGITS", "none") == b"OK"
+        # An ALTER that does not name rounding leaves it alone.
+        self.client.execute_command("TS.ALTER", "alter_none", "DECIMAL_DIGITS", 1)
+        self.client.execute_command("TS.ALTER", "alter_none", "RETENTION", 0)
+        self.client.execute_command("TS.ADD", "alter_none", 3000, 3.76)
+        assert self.sample_value("alter_none") == 3.8
+
+        with pytest.raises(ResponseError, match="rounding already set"):
+            self.client.execute_command("TS.ALTER", "alter_none", "DECIMAL_DIGITS", "none", "SIGNIFICANT_DIGITS", 3)
 
     def test_zero_significant_digits_rejected_on_both_paths(self):
         """Zero significant digits is not a quantity, so neither path accepts it."""

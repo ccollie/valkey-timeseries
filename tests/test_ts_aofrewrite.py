@@ -105,7 +105,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         original_avg_info = self.ts_info('avg_1min')
         original_max_info = self.ts_info('max_5min')
 
-        # Get digests for aggregated series (not source, as it has transient compaction state)
+        # Digests for every series, the source included: its rule state (open bucket, accumulator)
+        # is part of the RDB payload the rewrite embeds, so it round-trips too.
+        original_source_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'source_ts')
         original_avg_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'avg_1min')
         original_max_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'max_5min')
 
@@ -125,14 +127,11 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         restored_avg_info = self.ts_info('avg_1min')
         restored_max_info = self.ts_info('max_5min')
 
-        # Note: We don't compare digests for series with compaction rules because
-        # the bucket_start field (transient aggregation state) may differ after restart.
-        # Instead, we verify the actual data and properties are correct.
-
-        # Verify per-object digests for aggregated series (these should match)
+        restored_source_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'source_ts')
         restored_avg_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'avg_1min')
         restored_max_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', 'max_5min')
 
+        assert restored_source_digest == original_source_digest, "source_ts digest mismatch"
         assert restored_avg_digest == original_avg_digest, "avg_1min digest mismatch"
         assert restored_max_digest == original_max_digest, "max_5min digest mismatch"
 
@@ -402,3 +401,121 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         assert new_info['totalSamples'] == 1
 
         client.execute_command('DEL', 'empty_ts')
+
+    def test_policy_destinations_survive_aof_replay(self):
+        """A series auto-created under ts-compaction-policy replays from the AOF with the same
+        rules, destinations and compacted samples: the AOF carries the destinations as explicit
+        TS.CREATE + TS.CREATERULE commands, and replay never applies the policy itself."""
+        client = self.client
+        client.execute_command('CONFIG', 'SET', 'ts.ts-compaction-policy', 'max:1M:1h;avg:2M:1h')
+        client.config_set('appendonly', 'yes')
+        # The rewrite that enabling AOF starts snapshots an empty keyspace, so everything below
+        # reaches the AOF as the commands this node propagated.
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
+
+        client.execute_command('TS.ADD', 'aof:pol', 0, 1, 'LABELS', 'a', 'b')
+        for ts in range(10_000, 300_000, 10_000):
+            client.execute_command('TS.ADD', 'aof:pol', ts, ts)
+        # An explicit create never gets policy rules, before or after replay.
+        client.execute_command('TS.CREATE', 'aof:explicit', 'LABELS', 'a', 'b')
+
+        def snapshot():
+            info = self.ts_info('aof:pol')
+            rules = [(r.dest_key, r.bucket_duration, r.aggregation.lower(), r.alignment) for r in info['rules']]
+            dests = {}
+            for dest, *_ in rules:
+                dest_info = self.ts_info(dest)
+                dests[dest] = (
+                    client.execute_command('EXISTS', dest),
+                    dest_info['sourceKey'],
+                    dest_info['retentionTime'],
+                    dest_info['labels'],
+                    client.execute_command('TS.RANGE', dest, '-', '+'),
+                    client.execute_command('DEBUG', 'DIGEST-VALUE', dest),
+                )
+            return {
+                'rules': rules,
+                'dests': dests,
+                'source': client.execute_command('DEBUG', 'DIGEST-VALUE', 'aof:pol'),
+                'rulesState': self.ts_info('aof:pol', debug=True).get('rulesState'),
+                'explicit_rules': self.ts_info('aof:explicit')['rules'],
+            }
+
+        before = snapshot()
+        assert sorted((agg, bucket) for _, bucket, agg, _ in before['rules']) == [('avg', 120_000), ('max', 60_000)]
+        for exists, source_key, _, _, samples, _ in before['dests'].values():
+            assert exists == 1
+            assert source_key == 'aof:pol'
+            assert samples != []
+        assert before['explicit_rules'] == []
+
+        assert client.execute_command('DEBUG', 'LOADAOF') == b'OK'
+        assert snapshot() == before
+
+    def test_autocreate_with_keyword_looking_labels_survives_aof_replay(self):
+        """An auto-creating TS.ADD whose LABELS hold `ON_DUPLICATE` reaches the AOF as a resolved
+        TS.CREATE plus a bare TS.ADD. Replaying its original argv against the now-existing series
+        would read ON_DUPLICATE out of LABELS and fail, losing the sample while LOADAOF succeeds.
+        Replays the AOF tail, not a rewrite: a rewrite is built from state and would hide it."""
+        client = self.client
+        client.config_set('appendonly', 'yes')
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
+
+        writes = {
+            'aof:kw:dangling': (0, 1, 'LABELS', 'tag', 'ON_DUPLICATE'),
+            'aof:kw:invalid': (0, 1, 'LABELS', 'x', 'ON_DUPLICATE', 'y', 'z'),
+            'aof:kw:star': ('*', 1, 'LABELS', 'tag', 'ON_DUPLICATE'),
+        }
+        for key, args in writes.items():
+            client.execute_command('TS.ADD', key, *args)
+
+        def snapshot():
+            return {key: (client.execute_command('TS.RANGE', key, '-', '+'),
+                          self.ts_info(key)['labels'],
+                          client.execute_command('DEBUG', 'DIGEST-VALUE', key))
+                    for key in writes}
+
+        before = snapshot()
+        for samples, _, _ in before.values():
+            assert len(samples) == 1
+        assert client.execute_command('DEBUG', 'LOADAOF') == b'OK'
+        assert snapshot() == before
+
+    def test_filtered_policy_destinations_survive_aof_replay(self):
+        """A filtered policy rule (countif>N, …) reaches the AOF as TS.CREATERULE with its
+        condition inline, so replay rebuilds the same rule instead of refusing it. The source's
+        digest covers each rule's filter."""
+        client = self.client
+        client.execute_command('CONFIG', 'SET', 'ts.ts-compaction-policy',
+                               'countif>150000:1M:1h;share<=100000:2M:1h;none==0:1M:1h')
+        client.config_set('appendonly', 'yes')
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
+
+        client.execute_command('TS.ADD', 'aof:fpol', 0, 1, 'LABELS', 'a', 'b')
+        for ts in range(10_000, 300_000, 10_000):
+            client.execute_command('TS.ADD', 'aof:fpol', ts, ts)
+
+        def snapshot():
+            rules = [(r.dest_key, r.bucket_duration, r.aggregation.lower())
+                     for r in self.ts_info('aof:fpol')['rules']]
+            return {
+                'rules': rules,
+                'source': client.execute_command('DEBUG', 'DIGEST-VALUE', 'aof:fpol'),
+                'rulesState': self.ts_info('aof:fpol', debug=True).get('rulesState'),
+                'dests': {dest: (self.ts_info(dest)['labels'],
+                                 client.execute_command('TS.RANGE', dest, '-', '+'))
+                          for dest, *_ in rules},
+            }
+
+        before = snapshot()
+        assert sorted(dest for dest, *_ in before['rules']) == [
+            'aof:fpol_COUNTIF_GT_150000_60000',
+            'aof:fpol_NONE_EQ_0_60000',
+            'aof:fpol_SHARE_LTE_100000_120000',
+        ]
+        for labels, samples in before['dests'].values():
+            assert samples != []
+            assert 'condition' in labels
+
+        assert client.execute_command('DEBUG', 'LOADAOF') == b'OK'
+        assert snapshot() == before

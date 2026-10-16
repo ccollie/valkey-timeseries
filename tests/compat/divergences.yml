@@ -307,8 +307,10 @@
   rationale: >
     Accepted (owner sign-off 2026-07-29, §5.3): chaining is a deliberate extension —
     cascading rollups (raw -> 1m -> 1h) without a second write path — and the
-    circular-dependency guard (check_new_rule_circular_dependency) is what keeps it
-    safe. Accepted-input superset, so no rule valid on RTS behaves differently here.
+    circular-dependency guard (check_new_rule_links) is what keeps it
+    safe; the same check caps a chain at 8 rules (2026-10-15), which bounds the work every
+    write, delete and replicated command does walking it. Accepted-input superset, so no rule
+    valid on RTS behaves differently here.
     Pinned by TestRuleLifecycle::test_rule_on_rule_is_an_accepted_input_superset.
   since: 0.1.0
 
@@ -466,31 +468,24 @@
   documentation_only: true
   description: >
     After an out-of-order write back-fills a compaction bucket *older* than the currently
-    open one, TS.GET / TS.MGET without LATEST report the newly materialized downstream
-    bucket for us, but the previous (stale) bucket on RTS. Both engines store identical
-    downstream data — TS.RANGE returns the same samples on each, and TS.GET ... LATEST
-    agrees too — so RTS's reply contradicts its own TS.RANGE: it does not advance the
-    destination's cached last-sample when an older bucket is filled in. Reproducer: rule
-    `AGGREGATION avg 500` on src; `TS.ADD src 0 0`, `TS.ADD src 1000 0` (closes bucket 0),
-    then `TS.ADD src 500 0` — RANGE is `[[0,0],[500,0]]` on both, but TS.GET is `[500,0]`
-    for us and `[0,0]` on RTS.
+    open one, TS.GET / TS.MGET without LATEST and TS.INFO's lastTimestamp report the newly
+    materialized downstream bucket for us, but the previous (stale) bucket on RTS. Both
+    engines store identical downstream data — TS.RANGE returns the same samples on each,
+    and TS.GET ... LATEST agrees too — so RTS's reply contradicts its own TS.RANGE: it does
+    not advance the destination's cached last-sample when an older bucket is filled in.
+    Reproducer: rule `AGGREGATION avg 500` on src; `TS.ADD src 0 0`, `TS.ADD src 1000 0`
+    (closes bucket 0), then `TS.ADD src 500 0` — RANGE is `[[0,0],[500,0]]` on both, but
+    TS.GET is `[500,0]` and TS.INFO lastTimestamp `500` for us, `[0,0]` and `0` on RTS.
   rationale: >
-    Default unchanged: `extended` reports the last sample the series actually holds,
-    rather than reproducing an inconsistency between RTS's own TS.GET and TS.RANGE.
-    Gated (2026-07-18): both engines accept the input and neither errors, so this is
-    the class `ts-compatibility-mode` exists for — `strict` now reports RTS's cached
-    destination last-sample from TS.GET/TS.MGET. The state is a runtime-only marker
-    (TimeSeries::last_forward_close) recorded when forward progress closes a bucket;
-    back-filling an older bucket deliberately leaves it alone. LATEST and the stored
-    downstream data are untouched in either mode.
-    Known limitation of the gate: the marker is not persisted, so after a reload or
-    restart a destination with a pending back-fill reports its true last sample again
-    until the next forward close. Matching RTS there would mean persisting a value
-    that contradicts the series' own chunk data, which needs an RDB encoding-version
-    bump (loader refuses any encver but 1); deliberately out of scope for the gate.
-    Pinned by TestOutOfOrderBackfill::test_get_after_backfilling_an_older_bucket
-    (extended) and ::test_strict_mode_reports_the_stale_bucket_like_rts plus
-    ::test_strict_mode_advances_on_the_next_forward_close (strict).
+    Not reproduced in either mode (ungated 2026-10-14, owner sign-off). RTS's reply
+    contradicts its own TS.RANGE, and reproducing it needs per-destination history that no
+    stored data determines — the same sample set written 0,1000,500 and 0,500,1000 stores
+    identically but caches differently. The emulation that `strict` carried from 2026-07-18
+    (TimeSeries::last_forward_close) was removed with the compaction refactor
+    (docs/plans/2026-10-14-compaction-refactor.md). LATEST and the stored downstream data
+    agree with RTS. Pinned by TestOutOfOrderBackfill::test_get_after_backfilling_an_older_bucket
+    and ::test_strict_mode_reports_the_stored_bucket_too; the fuzzer reads rollups only
+    with LATEST (fuzz_strategies._read_op).
   since: 0.1.0
 
 # DIV-0024..DIV-0029 share one root cause (Tier C fuzzer, 2026-07-22): the variance
@@ -1268,4 +1263,80 @@
     by RTS 8.10. Same parser, same rationale.
   rationale: see DIV-0057 (registry matching is per-command, so the entry is duplicated
     rather than shared; delete both together if the decision is ever reversed)
+  since: 0.1.0
+
+# DIV-0059 is the DEBUG-only sibling of DIV-0001: `TS.INFO key DEBUG` also reports `rulesState`,
+# which the replication tests read to compare a primary's and a replica's open-bucket state.
+- id: DIV-0059
+  command: TS.INFO
+  kind: reply-superset
+  description: >
+    TS.INFO key DEBUG returns an additional rulesState field, one
+    [destKey, bucketStart, hasSamples, current, dirty] entry per compaction rule, beyond the
+    RedisTimeSeries 8.10 DEBUG field set.
+  rationale: debug-only extension metadata; additive and invisible to map-parsing clients,
+    and absent from the reply unless the caller asks for DEBUG
+  since: 0.1.0
+  details_regex: '^\$\.rulesState\b'
+
+# DIV-0060 was found by the compaction engine's recomputation oracle (property test
+# `destination_matches_a_recomputation_from_the_source`, 2026-10-14) and confirmed black-box,
+# pinned per-engine in tests/compat/test_compat_compaction.py. Not registry-matchable: the regex
+# would have to cover "reference=0 subject=nan" on TS.RANGE/TS.GET, absorbing any real
+# NaN-propagation bug.
+#
+# ⚠️ `behavior`-kind: owner sign-off 2026-10-15 — accepted as an intentional divergence in both
+# compatibility modes (strict included).
+
+- id: DIV-0060
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    When an out-of-order write back-fills a compaction bucket that was already published and
+    the bucket's recomputed aggregate is NaN, we replace the destination value with NaN; RTS
+    keeps the stale published value. Reachable on the shared surface through std.p / std.s /
+    var.p / var.s, whose accumulation overflows to NaN on values near DBL_MAX, and on ours also
+    through the extension aggregators irate / rate / increase over a counter reset. Both engines
+    store identical source data and RTS's own `TS.RANGE src ... AGGREGATION std.s` reports NaN
+    for the bucket, so RTS's destination contradicts its own aggregation of the source.
+    Reproducer: rule `AGGREGATION std.s 1000` on src (DUPLICATE_POLICY LAST); `TS.ADD src 0 1e308`,
+    `TS.ADD src 1000 1` (publishes [0, 0]), then back-fill `TS.ADD src 100 1e308`,
+    `TS.ADD src 200 -1e308`, `TS.ADD src 300 -1e308` — `TS.RANGE dst - +` is `[[0, 0]]` on RTS
+    and `[[0, nan]]` for us.
+  rationale: >
+    Accepted (owner sign-off 2026-10-15, §5.3; ruling 2026-10-14, compaction refactor Task 8),
+    in both compatibility modes, strict included: a destination bucket must equal a fresh
+    computation of its source bucket, and RTS's reply contradicts its own TS.RANGE — the same
+    policy as DIV-0023 and DIV-0024..DIV-0029. The stale value comes from writing the recomputed
+    bucket under the LAST duplicate policy, which keeps the old value when the new one is NaN;
+    the engine now clears the bucket before writing a NaN
+    (docs/plans/compaction-replication-plan.md §3.10). Pinned by
+    TestNanBackfillOnDestination::test_destination_holds_the_recomputed_nan.
+  since: 0.1.0
+
+# DIV-0061 came with the port of main's 219c723ca (rules survive DUMP/RESTORE), black-box
+# probed against the reference, which drops the rule on both ends.
+#
+# ⚠️ `behavior`-kind: owner sign-off 2026-10-15 — accepted as an intentional divergence in both
+# compatibility modes (strict included).
+
+- id: DIV-0061
+  command: RESTORE
+  kind: behavior
+  documentation_only: true
+  description: >
+    A compaction rule survives DUMP/RESTORE of either or both of its ends under their own
+    keys (including RESTORE ... REPLACE in place, and the per-key DUMP + RESTORE that MIGRATE
+    performs): both ends report it in TS.INFO and compaction output keeps flowing. RTS 8.10
+    drops the rule on both ends — the restored key has no rules or sourceKey, neither does
+    its partner, and nothing more reaches the destination. A copy restored under a different
+    key is inert on both engines: its links name keys that do not name it back.
+  rationale: >
+    Accepted (owner sign-off 2026-10-15, §5.3), in both compatibility modes, strict included.
+    Rules link their ends by key so that a series keeps its compaction wiring wherever its
+    key goes — slot migration (ASM, and the
+    MIGRATE-based resharding that predates it), TS._RESTORE, AOF replay. Dropping the rule on
+    RESTORE would silently stop a rollup whenever a slot moves. Pinned by
+    TestRestoreKeepsRules::test_rule_survives_restore_under_the_same_key.
   since: 0.1.0

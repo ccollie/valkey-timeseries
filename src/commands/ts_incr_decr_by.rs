@@ -59,9 +59,10 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     let timestamp = handle_parse_timestamp(&mut args)?;
 
     // Captured for replication before the create path consumes `args`. `TIMESTAMP` has
-    // already been stripped above, so `create_options` holds only the auto-creation
-    // arguments (RETENTION, LABELS, CHUNK_SIZE, ...) that a replica needs to build the
-    // same series.
+    // already been stripped above, so `create_options` holds only the caller's auto-creation
+    // arguments (RETENTION, LABELS, CHUNK_SIZE, ...), re-emitted verbatim after the propagated
+    // TS.INCRBY/TS.DECRBY. A replica does not need them to build the series: an auto-create is
+    // replicated first as a resolved TS.CREATE.
     let key_name = args[1].clone();
     let delta_arg = args[2].clone();
     let create_options = args[3..].to_vec();
@@ -108,9 +109,9 @@ fn create_series_and_update(
     const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
 
     let options = parse_series_options(args, 2, INVALID_ARGS)?;
-    // Auto-create: no ts.create event (RTS parity) and no replication from
-    // the create helper — this command replicates itself (a second
-    // propagation would double the increment on replicas).
+    // Auto-create: no ts.create event (RTS parity). The create helper replicates the new series
+    // as a resolved `TS.CREATE` (never this command, whose second propagation would double the
+    // increment on replicas); this command then replicates itself.
     let mut series = create_and_store_series(ctx, &key_name, options, false, true)?;
 
     handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
@@ -193,12 +194,10 @@ fn handle_update(
 
 /// Drive the series' compaction rules after a successful increment.
 ///
-/// TS.INCRBY/TS.DECRBY reject a timestamp *older* than the last sample, but not one equal
-/// to it: `TS.INCRBY key <d> TIMESTAMP <last_ts>` updates the existing sample in place. That
-/// is an upsert, so the affected bucket must be recalculated from the source instead of the
-/// new value being streamed into the open bucket as an additional sample — otherwise the old
-/// and new values are both aggregated (e.g. `TS.ADD k 0 0` then `TS.INCRBY k 1 TIMESTAMP 0`
-/// gave an `avg` rollup of 0.5 instead of 1). Mirrors the is_upsert split in TS.ADD.
+/// `TS.INCRBY key <d> TIMESTAMP <last_ts>` updates the existing sample in place; `prev_last_ts`
+/// makes that a back-fill, so the bucket is recalculated from the source rather than the new
+/// value streamed in as an additional sample (`TS.ADD k 0 0` then `TS.INCRBY k 1 TIMESTAMP 0`
+/// must give an `avg` rollup of 1, not 0.5).
 ///
 /// A failure is logged, not returned: the increment is already stored, and an error would
 /// skip replication, leaving the replica without it (see TS.ADD).
@@ -212,14 +211,7 @@ fn run_compaction_for_increment(
     if series.rules.is_empty() {
         return;
     }
-    let is_upsert = prev_last_ts.is_some_and(|last_ts| added.timestamp <= last_ts);
-    let result = if is_upsert {
-        series.upsert_compaction(ctx, added)
-    } else {
-        let sample = series.last_sample.unwrap_or(added);
-        series.run_compaction(ctx, sample)
-    };
-    if let Err(err) = result {
+    if let Err(err) = series.compact_sample(ctx, added, prev_last_ts) {
         ctx.log_warning(&format!(
             "TSDB: error running compaction for key '{key_name}': {err}"
         ));
@@ -231,9 +223,9 @@ fn run_compaction_for_increment(
 /// Verbatim replication is wrong here: without an explicit `TIMESTAMP`, a replica (or an
 /// AOF reload) re-derives "now" and lands the increment on a different timestamp than the
 /// primary. That diverges the sample set outright, and then diverges retention trimming
-/// and compaction-bucket assignment on top of it. Sending the resolved timestamp — plus
-/// the original auto-creation options, so a replica that has to create the series gets the
-/// same retention, labels and chunk size — makes the write deterministic.
+/// and compaction-bucket assignment on top of it. Sending the resolved timestamp makes the
+/// write deterministic. The caller's auto-creation options ride along verbatim, but the series
+/// itself reaches a replica through the resolved `TS.CREATE` the create path propagated first.
 fn replicate_and_notify(
     ctx: &Context,
     key_name: &ValkeyString,

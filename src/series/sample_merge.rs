@@ -22,8 +22,8 @@ pub struct PerSeriesSamples<'a> {
     /// compaction pass.
     added: SmallVec<[Sample; 8]>,
     /// The accepted timestamps in the order the caller supplied them (MADD argument order),
-    /// which `added` discards by sorting. Only the DIV-0023 forward-close marker needs it —
-    /// see `last_forward_close_in_input_order`.
+    /// which `added` discards by sorting. Batch compaction replays it to classify back-fills
+    /// (see `CompactionOp::Ingest`).
     added_order: SmallVec<[Timestamp; 8]>,
     /// The series' last timestamp before the merge: batch compaction uses it to tell
     /// guaranteed-fresh appends apart from samples that may have replaced existing values.
@@ -206,7 +206,7 @@ fn add_samples_internal(input: &mut PerSeriesSamples) -> SmallVec<[(usize, Sampl
 
     // Accepted samples feed batch compaction, which requires them ascending by timestamp.
     // `add_results` is parallel to `samples`, i.e. still in input order, so the order is
-    // captured before sorting (the DIV-0023 forward-close marker depends on it).
+    // captured before sorting (batch compaction replays it to classify back-fills).
     let mut added: SmallVec<[Sample; 8]> = add_results
         .iter()
         .filter_map(|res| {
@@ -261,12 +261,15 @@ fn add_group_sequentially(input: &mut PerSeriesSamples) -> SmallVec<[(usize, Sam
         let res = input
             .series
             .add_deferring_retention(item.timestamp, item.value, None);
+        // Accepted items only. A rejected one — a BLOCK duplicate included — stores nothing, and
+        // RedisTimeSeries runs no compaction for it. Replayed, a rejected repeat whose bucket a
+        // later item had closed read as a back-fill and recalculated that bucket under the
+        // retention floor in force, dropping its older samples (`RETENTION 1000`, sum/1000,
+        // `TS.MADD k 1100 1 k 1800 2 k 2500 4 k 1800 8` published 2, not 3). It also made the
+        // primary disagree with its replicas, which never see the rejected item: the
+        // propagated TS.MADD carries accepted items only.
         if res.is_ok() {
             touched.push(item.timestamp);
-            input.added_order.push(item.timestamp);
-        } else if matches!(res, SampleAddResult::Duplicate) {
-            // Input order, duplicates included: a repeated timestamp does not advance the
-            // running max, so it reads as a back-fill exactly as RTS applies it.
             input.added_order.push(item.timestamp);
         }
         result.push((item.index, res));

@@ -72,6 +72,7 @@ pub fn ts_add_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             timestamp_str,
             value,
             on_duplicate,
+            false,
         );
     }
 
@@ -82,8 +83,8 @@ pub fn ts_add_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let on_duplicate = options.on_duplicate;
 
     let key = &original_args[1];
-    // Auto-create: no ts.create event (RTS parity) and no replication from
-    // the create helper — this command replicates itself.
+    // Auto-create: no ts.create event (RTS parity). The create helper replicates the new series
+    // as a resolved `TS.CREATE`; this command then replicates itself.
     let mut series = create_and_store_series(ctx, key, options, false, true)?;
 
     handle_add(
@@ -94,6 +95,7 @@ pub fn ts_add_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         timestamp_str,
         value,
         on_duplicate,
+        true,
     )
 }
 
@@ -122,6 +124,7 @@ fn handle_add(
     timestamp_str: &str,
     value: f64,
     on_duplicate: Option<DuplicatePolicy>,
+    created: bool,
 ) -> ValkeyResult {
     let mut ignored = false;
 
@@ -154,12 +157,6 @@ fn handle_add(
         }
     };
 
-    let is_upsert = if let Some(last_ts) = last_ts {
-        ts <= last_ts
-    } else {
-        false
-    };
-
     // `ignored` is true when the sample is not added because the timestamp or value delta is below
     // the appropriate threshold.
     // If there's not a change, we don't want to run compaction.
@@ -168,43 +165,51 @@ fn handle_add(
     // The sample is already stored, so a compaction failure is logged rather than returned (as
     // TS.MADD and TS.ADDBULK do): an error here would skip replication and leave the replica
     // without a sample the primary keeps. The replica re-runs the same compaction on replay.
-    if !ignored && !series.rules.is_empty() {
-        let sample = Sample::new(ts, value);
-        let result = if is_upsert {
-            series.upsert_compaction(ctx, sample)
-        } else {
-            let sample = series.last_sample.unwrap_or(sample);
-            series.run_compaction(ctx, sample)
-        };
-        if let Err(err) = result {
-            let key = &args[1];
-            ctx.log_warning(&format!(
-                "TSDB: error running compaction for key '{key}': {err}"
-            ));
-        }
+    if !ignored
+        && !series.rules.is_empty()
+        && let Err(err) = series.compact_sample(ctx, Sample::new(ts, value), last_ts)
+    {
+        let key = &args[1];
+        ctx.log_warning(&format!(
+            "TSDB: error running compaction for key '{key}': {err}"
+        ));
     }
 
     if inserted {
         signal_timeseries_ready(ctx, &args[1]);
     }
 
-    replicate_and_notify(ctx, args, replication_timestamp);
+    replicate_and_notify(ctx, &args, replication_timestamp, created);
     Ok(ValkeyValue::Integer(ts))
 }
 
-fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Option<Timestamp>) {
-    if let Some(ts) = timestamp {
-        // "*" could have a completely different value on a replica, so send the current value instead
-        let ts_str = ts.to_string();
-        let mut args = args;
-        args.remove(0);
-        args[1] = ctx.create_string(ts_str.as_bytes());
-        let replication_args = args.iter().collect::<Vec<_>>();
+/// Propagates the write. `timestamp` is the resolved timestamp when the client sent `*`, which
+/// could resolve differently on a replica.
+///
+/// A write that `created` its series is propagated bare, as `TS.ADD key timestamp value`: the
+/// series has already gone out as a resolved `TS.CREATE`, so the replayed write runs on the
+/// existing-key path, which scans the arguments for `ON_DUPLICATE` without stopping at `LABELS`
+/// (as the reference does). Verbatim, `LABELS tag ON_DUPLICATE` — a label the create path
+/// accepted — would fail there and drop the sample on every replica and AOF replay. Nothing
+/// the bare form omits matters: the creation options travel in the `TS.CREATE`, and neither
+/// `ON_DUPLICATE` nor `IGNORE` can affect the first sample of an empty series.
+fn replicate_and_notify(
+    ctx: &Context,
+    args: &[ValkeyString],
+    timestamp: Option<Timestamp>,
+    created: bool,
+) {
+    let key = &args[1];
+    let resolved_ts = timestamp.map(|ts| ctx.create_string(ts.to_string().as_bytes()));
+    let ts_arg = resolved_ts.as_ref().unwrap_or(&args[2]);
+    if created {
+        ctx.replicate("TS.ADD", &[key, ts_arg, &args[3]]);
+    } else if resolved_ts.is_some() {
+        let mut replication_args = args[1..].iter().collect::<Vec<_>>();
+        replication_args[1] = ts_arg;
         ctx.replicate("TS.ADD", &*replication_args);
-        let key = args.swap_remove(0);
-        notify_keyspace_event(ctx, c"ts.add", &key);
     } else {
         ctx.replicate_verbatim();
-        notify_keyspace_event(ctx, c"ts.add", &args[1]);
     }
+    notify_keyspace_event(ctx, c"ts.add", key);
 }

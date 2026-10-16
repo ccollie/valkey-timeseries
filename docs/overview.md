@@ -52,6 +52,71 @@ The command set generally follows the `TS.<COMMAND>` pattern.
   buckets.
 * `TS.DELETERULE`: Remove an existing compaction rule.
 
+### Replication
+
+Series and compaction destinations are shaped by the primary. Every series creation — an
+explicit `TS.CREATE` or the auto-create of a write command (`TS.ADD`, `TS.INCRBY`/`TS.DECRBY`,
+`TS.ADDBULK`) — is replicated as a `TS.CREATE` carrying the primary's resolved options (retention,
+encoding, chunk size, duplicate policy, `IGNORE`, rounding, labels), ahead of the write. The
+destinations `ts-compaction-policy` creates for an auto-created series are replicated as explicit
+`TS.CREATE` + `TS.CREATERULE` pairs, in the primary's rule order, before the write; a replica or
+an AOF replay never applies the policy itself. A replica's own `ts-compaction-policy`,
+`ts-retention-policy`, `ts-encoding`, chunk size and rounding defaults therefore never shape
+replicated data. A policy destination key that already exists is left untouched and its rule
+skipped (with a warning naming both keys), on every node alike. `ts-compatibility-mode` is
+consulted by the node answering a read, so it must be set identically on every node of a
+replication group.
+
+A series without rounding is replicated with `DECIMAL_DIGITS none`, because a bare `TS.CREATE`
+would otherwise take the receiving node's configured rounding default. `none` is a spelling
+specific to this module, not part of the RedisTimeSeries command set; clients and `TS.ALTER` may
+use it too (see `docs/commands/ts.create.md`).
+
+Compaction is recomputed on every node from the replicated source writes, as in
+RedisTimeSeries: destinations are not shipped over the replication link. A replica therefore
+produces exactly its primary's destination values only while both run the same aggregation
+arithmetic. When a release note says a release changes aggregation results (it will say so
+explicitly), upgrade the primary and its replicas together and full-resync the replicas
+afterwards (`REPLICAOF NO ONE` then `REPLICAOF <primary>` on each), or accept that rollups
+written during the mixed-version window may differ in their last digits between nodes.
+
+**Mixed versions.** The replicated stream and the AOF changed with this release: creations are
+now spelled out as a resolved `TS.CREATE` (including `DECIMAL_DIGITS none`), and policy
+destinations arrive as explicit `TS.CREATE` + `TS.CREATERULE` pairs. A replica or AOF loader
+running an older module build cannot parse that stream — in particular, an older build rejects the
+`DECIMAL_DIGITS none` token. In the other direction, an AOF tail or replication stream written by a
+build from before this release replays its auto-creates without the policy rules, because the new
+loader no longer applies the policy itself. Upgrade the primary and its replicas together, and
+rewrite the AOF (`BGREWRITEAOF`) after upgrading so no old tail is left to replay. Persisted
+series are not portable across that boundary either: an RDB file, a `DUMP` payload, or an AOF
+rewrite preamble written by a build from before this release cannot be loaded by this build,
+because a compaction rule's payload gained a field (`dirty`) in place without an encoding-version
+bump (no release had shipped).
+
+**Keyspace events.** A replica fires `ts.create` for every replicated creation, and
+`ts.createrule:src` / `ts.createrule:dest` for the rules of policy destinations. The primary
+emits none of these for an auto-create or a policy destination (only an explicit `TS.CREATE` and
+`TS.CREATERULE` notify there), so event subscriptions on a replica see more creation events than
+the same subscription on the primary.
+
+**Failure recovery.** A rule application that fails (for example, an error while writing to its
+destination) marks the rule `dirty`; the next write to the source rebuilds the rule's open bucket
+from the source samples before applying itself. The command that hit the failure still succeeds
+and replicates — its write to the source is already committed — and the failure is logged. A
+closed bucket lost to the failure is not repaired. `INFO ts_compaction` reports `ts_compaction_failures` (applications that failed) and
+`ts_compaction_state_rebuilds` (dirty rules rebuilt), both since module start, and
+`TS.INFO key DEBUG` shows each rule's open-bucket state under `rulesState` (the last element of
+each entry is the `dirty` flag). A non-zero failure counter is the signal that a destination may
+be missing a bucket.
+
+`ts-compaction-policy` (`agg:bucket:retention[:align][|regex];…`) takes the filtered aggregations
+`all`, `any`, `countif`, `sumif`, `share` and `none` with the same inline condition as
+`TS.CREATERULE` (e.g. `countif>5:1M:1h`); one without its condition is rejected at `CONFIG SET`
+and at module load. `count>5`/`sum>5` run as `countif`/`sumif`. The condition is part of the
+destination key (`{key}_COUNTIF_GT_5_60000`, operators spelled `EQ`/`NE`/`GT`/`GTE`/`LT`/`LTE`) and
+of the destination's labels (`aggregation=countif`, `condition=>5`), and it is replicated inline
+with the rule.
+
 ### Metadata & Indexing
 
 * `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
