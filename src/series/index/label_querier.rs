@@ -7,10 +7,16 @@
 //! Compared with `querier.rs`, which focuses on selector-to-series resolution with ACL and
 //! series materialization, this module is value-centric: it evaluates and ranks label values
 //! using index primitives while reusing selector hints when available.
+//!
+//! A scoped query (selectors or a date range) reads the matching series through the batched
+//! reader ([`for_each_series`]): only the label names or values are copied out under the
+//! module lock, a batch at a time, and fuzzy scoring and cardinality lookups run once the
+//! lock is released. On a fan-out share the lock is given back between batches; a caller on
+//! the main thread already holds it and reads in one batch.
 
 use super::{
-    FuzzyFilter, IndexKey, PostingsBitmap, SimilarityFilter, get_timeseries_index,
-    series_by_selectors,
+    DEFAULT_SERIES_BATCH_SIZE, FuzzyFilter, GilSource, IndexKey, PostingsBitmap, SimilarityFilter,
+    for_each_series, get_db_index,
 };
 use crate::common::acl::check_metadata_permissions;
 use crate::common::constants::METRIC_NAME_LABEL;
@@ -25,7 +31,8 @@ use min_max_heap::MinMaxHeap;
 use std::cmp::Ordering;
 use std::collections::Bound;
 use std::fmt::Display;
-use valkey_module::{Context, ValkeyError};
+use std::ops::ControlFlow;
+use valkey_module::ValkeyError;
 
 const DEFAULT_LIMIT: usize = 100;
 
@@ -272,28 +279,32 @@ impl IntoIterator for LabelQueryResult {
 }
 
 /// LabelQuerier defines the interface for querying label names and values with flexible filtering and ordering.
+///
+/// Each method takes the module lock from `src` as it needs it, so it must not be called
+/// while holding the lock through a [`GilSource`] that releases it. Pass the
+/// [`Context`](valkey_module::Context) on the main thread, and the request's `FanoutContext` on a fan-out share.
 pub trait LabelQuerier {
     /// Returns a list of label names matching the given hints.
-    fn get_label_names(
+    fn get_label_names<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult>;
 
     /// Returns a list of label values for the given label name, matching the given hints.
-    fn get_label_values(
+    fn get_label_values<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         name: &str,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult>;
 
     /// Returns a list of metric names (`__name__` values) matching the given hints.
-    fn get_metric_names(
+    fn get_metric_names<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult>;
@@ -818,82 +829,83 @@ fn get_label_cardinality(postings: &Postings, label_name: &str) -> usize {
         .sum::<u64>() as usize
 }
 
-fn collect_label_names(
-    ctx: &Context,
+fn collect_label_names<S: GilSource + ?Sized>(
+    src: &S,
     select_hints: Option<&SelectHints>,
     hints: &SearchHints,
 ) -> TsdbResult<LabelQueryResult> {
-    let index = get_timeseries_index(ctx);
-    with_search_filter(hints, |filter| {
-        if can_use_unscoped_scan(select_hints) {
-            let postings = index.get_postings();
-            return Ok(collect_unscoped_label_names(&postings, hints));
-        }
+    if can_use_unscoped_scan(select_hints) {
+        // The index alone answers this: no series is opened, so no module lock is taken.
+        let index = get_db_index(src.db());
+        let postings = index.get_postings();
+        return Ok(collect_unscoped_label_names(&postings, hints));
+    }
 
-        let mut names: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
+    // At this point we know we have non-empty selectors or a date range.
+    let default_hints = SelectHints::default();
+    let opts = select_hints.unwrap_or(&default_hints);
 
-        // at this point we know we have non-empty selectors or a date range, but do the jig to
-        // keep the compiler happy
-        let default_hints = SelectHints::default();
-        let opts = select_hints.unwrap_or(&default_hints);
-
-        let need_cardinality = matches!(
-            hints.order_by,
-            SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
-        ) || hints.include_meta;
-
-        let mut result = Vec::with_capacity(DEFAULT_LIMIT);
-        // todo! set a max limit on the number of series we scan here, to avoid OOM or stalls for very
-        // broad selectors with many matches. We can still apply the filter and return results,
-        // but we should avoid scanning an unbounded number of series.
-        //
-        // Resolve the matching series before touching the postings lock: `series_by_selectors`
-        // takes the read lock itself and then takes the *write* lock to record any dangling ids
-        // it found. `RwLock` is not reentrant, so holding a read guard across this call
-        // deadlocked the server as soon as the index had one stale id to repair.
-        let matched_series = series_by_selectors(ctx, &opts.selectors, opts.date_range)?;
-
-        // The cardinality lookups are the only use of the postings index here, so take the read
-        // guard afterwards, and only when a lookup is actually going to happen.
-        let postings = need_cardinality.then(|| index.get_postings());
-
-        for (ts, _) in matched_series {
+    // Under the lock, only the distinct names are copied out: a hash lookup per label. The
+    // fuzzy filter and the cardinality lookups wait until the read is over.
+    //
+    // Still unbounded: every matched series is scanned, `names` holds every distinct name in
+    // the match, and on the main thread (`&Context`) the whole scan is one lock hold. The
+    // batched reader bounds only a fan-out share's lock holds, not the scan or the set.
+    let mut names: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
+    for_each_series(
+        src,
+        &opts.selectors,
+        opts.date_range,
+        DEFAULT_SERIES_BATCH_SIZE,
+        |_ctx, ts, _key| {
             for label in ts.labels.iter() {
-                // DO NOT use `names.insert()`, as it would require an allocation even if the label name is already see
-                if names.contains(label.name) {
-                    continue;
-                }
-                names.insert(label.name.to_string());
-
-                let (accepted, score) = filter.accept(label.name);
-
-                if accepted {
-                    // fetch the cardinality
-                    let cardinality = if let Some(postings) = postings.as_ref() {
-                        let cardinality = get_label_cardinality(postings, label.name);
-                        if cardinality == 0 {
-                            continue;
-                        }
-                        cardinality
-                    } else {
-                        0
-                    };
-
-                    result.push(LabelSearchResult {
-                        value: label.name.to_string(),
-                        score,
-                        cardinality,
-                    });
+                // Not `names.insert(label.name.to_string())`: that allocates for every
+                // label, seen or not.
+                if !names.contains(label.name) {
+                    names.insert(label.name.to_string());
                 }
             }
-        }
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
 
-        Ok(apply_search_hints(result, hints))
-    })
+    let need_cardinality = matches!(
+        hints.order_by,
+        SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
+    ) || hints.include_meta;
+
+    // Taken only now: the batched read takes the postings lock itself, for writing when it
+    // has a stale id to record, and `RwLock` is not reentrant. A name's cardinality is its
+    // database-wide one, not the selection's.
+    let index = need_cardinality.then(|| get_db_index(src.db()));
+    let postings = index.as_ref().map(|index| index.get_postings());
+
+    Ok(with_search_filter(hints, |filter| {
+        let mut result = Vec::with_capacity(names.len());
+        for name in names {
+            let (accepted, score) = filter.accept(&name);
+            if !accepted {
+                continue;
+            }
+            let cardinality = match postings.as_ref() {
+                Some(postings) => match get_label_cardinality(postings, &name) {
+                    0 => continue,
+                    cardinality => cardinality,
+                },
+                None => 0,
+            };
+            result.push(LabelSearchResult {
+                value: name,
+                score,
+                cardinality,
+            });
+        }
+        apply_search_hints(result, hints)
+    }))
 }
 
-fn collect_label_values(
-    ctx: &Context,
+fn collect_label_values<S: GilSource + ?Sized>(
+    src: &S,
     label_name: &str,
     select_hints: Option<&SelectHints>,
     search_hints: &SearchHints,
@@ -902,84 +914,71 @@ fn collect_label_values(
         return Ok(LabelQueryResult::default());
     }
 
-    let index = get_timeseries_index(ctx);
+    if can_use_unscoped_scan(select_hints) {
+        // The index alone answers this: no series is opened, so no module lock is taken.
+        let index = get_db_index(src.db());
+        let postings = index.get_postings();
+        return Ok(collect_unscoped_label_values(
+            &postings,
+            label_name,
+            search_hints,
+        ));
+    }
 
-    with_search_filter(search_hints, |filter| {
-        if can_use_unscoped_scan(select_hints) {
-            // The only use of the postings index on this path. Taking the guard here rather than
-            // for the whole function keeps it off the `series_by_selectors` call below, which
-            // locks the same `RwLock` -- for writing, when it has a dangling id to record.
-            let postings = index.get_postings();
-            return Ok(collect_unscoped_label_values(
-                &postings,
-                label_name,
-                search_hints,
-            ));
-        }
+    // At this point we know we have non-empty selectors or a date range.
+    let default_hints = SelectHints::default();
+    let opts = select_hints.unwrap_or(&default_hints);
 
-        // at this point we know we have non-empty selectors or a date range, but do the jig to
-        // keep the compiler happy
-        let default_hints = SelectHints::default();
-        let opts = select_hints.unwrap_or(&default_hints);
-
-        let need_cardinality = matches!(
-            search_hints.order_by,
-            SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
-        ) || search_hints.include_meta;
-
-        let mut result: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
-        // Cache filter outcomes by value: `Some(idx)` means accepted and stored at result[idx],
-        // `None` means rejected. This avoids repeated filter calls for duplicates.
-        let mut value_state: AHashMap<String, Option<usize>> =
-            AHashMap::with_capacity(DEFAULT_LIMIT);
-
-        // todo! set a max limit on the number of series we scan here, to avoid OOM or long processing times
-        // for very broad selectors with many matches. We can still apply the filter and return results,
-        // but we should avoid scanning an unbounded number of series.
-        let matched_series = series_by_selectors(ctx, &opts.selectors, opts.date_range)?;
-        for (ts, _) in matched_series {
+    // Under the lock, only each distinct value and how many matched series carry it are
+    // copied out. The filter then runs once per distinct value, after the read.
+    //
+    // Still unbounded, as in `collect_label_names`: `counts` holds every distinct value in
+    // the match, and a main-thread scan is one lock hold.
+    let mut counts: AHashMap<String, usize> = AHashMap::with_capacity(DEFAULT_LIMIT);
+    for_each_series(
+        src,
+        &opts.selectors,
+        opts.date_range,
+        DEFAULT_SERIES_BATCH_SIZE,
+        |_ctx, ts, _key| {
             if let Some(label) = ts.get_label(label_name) {
-                let val = label.value;
-
-                if let Some(state) = value_state.get(val) {
-                    if need_cardinality && let Some(idx) = state {
-                        result[*idx].cardinality += 1;
+                match counts.get_mut(label.value) {
+                    Some(count) => *count += 1,
+                    None => {
+                        counts.insert(label.value.to_string(), 1);
                     }
-                    continue;
                 }
+            }
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
 
-                let (accepted, score) = filter.accept(val);
+    let need_cardinality = matches!(
+        search_hints.order_by,
+        SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
+    ) || search_hints.include_meta;
 
-                if !accepted {
-                    value_state.insert(val.to_string(), None);
-                    continue;
-                }
-
-                let value = val.to_string();
-                let idx = result.len();
-                if need_cardinality {
-                    result.push(LabelSearchResult {
-                        value: value.clone(),
-                        score,
-                        cardinality: 1,
-                    });
-                } else {
-                    result.push(LabelSearchResult {
-                        value: value.clone(),
-                        score,
-                        cardinality: 0,
-                    });
-                }
-                value_state.insert(value, Some(idx));
+    Ok(with_search_filter(search_hints, |filter| {
+        let mut result = Vec::with_capacity(counts.len());
+        for (value, count) in counts {
+            let (accepted, score) = filter.accept(&value);
+            if accepted {
+                result.push(LabelSearchResult {
+                    value,
+                    score,
+                    cardinality: if need_cardinality { count } else { 0 },
+                });
             }
         }
-
-        Ok(apply_search_hints(result, search_hints))
-    })
+        apply_search_hints(result, search_hints)
+    }))
 }
 
-fn validate_permissions(ctx: &Context) -> TsdbResult<()> {
-    check_metadata_permissions(ctx).map_err(|_| {
+/// The coarse gate on label discovery, checked under one short lock hold: on a fan-out
+/// share the caller's ACL identity is only installed while the lock is held.
+fn validate_permissions<S: GilSource + ?Sized>(src: &S) -> TsdbResult<()> {
+    let ctx = src.lock()?;
+    check_metadata_permissions(&ctx).map_err(|_| {
         TsdbError::PermissionsError("insufficient permissions to query labels".to_string())
     })
 }
@@ -988,41 +987,41 @@ fn validate_permissions(ctx: &Context) -> TsdbResult<()> {
 pub struct DefaultLabelQuerier;
 
 impl LabelQuerier for DefaultLabelQuerier {
-    fn get_label_names(
+    fn get_label_names<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
-        validate_permissions(ctx)?;
+        validate_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_names(ctx, select_hints.as_ref(), hints)
+        collect_label_names(src, select_hints.as_ref(), hints)
     }
 
-    fn get_label_values(
+    fn get_label_values<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         name: &str,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
-        validate_permissions(ctx)?;
+        validate_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_values(ctx, name, select_hints.as_ref(), hints)
+        collect_label_values(src, name, select_hints.as_ref(), hints)
     }
 
-    fn get_metric_names(
+    fn get_metric_names<S: GilSource + ?Sized>(
         &self,
-        ctx: &Context,
+        src: &S,
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
-        validate_permissions(ctx)?;
+        validate_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_values(ctx, METRIC_NAME_LABEL, select_hints.as_ref(), hints)
+        collect_label_values(src, METRIC_NAME_LABEL, select_hints.as_ref(), hints)
     }
 }
 

@@ -62,6 +62,38 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesClusterTestCase):
         assert item.score is not None
         assert item.cardinality == 2
 
+    def test_scoped_label_search_spans_several_read_batches(self):
+        """A scoped label search on one shard reads its matches a batch at a time.
+
+        Every key shares one hash tag, so a single shard holds all of them and reads well
+        over one batch (512 series). Values, names and per-value cardinality must come out
+        as if the matches were read in one go, and series outside the filter must not leak in.
+        """
+        cluster: ValkeyCluster = self.new_cluster_client()
+        client = self.new_client_for_primary(0)
+
+        matched = 1300
+        buckets = 5
+        pipe = cluster.pipeline()
+        for i in range(matched):
+            pipe.execute_command('TS.CREATE', f'batch:{{scan}}:{i}', 'LABELS',
+                                 'job', 'batch', 'bucket', f'b{i % buckets}', 'idx', str(i))
+        for i in range(200):
+            pipe.execute_command('TS.CREATE', f'other:{{scan}}:{i}', 'LABELS',
+                                 'job', 'other', 'bucket', f'x{i % 3}', 'extra', 'yes')
+        pipe.execute()
+
+        raw = client.execute_command('TS.LABELVALUES', 'bucket', 'FILTER', 'job=batch',
+                                     'INCLUDE_METADATA')
+        parsed = LabelSearchResponse.parse(raw)
+        assert not parsed.has_more
+        assert [lv.value for lv in parsed.results] == [f'b{b}'.encode() for b in range(buckets)]
+        assert all(lv.cardinality == matched // buckets for lv in parsed.results)
+
+        raw = client.execute_command('TS.LABELNAMES', 'FILTER', 'job=batch')
+        parsed = LabelSearchResponse.parse(raw)
+        assert sorted(lv.value for lv in parsed.results) == [b'bucket', b'idx', b'job']
+
     def test_label_values_with_filter(self):
         """Test retrieving label values with a filter"""
         cluster: ValkeyCluster = self.new_cluster_client()

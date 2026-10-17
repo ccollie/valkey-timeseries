@@ -12,9 +12,9 @@ use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
-    DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
-    LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX, SearchHints,
-    SearchResultOrdering, SelectHints, SortBy,
+    DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, GilSource, LabelNameSearchFilter,
+    LabelQuerier, LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX,
+    SearchHints, SearchResultOrdering, SelectHints, SortBy,
 };
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -314,8 +314,14 @@ pub(crate) fn label_search_targets(context: &Context, tags: &[String]) -> Fanout
     get_multi_command_targets(context, tags)
 }
 
-pub(crate) fn process_label_search_request(
-    ctx: &Context,
+/// Run a label search against this node's index.
+///
+/// `src` supplies the module lock, which the search takes as it needs it: the [`Context`]
+/// on the main thread, or the request's `FanoutContext` on a fan-out share, which gives the
+/// lock back between batches of matched series. Must not be called while holding the lock
+/// through a source that releases it.
+pub(crate) fn process_label_search_request<S: GilSource + ?Sized>(
+    src: &S,
     parsed: &LabelNameSearchArgs,
 ) -> ValkeyResult<LabelQueryResult> {
     let querier = DefaultLabelQuerier;
@@ -334,16 +340,16 @@ pub(crate) fn process_label_search_request(
             "TSDB: LabelSearchType::Unspecified on the wire — protocol error",
         )),
         LabelSearchType::Name => {
-            Ok(querier.get_label_names(ctx, select_hints, Some(&raw_hints))?)
+            Ok(querier.get_label_names(src, select_hints, Some(&raw_hints))?)
         }
         LabelSearchType::Value => {
             let label = parsed.label.as_ref().ok_or({
                 ValkeyError::Str("TSDB: label name must be provided for label value search")
             })?;
-            Ok(querier.get_label_values(ctx, label.as_str(), select_hints, Some(&raw_hints))?)
+            Ok(querier.get_label_values(src, label.as_str(), select_hints, Some(&raw_hints))?)
         }
         LabelSearchType::MetricName => {
-            Ok(querier.get_metric_names(ctx, select_hints, Some(&raw_hints))?)
+            Ok(querier.get_metric_names(src, select_hints, Some(&raw_hints))?)
         }
     }
 }
