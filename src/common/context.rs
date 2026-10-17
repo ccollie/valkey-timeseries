@@ -84,23 +84,6 @@ pub fn is_blocking_denied(ctx: &Context) -> bool {
     ctx.get_flags().contains(ContextFlags::DENY_BLOCKING)
 }
 
-#[inline]
-pub fn is_acl_enforced(ctx: &Context) -> bool {
-    // Replicated (master-link) and AOF-applied commands must not trigger ACL checks:
-    // the originating primary already enforced ACLs on the real client, and the
-    // replication/AOF apply context has no current user. Enforcing here would call
-    // the ACL API with a NULL username string, dereferencing a null pointer inside
-    // `RedisModule_GetModuleUserFromUserName` and crashing the server. `is_real_user_client`
-    // already excludes client_id == 0 (internal/module contexts), the AOF sentinel,
-    // and the REPLICATED flag.
-    //
-    // Fan-out request handlers run on the detached `MODULE_CONTEXT`, whose client is a
-    // real (fake-flagged) client with a non-zero id and no REPLICATED flag, so they are
-    // enforced by this same test; a `common::acl::ThreadAclScope` only supplies *which*
-    // user to check, never *whether* to check.
-    is_real_user_client(ctx)
-}
-
 pub fn get_server_info(ctx: &Context, section: &str) -> *mut ValkeyModuleServerInfoData {
     let info_fn = unsafe { ValkeyModule_GetServerInfo.unwrap() };
     let context = ctx.ctx as *mut ValkeyModuleCtx;

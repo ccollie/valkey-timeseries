@@ -1,18 +1,20 @@
 //! ACL checks, and the identity they run as.
 //!
-//! This is the one place that decides *whether* a key may be touched ([`KeyAccess`],
-//! [`check_key_permissions`], [`check_metadata_permissions`]) and *as whom*. A command on the
-//! main thread runs as its client's user. Work done on another thread, or for a fan-out
-//! request from another node, has no such client: it captures the caller's name with
-//! [`caller_user_name`] where the caller is known, and runs its checks inside a
+//! This is the one place that decides *whether* a key may be touched ([`is_acl_enforced`],
+//! [`KeyAccess`], [`check_key_permissions`], [`check_metadata_permissions`]) and *as whom*. A
+//! command on the main thread runs as its client's user. Work done on another thread, or for a
+//! fan-out request from another node, has no such client: it captures the caller's name with
+//! `caller_user_name` where the caller is known, and runs its checks inside a
 //! [`ThreadAclScope`] for that name.
 
-use crate::common::context::is_acl_enforced;
+use crate::common::context::is_real_user_client;
+use crate::common::logging::log_warning;
 use crate::error_consts;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     AclPermissions, CallOptionsBuilder, CallReply, CallResult, Context, ValkeyError, ValkeyResult,
@@ -21,18 +23,19 @@ use valkey_module::{
 
 /// The ACL identity a [`ThreadAclScope`] attaches to the current thread.
 ///
-/// `user` is the [`ModuleUser`] handle [`ThreadAclScope::enter_with_user`] resolves via
+/// `user` is the [`ModuleUser`] handle [`ThreadAclScope::enter_as`] resolves via
 /// `RM_GetModuleUserFromUserName` and keeps for the life of the scope, so every
 /// [`KeyAccess`] built under it reuses the handle instead of resolving the same name again.
 /// It is `None` only for the test-only unresolved scope, which has no live server to
 /// resolve against.
 ///
-/// `name` is the string `user` was resolved from, kept alive for as long as `user` is. Both
-/// are server objects, freed when the scope drops, so the scope must not outlive the module
-/// lock it was entered under.
-///
-/// Field order matters: fields drop in declaration order, so `user` is released
-/// before the `name` it was resolved from.
+/// `name` is the string `user` was resolved from, kept for the life of the scope: the
+/// thread-local holds this identity until the scope drops, whatever `KeyAccess` clones of
+/// `user` exist. The handle does not depend on it (the server copies its own `user` pointer
+/// at lookup); it is kept so `KeyAccess` can hand the name to `ACL GETUSER` without building
+/// it again. Both are server objects, freed when the scope drops, so the scope must not
+/// outlive the module lock it was entered under. `user` is declared first so it is released
+/// first, the reverse of the order they were made in.
 struct AclIdentity {
     user: Option<Rc<ModuleUser>>,
     name: ValkeyString,
@@ -58,8 +61,10 @@ thread_local! {
 /// first untouched: a second would replace the first's identity, and dropping it would clear
 /// the thread's identity while the first still lived, switching its later checks to the
 /// context's own user without a sound.
+#[must_use = "ACL checks run as this user only while the scope is live"]
 pub struct ThreadAclScope {
-    _not_send: PhantomData<*const ()>,
+    // An `Rc` marker: the identity it installs is an `Rc` in a thread-local.
+    _not_send: PhantomData<Rc<()>>,
 }
 
 impl ThreadAclScope {
@@ -69,7 +74,7 @@ impl ThreadAclScope {
     /// Fails when the user does not exist or is disabled, so a caller cannot silently run
     /// without enforcement, and when a scope is already live on this thread (see the type
     /// docs).
-    pub fn enter_with_user(user: &str) -> ValkeyResult<Self> {
+    pub fn enter_as(user: &str) -> ValkeyResult<Self> {
         // Created with no context, so it belongs to the scope alone and is freed with it,
         // under the caller's lock, whatever context that lock came from. Built from the
         // bytes, so a name with a NUL in it is an unknown user, not a panic.
@@ -106,6 +111,15 @@ impl ThreadAclScope {
             }),
             Err(refused) => {
                 drop(refused);
+                // A broken invariant, not a client mistake: say so in the log once, as the
+                // threading rules do, and fail the request closed.
+                static REPORTED: AtomicBool = AtomicBool::new(false);
+                if !REPORTED.swap(true, Ordering::Relaxed) {
+                    log_warning(format!(
+                        "ACL scope entered while another was live on this thread; refusing it\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    ));
+                }
                 Err(ValkeyError::Str(error_consts::ACL_SCOPE_ALREADY_ENTERED))
             }
         }
@@ -155,13 +169,62 @@ fn thread_acl_scope_active() -> bool {
 }
 
 /// The ACL user name of `ctx`'s client, to carry to where the checks will run: another
-/// thread, or another node. `None` when the client has no user name.
+/// thread, or another node.
 ///
-/// Call it only for a client [`is_acl_enforced`] accepts: a replicated or AOF client has no
-/// user, and asking for its name dereferences a null pointer.
+/// `None` when the client has no user. That is the server's root client, which a module's
+/// `RM_Call` without the `C` flag runs on and which no ACL rule applies to. The wire has no way
+/// to say "root", so the receiving side then checks as its own context's user (the `default`
+/// user on a fan-out shard), which may be stricter: such a call fails closed rather than open.
 pub(crate) fn caller_user_name(ctx: &Context) -> Option<String> {
-    let user = ctx.get_current_user().to_string();
+    let user = current_user_name(ctx)?.to_string();
     (!user.is_empty()).then_some(user)
+}
+
+/// Whether key checks apply to `ctx` at all.
+///
+/// They do not for replicated (master-link) or AOF-applied commands, whose primary already
+/// checked the real client, nor for internal contexts ([`is_real_user_client`]). Nor do they
+/// for a client with no user: the server's root client, which `RM_Call` without the `C` flag
+/// runs on. Asking the ACL API about a user that client does not have would hand it a NULL
+/// name, which it dereferences.
+///
+/// A live [`ThreadAclScope`] makes checks apply even on a context whose own client has no
+/// user: the scope names the user to check as.
+pub fn is_acl_enforced(ctx: &Context) -> bool {
+    checked_as(ctx).is_some()
+}
+
+/// Whom a key check on a context runs as.
+enum CheckedAs {
+    /// The thread's [`ThreadAclScope`], with the handle it already resolved.
+    Scope(Rc<AclIdentity>, Rc<ModuleUser>),
+    /// The context's own client, by name.
+    Client(ValkeyString),
+}
+
+/// Whom a key check on `ctx` runs as, or `None` when no check applies. The one statement of
+/// the rule [`is_acl_enforced`] documents; [`KeyAccess::new`] applies it in the same pass.
+fn checked_as(ctx: &Context) -> Option<CheckedAs> {
+    if !is_real_user_client(ctx) {
+        return None;
+    }
+    if let Some(identity) = thread_identity()
+        && let Some(user) = identity.user.clone()
+    {
+        return Some(CheckedAs::Scope(identity, user));
+    }
+    current_user_name(ctx).map(CheckedAs::Client)
+}
+
+/// `ctx`'s client's user name, or `None` when the client has no user (the server's root
+/// client) or there is no client. The module API returns NULL for both, and a NULL name must
+/// never reach `RM_GetModuleUserFromUserName`.
+fn current_user_name(ctx: &Context) -> Option<ValkeyString> {
+    // SAFETY: `ctx` is a live context; the call returns a new string, or NULL rather than
+    // failing.
+    let name = unsafe { raw::RedisModule_GetCurrentUserName.unwrap()(ctx.ctx) };
+    // Freed through the context that created it.
+    (!name.is_null()).then(|| ValkeyString::from_redis_module_string(ctx.ctx, name))
 }
 
 /// A server user handle, as `RM_GetModuleUserFromUserName` returns it.
@@ -437,29 +500,23 @@ pub struct KeyAccess {
 
 impl KeyAccess {
     pub fn new(ctx: &Context, permissions: AclPermissions) -> Self {
-        let identity = if !is_acl_enforced(ctx) {
-            Identity::Unrestricted
-        } else {
-            // Reuse the handle a thread scope already resolved (an `Rc` clone, no FFI
-            // call) rather than resolving the name again here.
-            let identify = |user: Rc<ModuleUser>, name: &dyn Fn() -> ValkeyString| {
-                if user.allows_all_keys(ctx, name, &permissions) {
-                    Identity::Unrestricted
-                } else {
-                    Identity::User(user)
-                }
-            };
-            let scoped =
-                thread_identity().and_then(|identity| Some((identity.user.clone()?, identity)));
-            if let Some((user, identity)) = scoped {
-                identify(user, &|| identity.name.safe_clone(ctx))
+        let identify = |user: Rc<ModuleUser>, name: &dyn Fn() -> ValkeyString| {
+            if user.allows_all_keys(ctx, name, &permissions) {
+                Identity::Unrestricted
             } else {
-                let name = ctx.get_current_user();
-                match ModuleUser::from_name(&name) {
-                    Some(user) => identify(Rc::new(user), &|| name.clone()),
-                    None => Identity::Unknown,
-                }
+                Identity::User(user)
             }
+        };
+        let identity = match checked_as(ctx) {
+            None => Identity::Unrestricted,
+            // Reuse the handle the scope already resolved (an `Rc` clone, no FFI call).
+            Some(CheckedAs::Scope(identity, user)) => {
+                identify(user, &|| identity.name.safe_clone(ctx))
+            }
+            Some(CheckedAs::Client(name)) => match ModuleUser::from_name(&name) {
+                Some(user) => identify(Rc::new(user), &|| name.clone()),
+                None => Identity::Unknown,
+            },
         };
         Self {
             identity,
@@ -529,21 +586,6 @@ pub fn clone_permissions(permissions: &AclPermissions) -> AclPermissions {
         cloned |= AclPermissions::DELETE;
     }
     cloned
-}
-
-pub fn has_all_keys_permissions(
-    ctx: &Context,
-    user: &ValkeyString,
-    permissions: Option<AclPermissions>,
-) -> bool {
-    if !is_acl_enforced(ctx) {
-        return true;
-    }
-    let Some(perms) = &permissions else {
-        return true;
-    };
-    ModuleUser::from_name(user)
-        .is_some_and(|handle| handle.allows_all_keys(ctx, || user.clone(), perms))
 }
 
 /// One key's check. A loop should build a [`KeyAccess`] once instead.

@@ -66,7 +66,6 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   - `chunks/`: three encodings — **Chimp** (default), **Gorilla**, **Uncompressed**
     (`DEFAULT_CHUNK_ENCODING` in `src/config.rs`). Storage encoding is a user choice; cluster *wire*
     encoding is a separate, internal policy (see Conventions below).
-  - Per-series ACL filtering: `acl.rs`.
   - `index/asm.rs` — atomic slot migration (ASM, Valkey 9.0+): event subscription, deferred
     indexing mid-import, source-side index cleanup after export. During an ASM the source node's
     forked `aof_rewrite` child can't take the module GIL, so it serializes via `rdb_save` and emits
@@ -80,8 +79,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   (`src/analysis/` — ESD/CUSUM/EWMA/IQR/MAD/z-score/RCF), `TS.ADDBULK`, `TS.LABELSTATS`,
   `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
 - Supporting: `src/aggregators/` (range-query aggregation), `src/common/` (encoding, logging, thread
-  pools, RDB, interning), `src/labels/`, `src/iterators/`, `src/server_events.rs` (keyspace event →
-  index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
+  pools, RDB, interning; `acl.rs` is the one home for ACL checks and the thread-scoped ACL identity
+  that fan-out and background work run them as), `src/labels/`, `src/iterators/`,
+  `src/server_events.rs` (keyspace event → index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
 
 ## Conventions
 

@@ -90,7 +90,7 @@ impl FanoutContext {
         // Resolved afresh on every lock: a user deleted or disabled mid-request fails the
         // next step rather than finishing with rights it no longer has.
         let acl = match &self.user {
-            Some(user) => Some(ThreadAclScope::enter_with_user(user)?),
+            Some(user) => Some(ThreadAclScope::enter_as(user)?),
             None => None,
         };
 

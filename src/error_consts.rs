@@ -101,7 +101,8 @@ pub const ALL_KEYS_READ_PERMISSION_ERROR: &str = "TSDB: current user doesn't hav
 pub const ALL_KEYS_WRITE_PERMISSION_ERROR: &str = "TSDB: current user doesn't have write permission to one or more keys that match the specified filter";
 /// A thread tried to enter a second ACL scope while one was live: it would have replaced the
 /// first scope's identity, and dropping it would have cleared that identity under the first.
-pub const ACL_SCOPE_ALREADY_ENTERED: &str = "TSDB: an ACL scope is already active on this thread";
+pub const ACL_SCOPE_ALREADY_ENTERED: &str =
+    "TSDB: internal error: an ACL scope is already active on this thread";
 pub const DUPLICATE_KEY: &str = "TSDB: key already exists";
 pub const MISSING_FILTER: &str = "TSDB: please provide at least one matcher";
 pub const INVALID_TIMESTAMP_FILTER: &str = "TSDB: FILTER_BY_TS one or more arguments are missing";
