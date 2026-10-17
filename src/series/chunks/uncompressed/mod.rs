@@ -98,15 +98,6 @@ impl UncompressedChunk {
         Ok(())
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Sample> + '_ {
-        self.samples.iter().cloned()
-    }
-
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
-        let slice = self.get_range_slice(start_ts, end_ts);
-        SampleIter::vec(slice)
-    }
-
     pub fn samples_by_timestamps(&self, timestamps: &[Timestamp]) -> TsdbResult<Vec<Sample>> {
         if self.len() == 0 || timestamps.is_empty() {
             return Ok(vec![]);
@@ -130,13 +121,6 @@ impl UncompressedChunk {
 
     fn get_sample_index(&self, ts: Timestamp) -> (usize, bool) {
         get_sample_index(&self.samples, ts)
-    }
-
-    fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {
-        let Some(res) = self.get_range_as_ref(start_ts, end_ts) else {
-            return Vec::new();
-        };
-        res.to_vec()
     }
 
     pub(crate) fn get_range_as_ref(
@@ -286,6 +270,12 @@ fn get_sample_index(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
 }
 
 impl ChunkOps for UncompressedChunk {
+    fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
+        self.get_range_as_ref(start_ts, end_ts)
+            .map(SampleIter::slice)
+            .unwrap_or_default()
+    }
+
     fn first_timestamp(&self) -> Timestamp {
         if self.samples.is_empty() {
             return 0;
@@ -295,7 +285,7 @@ impl ChunkOps for UncompressedChunk {
 
     fn last_timestamp(&self) -> Timestamp {
         if self.samples.is_empty() {
-            return i64::MAX;
+            return 0;
         }
         self.samples[self.samples.len() - 1].timestamp
     }
@@ -306,7 +296,7 @@ impl ChunkOps for UncompressedChunk {
 
     fn last_value(&self) -> f64 {
         if self.samples.is_empty() {
-            return f64::MAX;
+            return 0.0;
         }
         self.samples[self.samples.len() - 1].value
     }
@@ -329,18 +319,20 @@ impl ChunkOps for UncompressedChunk {
 
     fn add_sample(&mut self, sample: &Sample) -> TsdbResult<()> {
         if self.is_full() {
-            return Err(TsdbError::CapacityFull(MAX_UNCOMPRESSED_SAMPLES));
+            return Err(TsdbError::CapacityFull(self.max_elements));
         }
         self.samples.push(*sample);
         Ok(())
     }
 
     fn get_range(&self, start: Timestamp, end: Timestamp) -> TsdbResult<Vec<Sample>> {
-        let slice = self.get_range_slice(start, end);
-        Ok(slice)
+        Ok(self
+            .get_range_as_ref(start, end)
+            .map(<[Sample]>::to_vec)
+            .unwrap_or_default())
     }
 
-    fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize> {
+    fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<bool> {
         let ts = sample.timestamp;
 
         let count = self.samples.len();
@@ -356,13 +348,7 @@ impl ChunkOps for UncompressedChunk {
             }
         }
 
-        // The chunk's *new* sample count, not the delta: callers derive the delta themselves by
-        // subtracting the length they observed beforehand (see `Chunk::upsert_sample`, and
-        // `TimeSeries::upsert_sample` which does `size - old_size`). Returning the delta here
-        // made that subtraction yield 0, so an out-of-order insert into an UNCOMPRESSED series
-        // never incremented `total_samples` — the series eventually reported itself empty while
-        // still holding samples, and TS.DEL then silently skipped them.
-        Ok(self.len())
+        Ok(self.len() > count)
     }
 
     fn merge_samples(
@@ -431,16 +417,12 @@ impl ChunkOps for UncompressedChunk {
 
     fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
         self.samples = samples.to_vec();
-        // todo: complain if size > max_size
         Ok(())
     }
 }
 
 impl Chunk for UncompressedChunk {
-    fn split(&mut self) -> TsdbResult<Self>
-    where
-        Self: Sized,
-    {
+    fn split(&mut self) -> TsdbResult<Self> {
         if self.samples.is_empty() {
             return Ok(self.clone());
         }
@@ -537,8 +519,30 @@ impl Chunk for UncompressedChunk {
 #[cfg(test)]
 mod tests {
     use crate::common::{SAMPLE_SIZE, Sample};
+    use crate::iterators::SampleIter;
     use crate::series::chunks::{Chunk, ChunkOps, UncompressedChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
+
+    #[test]
+    fn test_range_iter_borrows_the_sample_slice() {
+        let samples: Vec<Sample> = (0..100).map(|i| Sample::new(i * 10, i as f64)).collect();
+        let chunk = UncompressedChunk::new(4096, &samples);
+        assert!(matches!(
+            chunk.range_iter(samples[10].timestamp, samples[20].timestamp),
+            SampleIter::Slice(_)
+        ));
+        assert!(matches!(chunk.range_iter(40, 20), SampleIter::Empty));
+        assert!(matches!(
+            chunk.range_iter(i64::MAX - 1, i64::MAX),
+            SampleIter::Empty
+        ));
+        assert_eq!(
+            chunk
+                .range_iter(samples[10].timestamp, samples[20].timestamp)
+                .count(),
+            11
+        );
+    }
 
     #[test]
     fn test_get_range_slice_start_equals_end() {
@@ -565,7 +569,7 @@ mod tests {
             },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
-        let result = chunk.get_range_slice(30, 30);
+        let result = chunk.get_range(30, 30).unwrap();
         assert_eq!(
             result,
             vec![Sample {
@@ -600,7 +604,7 @@ mod tests {
             },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
-        let result = chunk.get_range_slice(20, 40);
+        let result = chunk.get_range(20, 40).unwrap();
         assert_eq!(
             result,
             vec![
@@ -645,7 +649,7 @@ mod tests {
             },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
-        let result = chunk.get_range_slice(60, 70);
+        let result = chunk.get_range(60, 70).unwrap();
         assert!(result.is_empty());
     }
 
@@ -674,7 +678,7 @@ mod tests {
             },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
-        let result = chunk.get_range_slice(35, 45);
+        let result = chunk.get_range(35, 45).unwrap();
         assert_eq!(
             result,
             vec![Sample {
@@ -687,7 +691,7 @@ mod tests {
     #[test]
     fn test_get_range_slice_empty_chunk() {
         let chunk = UncompressedChunk::default();
-        let result = chunk.get_range_slice(10, 20);
+        let result = chunk.get_range(10, 20).unwrap();
         assert!(result.is_empty());
     }
 
@@ -717,7 +721,7 @@ mod tests {
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
 
-        assert!(chunk.get_range_slice(40, 20).is_empty());
+        assert!(chunk.get_range(40, 20).unwrap().is_empty());
         assert!(chunk.get_range_as_ref(40, 20).is_none());
     }
 
@@ -869,8 +873,8 @@ mod tests {
         ];
         let mut chunk = UncompressedChunk::new(1000, &samples);
 
-        // `upsert_sample` returns the chunk's sample count *after* the upsert (see the
-        // `Chunk` trait), so a duplicate leaves it unchanged rather than reporting 0.
+        // `upsert_sample` returns `true` for an insert and `false` for an update of an
+        // existing timestamp; `len()` is checked alongside.
         // Test 1: Upsert a new sample at the end
         let result = chunk
             .upsert_sample(
@@ -881,7 +885,8 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 4);
+        assert!(result);
+        assert_eq!(chunk.len(), 4);
         assert_eq!(
             chunk.samples,
             vec![
@@ -914,7 +919,8 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 5);
+        assert!(result);
+        assert_eq!(chunk.len(), 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -951,7 +957,8 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 5);
+        assert!(!result);
+        assert_eq!(chunk.len(), 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -988,7 +995,8 @@ mod tests {
                 DuplicatePolicy::KeepFirst,
             )
             .unwrap();
-        assert_eq!(result, 5);
+        assert!(!result);
+        assert_eq!(chunk.len(), 5);
         assert_eq!(
             chunk.samples,
             vec![
@@ -1025,7 +1033,8 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 6);
+        assert!(result);
+        assert_eq!(chunk.len(), 6);
         assert_eq!(
             chunk.samples,
             vec![
@@ -1067,7 +1076,8 @@ mod tests {
                 DuplicatePolicy::KeepLast,
             )
             .unwrap();
-        assert_eq!(result, 1);
+        assert!(result);
+        assert_eq!(empty_chunk.len(), 1);
         assert_eq!(
             empty_chunk.samples,
             vec![Sample {

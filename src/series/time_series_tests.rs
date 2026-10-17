@@ -1849,6 +1849,29 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// An out-of-order add grows `total_samples` by one in every encoding; a duplicate add
+    /// under `KEEP_LAST` leaves it unchanged.
+    #[test]
+    fn test_total_samples_tracks_out_of_order_and_duplicate_adds_per_encoding() {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Chimp,
+        ] {
+            let mut ts = TimeSeries::with_options(TimeSeriesOptions {
+                chunk_encoding: encoding,
+                ..Default::default()
+            })
+            .unwrap();
+            ts.add(100, 1.0, None);
+            ts.add(300, 3.0, None);
+            ts.add(200, 2.0, None);
+            assert_eq!(ts.total_samples, 3, "{encoding:?}: out-of-order add");
+            ts.add(200, 9.0, Some(DuplicatePolicy::KeepLast));
+            assert_eq!(ts.total_samples, 3, "{encoding:?}: duplicate add");
+        }
+    }
+
     /// Every chunk but the tail must be holding a tight buffer.
     ///
     /// A compressed chunk's bit stream grows by doubling, so a chunk that has just filled to

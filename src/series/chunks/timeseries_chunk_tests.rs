@@ -7,7 +7,10 @@ mod tests {
     use crate::series::chunks::merge::merge_by_capacity;
     use crate::series::{
         DuplicatePolicy, SampleAddResult,
-        chunks::{Chunk, ChunkEncoding, ChunkOps, MIN_CHUNK_SIZE, TimeSeriesChunk},
+        chunks::{
+            Chunk, ChunkEncoding, ChunkOps, MIN_CHUNK_SIZE, PARTIAL_RANGE_RESERVE_CAP,
+            TimeSeriesChunk,
+        },
     };
     use crate::tests::chunk_utils::encoded_size;
     use crate::tests::generators::{DataGenerator, ValueWorkload};
@@ -1077,6 +1080,258 @@ mod tests {
         assert_eq!(result, Ok(None));
     }
 
+    /// `SampleIter::fold` dispatches once and hands the loop to the inner iterator, so
+    /// fold-driven consumers (`for_each`, `collect`, `extend`) must see exactly the samples
+    /// that `next` yields, for every variant a chunk can produce.
+    #[test]
+    fn test_sample_iter_fold_matches_next_for_every_encoding() {
+        let samples = generate_random_samples(200);
+        let (lo, hi) = (samples[37].timestamp, samples[151].timestamp);
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 64 * 1024);
+            chunk.set_data(&samples).unwrap();
+            for (start, end) in [
+                (i64::MIN, i64::MAX),
+                (lo, hi),
+                (hi, lo),
+                (i64::MAX - 1, i64::MAX),
+            ] {
+                // A `for` loop drives `next`, never `fold`.
+                let mut by_next = Vec::new();
+                for s in chunk.range_iter(start, end) {
+                    by_next.push(s);
+                }
+                let mut by_fold = Vec::new();
+                chunk.range_iter(start, end).for_each(|s| by_fold.push(s));
+                assert_eq!(by_fold, by_next, "{chunk_type:?} [{start}, {end}]");
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty_chunk_contract_is_the_same_for_every_encoding() {
+        for chunk_type in CHUNK_TYPES {
+            let chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            assert_eq!(chunk.first_timestamp(), 0, "{chunk_type:?}");
+            assert_eq!(chunk.last_timestamp(), 0, "{chunk_type:?}");
+            assert_eq!(chunk.last_value(), 0.0, "{chunk_type:?}");
+            assert!(chunk.last_sample().is_none(), "{chunk_type:?}");
+            assert!(!chunk.overlaps(i64::MIN, i64::MAX), "{chunk_type:?}");
+            assert!(!chunk.is_timestamp_in_range(0), "{chunk_type:?}");
+            assert!(
+                !chunk.is_contained_by_range(i64::MIN, i64::MAX),
+                "{chunk_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_upsert_reports_insert_versus_update() {
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            let policy = DuplicatePolicy::KeepLast;
+            assert!(
+                chunk.upsert_sample(Sample::new(100, 1.0), policy).unwrap(),
+                "{chunk_type:?}"
+            );
+            assert!(
+                chunk.upsert_sample(Sample::new(300, 3.0), policy).unwrap(),
+                "{chunk_type:?}"
+            );
+            assert!(
+                chunk.upsert_sample(Sample::new(200, 2.0), policy).unwrap(),
+                "{chunk_type:?}"
+            );
+            assert!(
+                !chunk.upsert_sample(Sample::new(200, 9.0), policy).unwrap(),
+                "{chunk_type:?}"
+            );
+            assert_eq!(chunk.len(), 3, "{chunk_type:?}");
+            assert_eq!(
+                chunk.get_range(200, 200).unwrap()[0].value,
+                9.0,
+                "{chunk_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_range_iter_upper_size_hint_is_the_chunk_length() {
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            chunk.set_data(&generate_random_samples(64)).unwrap();
+            assert_eq!(
+                chunk.range_iter(i64::MIN, i64::MAX).size_hint().1,
+                Some(64),
+                "{chunk_type:?}"
+            );
+            assert_eq!(chunk.iter().count(), 64, "{chunk_type:?}");
+        }
+    }
+
+    /// Two dense clusters, 1 ms apart inside each, separated by an ~11-day gap: the shape that
+    /// defeats an evenly-spread density estimate.
+    fn clustered_samples() -> Vec<Sample> {
+        let left = (0..40_000i64).map(|i| Sample::new(1_000 + i, 1.0));
+        let right = (0..40_000i64).map(|i| Sample::new(1_000_000_000 + i, 1.0));
+        left.chain(right).collect()
+    }
+
+    /// A window inside the gap holds no samples, but covers almost all of the chunk's span. A
+    /// density estimate reserved ~1.28 MB here for an empty result; partial reads may only
+    /// reserve speculatively up to `PARTIAL_RANGE_RESERVE_CAP`.
+    #[test]
+    fn test_gap_window_range_read_reserves_at_most_the_cap() {
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 64 * 1024);
+            chunk.set_data(&clustered_samples()).unwrap();
+            let (lo, hi) = (
+                chunk.first_timestamp() + 40_000,
+                chunk.last_timestamp() - 40_000,
+            );
+
+            let got = chunk.get_range(lo, hi).unwrap();
+
+            assert!(got.is_empty(), "{chunk_type:?}");
+            assert!(
+                got.capacity() <= PARTIAL_RANGE_RESERVE_CAP,
+                "{chunk_type:?}: reserved {} samples for an empty gap window",
+                got.capacity()
+            );
+        }
+    }
+
+    /// A full-chunk read keeps its exact, single allocation.
+    #[test]
+    fn test_full_window_range_read_reserves_exactly_the_sample_count() {
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 64 * 1024);
+            chunk.set_data(&clustered_samples()).unwrap();
+
+            let got = chunk.get_range(i64::MIN, i64::MAX).unwrap();
+
+            assert_eq!(got.len(), chunk.len(), "{chunk_type:?}");
+            assert_eq!(got.capacity(), chunk.len(), "{chunk_type:?}");
+        }
+    }
+
+    /// Capping the reservation must not change what a partial read returns, whether the
+    /// window misses the chunk, straddles a cluster edge, or spans more than the cap.
+    #[test]
+    fn test_partial_range_reads_return_the_samples_in_the_window() {
+        let samples = clustered_samples();
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 64 * 1024);
+            chunk.set_data(&samples).unwrap();
+            for (lo, hi) in [
+                (0, 999),                  // before the chunk
+                (2_000_000_000, i64::MAX), // after the chunk
+                (40_000, 999_999_999),     // inside the gap
+                (40_900, 1_000_000_099),   // straddles both cluster edges
+                (5_000, 25_000),           // well past the cap
+                (500, 1_009),              // clips the first sample
+                (20_000, 10_000),          // inverted
+            ] {
+                let expected: Vec<Sample> = samples
+                    .iter()
+                    .copied()
+                    .filter(|s| s.timestamp >= lo && s.timestamp <= hi)
+                    .collect();
+                assert_eq!(
+                    chunk.get_range(lo, hi).unwrap(),
+                    expected,
+                    "{chunk_type:?} [{lo}, {hi}]"
+                );
+            }
+        }
+    }
+
+    /// A window that misses a compressed chunk yields `SampleIter::Empty` without decoding the
+    /// stream (the codecs decode from the start, so a miss used to read the whole chunk).
+    #[test]
+    fn test_out_of_window_range_iter_is_empty_for_compressed_chunks() {
+        use crate::iterators::SampleIter;
+        let samples = generate_random_samples(100);
+        let (first, last) = (samples[0].timestamp, samples[99].timestamp);
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            chunk.set_data(&samples).unwrap();
+            for (start, end) in [(0, first - 1), (last + 1, i64::MAX), (last, first)] {
+                assert!(
+                    matches!(chunk.range_iter(start, end), SampleIter::Empty),
+                    "{chunk_type:?} [{start}, {end}]"
+                );
+            }
+            assert_eq!(chunk.range_iter(first, last).count(), 100, "{chunk_type:?}");
+        }
+    }
+
+    /// A filter can drop every sample, so it cannot promise its inner iterator's lower bound.
+    #[test]
+    fn test_filtered_iter_size_hint_has_no_lower_bound() {
+        use crate::series::types::ValueFilter;
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            chunk.set_data(&generate_random_samples(50)).unwrap();
+            let filter = ValueFilter {
+                min: 1e300,
+                max: 1e301,
+            };
+            let iter = chunk.filtered_iter(i64::MIN, i64::MAX, None, Some(filter));
+            assert_eq!(iter.size_hint().0, 0, "{chunk_type:?}");
+            assert_eq!(iter.count(), 0, "{chunk_type:?}");
+        }
+    }
+
+    #[test]
+    fn test_set_data_with_empty_slice_empties_the_chunk() {
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 4096);
+            chunk.set_data(&generate_random_samples(50)).unwrap();
+            chunk.set_data(&[]).unwrap();
+            assert!(chunk.is_empty(), "{chunk_type:?}");
+            assert_eq!(chunk.len(), 0, "{chunk_type:?}");
+        }
+    }
+
+    /// `merge_by_capacity`'s partial branch: the retention floor clips the source to fewer
+    /// samples than `dest` can take, so `split_at` leaves nothing for `src.set_data`.
+    #[test]
+    fn test_merge_by_capacity_partial_merge_with_clipped_source() {
+        for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+            let mut dest = TimeSeriesChunk::new(chunk_type, 4096);
+            let mut ts = 1000i64;
+            loop {
+                dest.add_sample(&Sample {
+                    timestamp: ts,
+                    value: (ts % 97) as f64 * 1.37,
+                })
+                .unwrap();
+                ts += 1000;
+                let r = dest.estimate_remaining_sample_capacity();
+                if dest.len() >= 16 && (4..=40).contains(&r) {
+                    break;
+                }
+                assert!(!dest.is_full());
+            }
+            let r = dest.estimate_remaining_sample_capacity();
+            let n = 2 * r; // r < n and r > n / 4: partial branch
+            let mut src = TimeSeriesChunk::new(chunk_type, 4096);
+            for i in 0..n {
+                src.add_sample(&Sample {
+                    timestamp: ts + i as i64 * 1000,
+                    value: i as f64,
+                })
+                .unwrap();
+            }
+            let keep = (r / 2).max(1); // survivors fit entirely in dest
+            let min_timestamp = ts + (n - keep) as i64 * 1000;
+            let merged = merge_by_capacity(&mut dest, &mut src, min_timestamp, None).unwrap();
+            assert_eq!(merged, Some(keep), "{chunk_type:?}");
+            assert!(src.is_empty(), "{chunk_type:?}: source should be drained");
+        }
+    }
+
     #[test]
     fn test_merge_by_capacity_partial_merge() {
         let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
@@ -1242,10 +1497,11 @@ mod tests {
                 chunk.add_sample(sample).unwrap();
             }
 
-            // Test with a mix of present and absent timestamps
+            // A mix of present and absent timestamps, sorted and de-duplicated as
+            // `samples_by_timestamps` requires. Samples sit on a 1000 ms grid, so +500 misses.
             let timestamps = vec![
                 samples[5].timestamp,
-                2000, // not present
+                samples[10].timestamp + 500, // not present
                 samples[15].timestamp,
             ];
             let expected_samples = vec![samples[5], samples[15]];
@@ -1326,9 +1582,10 @@ mod tests {
 
     /// A compressed chunk pushed past `max_size` must not wrap its remaining capacity.
     ///
-    /// `GorillaChunk::remaining_capacity` was a plain `max_size - data_size()`, and this crate
-    /// builds release without `overflow-checks`, so an over-full chunk wrapped to a `usize` near
-    /// `usize::MAX` — which `remaining_samples` then divided into a huge sample estimate.
+    /// This crate builds release without `overflow-checks`, so a plain `max_size - size()` on an
+    /// over-full chunk wraps to a `usize` near `usize::MAX` and turns into a huge sample estimate
+    /// (the bug the old `GorillaChunk::remaining_capacity` had).
+    /// `estimate_remaining_sample_capacity` guards `used >= total` and must report zero.
     #[test]
     fn test_remaining_capacity_saturates_on_an_over_full_chunk() {
         for chunk_type in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
@@ -1341,12 +1598,11 @@ mod tests {
                 "{chunk_type:?}: chunk never exceeded max_size, the guard is untested",
             );
 
-            let remaining = match &chunk {
-                TimeSeriesChunk::Gorilla(c) => c.remaining_capacity(),
-                TimeSeriesChunk::Chimp(c) => c.remaining_capacity(),
-                TimeSeriesChunk::Uncompressed(_) => unreachable!(),
-            };
-            assert_eq!(remaining, 0, "{chunk_type:?}: remaining capacity wrapped");
+            assert_eq!(
+                chunk.estimate_remaining_sample_capacity(),
+                0,
+                "{chunk_type:?}: remaining capacity wrapped"
+            );
         }
     }
 

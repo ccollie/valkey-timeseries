@@ -1,8 +1,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::time::Duration;
-use valkey_timeseries::common::Timestamp;
+use valkey_timeseries::common::{Sample, Timestamp};
 use valkey_timeseries::series::ValueFilter;
-use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
 
 mod support;
 
@@ -157,5 +157,168 @@ fn bench_filtered_scan(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_scan, bench_filtered_scan);
+/// Samples per cluster in the `range_gap` dataset.
+const GAP_CLUSTER_SAMPLES: i64 = 8_000;
+/// Where the second cluster starts: ~11.6 days after the first, at a 1 s cadence.
+const GAP_RIGHT_START: Timestamp = 1_000_000_000;
+
+/// `range_gap` group: `get_range` on a chunk whose samples sit in two dense clusters with a
+/// long gap between them, the shape that defeats a density estimate based on time span.
+///
+/// - `gap`: a window inside the gap, so the result is empty.
+/// - `edge`: a window straddling the start of the second cluster (100 samples).
+/// - `cluster`: the whole first cluster plus most of the gap, a large partial read.
+/// - `full`: the whole chunk.
+///
+/// Times only; the allocation bound is pinned by
+/// `test_gap_window_range_read_reserves_at_most_the_cap`.
+fn bench_range_gap(c: &mut Criterion) {
+    let mut group = c.benchmark_group("range_gap");
+    group.measurement_time(Duration::from_secs(2));
+
+    let samples: Vec<Sample> = (0..GAP_CLUSTER_SAMPLES)
+        .map(|i| (i * 1000, i))
+        .chain((0..GAP_CLUSTER_SAMPLES).map(|i| (GAP_RIGHT_START + i * 1000, i)))
+        .map(|(timestamp, i)| Sample::new(timestamp, 100.0 + (i % 97) as f64 * 0.25))
+        .collect();
+    let left_end = (GAP_CLUSTER_SAMPLES - 1) * 1000;
+    let cases: [(&str, Timestamp, Timestamp); 4] = [
+        ("gap", left_end + 1, GAP_RIGHT_START - 1),
+        ("edge", GAP_RIGHT_START - 50_000, GAP_RIGHT_START + 99_000),
+        ("cluster", 0, GAP_RIGHT_START - 1),
+        ("full", Timestamp::MIN, Timestamp::MAX),
+    ];
+
+    for encoding in [ChunkEncoding::Gorilla, ChunkEncoding::Chimp] {
+        let mut chunk = TimeSeriesChunk::new(encoding, CHUNK_SIZE_64K);
+        chunk.set_data(&samples).expect("gap dataset should encode");
+
+        for (case, start, end) in cases {
+            let bench_id = format!("{}/two_clusters/64k/{case}", encoding.name());
+            group.bench_function(BenchmarkId::from_parameter(&bench_id), |b| {
+                b.iter(|| {
+                    std::hint::black_box(
+                        chunk
+                            .get_range(start, end)
+                            .expect("get_range should succeed"),
+                    )
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+/// `scan_next` group: the `scan` cases consumed by a `for` loop, which drives `next()` per
+/// sample instead of `fold`. `Vec`'s `collect`/`extend` and every `for` loop in the command
+/// path take this shape; `scan` (`for_each`) only measures the fold path.
+///
+/// Read with care: this bare single-chunk loop is sensitive to whole-program inlining. On
+/// uncompressed chunks it measured ~55 % slower after `9ddbe9da0` with identical `next` code,
+/// while the same scan through `TimeSeries::range_iter` (`series_scan`) got faster.
+fn bench_scan_next(c: &mut Criterion) {
+    let registry = DatasetRegistry::new();
+    let mut group = c.benchmark_group("scan_next");
+    group.measurement_time(Duration::from_secs(2));
+
+    let key = DatasetKey::new(ValueWorkload::Drift, TimestampModel::Regular);
+    let dataset = registry.dataset(key);
+    for encoding in encodings() {
+        for chunk_size in SCAN_CHUNK_SIZES {
+            let chunk = build_chunk(encoding, chunk_size, dataset);
+            for (case, start, end) in
+                selectivity_cases(chunk.first_timestamp(), chunk.last_timestamp())
+            {
+                if case != "full" && case != "mid_10pct" {
+                    continue;
+                }
+                let bench_id = format!(
+                    "{}/{}/{}/{case}",
+                    encoding.name(),
+                    ValueWorkload::Drift.id(),
+                    chunk_size_id(chunk_size),
+                );
+                group.bench_function(BenchmarkId::from_parameter(&bench_id), |b| {
+                    b.iter(|| {
+                        for s in chunk.range_iter(start, end) {
+                            std::hint::black_box((s.timestamp, s.value));
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    group.finish();
+}
+
+/// Samples per series in `series_scan`.
+const SERIES_SCAN_SAMPLES: usize = 20_000;
+
+/// `series_scan` group: a `for` loop over `TimeSeries::range_iter`, the forward scan behind
+/// `TS.RANGE`, `TS.READ` and compaction, over a multi-chunk series per encoding and chunk size.
+fn bench_series_scan(c: &mut Criterion) {
+    use valkey_timeseries::series::{TimeSeries, TimeSeriesOptions};
+
+    let registry = DatasetRegistry::new();
+    let mut group = c.benchmark_group("series_scan");
+    group.measurement_time(Duration::from_secs(2));
+
+    let key = DatasetKey::new(ValueWorkload::Drift, TimestampModel::Regular);
+    let dataset = registry.dataset(key);
+    let samples = &dataset[..SERIES_SCAN_SAMPLES.min(dataset.len())];
+    let first = samples[0].timestamp;
+    let last = samples[samples.len() - 1].timestamp;
+    let span = last - first;
+    let cases: [(&str, Timestamp, Timestamp); 2] = [
+        ("full", first, last),
+        (
+            "mid_10pct",
+            first + span * 45 / 100,
+            first + span * 55 / 100,
+        ),
+    ];
+
+    for encoding in encodings() {
+        for chunk_size in SCAN_CHUNK_SIZES {
+            let mut series = TimeSeries::with_options(TimeSeriesOptions {
+                chunk_encoding: encoding,
+                chunk_size: Some(chunk_size),
+                ..Default::default()
+            })
+            .expect("valid series options");
+            for s in samples {
+                series.add(s.timestamp, s.value, None);
+            }
+
+            for (case, start, end) in cases {
+                let bench_id = format!(
+                    "{}/{}/{}/{case}",
+                    encoding.name(),
+                    ValueWorkload::Drift.id(),
+                    chunk_size_id(chunk_size),
+                );
+                group.bench_function(BenchmarkId::from_parameter(&bench_id), |b| {
+                    b.iter(|| {
+                        for s in series.range_iter(start, end) {
+                            std::hint::black_box((s.timestamp, s.value));
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_scan,
+    bench_scan_next,
+    bench_series_scan,
+    bench_filtered_scan,
+    bench_range_gap
+);
 criterion_main!(benches);

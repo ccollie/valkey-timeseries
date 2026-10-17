@@ -81,17 +81,17 @@ impl TimeSeriesChunk {
     }
 
     pub fn is_timestamp_in_range(&self, ts: Timestamp) -> bool {
-        ts >= self.first_timestamp() && ts <= self.last_timestamp()
+        !self.is_empty() && ts >= self.first_timestamp() && ts <= self.last_timestamp()
     }
 
     pub fn is_contained_by_range(&self, start_ts: Timestamp, end_ts: Timestamp) -> bool {
-        self.first_timestamp() >= start_ts && self.last_timestamp() <= end_ts
+        !self.is_empty() && self.first_timestamp() >= start_ts && self.last_timestamp() <= end_ts
     }
 
     pub fn overlaps(&self, start_time: i64, end_time: i64) -> bool {
-        let first_time = self.first_timestamp();
-        let last_time = self.last_timestamp();
-        first_time <= end_time && last_time >= start_time
+        !self.is_empty()
+            && self.first_timestamp() <= end_time
+            && self.last_timestamp() >= start_time
     }
 
     pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
@@ -106,27 +106,11 @@ impl TimeSeriesChunk {
         false
     }
 
-    // todo: make this a trait method
-    pub fn iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => Box::new(chunk.iter()),
-            Gorilla(chunk) => Box::new(chunk.iter()),
-            Chimp(chunk) => Box::new(chunk.iter()),
-        }
-    }
-
-    pub fn range_iter(&'_ self, start: Timestamp, end: Timestamp) -> SampleIter<'_> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.range_iter(start, end),
-            Gorilla(chunk) => chunk.range_iter(start, end),
-            Chimp(chunk) => chunk.range_iter(start, end),
-        }
-    }
-
     // NOTE! this function assumes that timestamps are sorted ascending and de-duped
     pub fn samples_by_timestamps(&self, timestamps: &[Timestamp]) -> TsdbResult<Vec<Sample>> {
+        if let TimeSeriesChunk::Uncompressed(c) = self {
+            return c.samples_by_timestamps(timestamps);
+        }
         if self.len() == 0 || timestamps.is_empty() {
             return Ok(vec![]);
         }
@@ -178,29 +162,12 @@ impl TimeSeriesChunk {
         Ok(samples)
     }
 
-    /// Merge a range of samples into this chunk.
-    /// If the chunk is full or the other chunk is empty, it returns 0.
-    /// Duplicate values are handled according to `duplicate_policy`.
-    /// Samples with timestamps before `retention_threshold` will be ignored, whether
-    /// they fall with the given range [start_ts..end_ts].
-    /// Returns the number of samples merged.
-    pub fn merge_range(
-        &mut self,
-        sample_iter: impl Iterator<Item = Sample>,
-        duplicate_policy: Option<DuplicatePolicy>,
-    ) -> TsdbResult<usize> {
-        if self.is_full() {
-            return Ok(0);
-        }
-        let samples = sample_iter.collect::<Vec<Sample>>();
-        let res = self.merge_samples(&samples, duplicate_policy)?;
-        Ok(res.iter().filter(|s| s.is_ok()).count())
-    }
-
     pub fn memory_usage(&self) -> usize {
         size_of::<Self>() + self.get_heap_size()
     }
 
+    /// The upsert-path split rule: `utilization() >= SPLIT_FACTOR`. The merge path uses
+    /// `TimeSeries::needs_split` instead. See the `# Capacity` section on [`ChunkOps`].
     pub fn should_split(&self) -> bool {
         self.utilization() >= SPLIT_FACTOR
     }
@@ -209,11 +176,14 @@ impl TimeSeriesChunk {
         &mut self,
         sample: Sample,
         policy: DuplicatePolicy,
-    ) -> (usize, SampleAddResult) {
+    ) -> (bool, SampleAddResult) {
         match self.upsert_sample(sample, policy) {
-            Ok(size) => (size, SampleAddResult::Ok(sample)),
-            Err(TsdbError::DuplicateSample(_)) => (0, SampleAddResult::Duplicate),
-            Err(_) => (0, SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE)),
+            Ok(inserted) => (inserted, SampleAddResult::Ok(sample)),
+            Err(TsdbError::DuplicateSample(_)) => (false, SampleAddResult::Duplicate),
+            Err(_) => (
+                false,
+                SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE),
+            ),
         }
     }
 
@@ -267,10 +237,7 @@ impl Default for TimeSeriesChunk {
 }
 
 impl Chunk for TimeSeriesChunk {
-    fn split(&mut self) -> TsdbResult<Self>
-    where
-        Self: Sized,
-    {
+    fn split(&mut self) -> TsdbResult<Self> {
         use TimeSeriesChunk::*;
         match self {
             Uncompressed(chunk) => Ok(Uncompressed(chunk.split()?)),
@@ -357,10 +324,4 @@ impl Chunk for TimeSeriesChunk {
 fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut RedisModuleIO) {
     let chunk_type: u8 = chunk.get_encoding() as u8;
     rdb_save_u8(rdb, chunk_type);
-}
-
-impl PartialOrd for TimeSeriesChunk {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.first_timestamp().partial_cmp(&other.first_timestamp())
-    }
 }
