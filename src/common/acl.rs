@@ -98,25 +98,50 @@ impl ThreadAclScope {
     /// value exists, so nothing runs a `Drop` that could clear the live scope's identity;
     /// `identity` itself is released here, under the caller's lock.
     fn enter_with_identity(identity: AclIdentity) -> ValkeyResult<Self> {
-        THREAD_ACL_USER.with(|u| {
-            let mut slot = u.borrow_mut();
-            if slot.is_some() {
-                return Err(ValkeyError::Str(error_consts::ACL_SCOPE_ALREADY_ENTERED));
-            }
-            *slot = Some(Rc::new(identity));
-            Ok(Self {
+        // `install` hands a refused identity back out of the thread-local access, so it is
+        // dropped below, not inside it. See [`install`].
+        match THREAD_ACL_USER.with(|cell| install(cell, identity)) {
+            Ok(()) => Ok(Self {
                 _not_send: PhantomData,
-            })
-        })
+            }),
+            Err(refused) => {
+                drop(refused);
+                Err(ValkeyError::Str(error_consts::ACL_SCOPE_ALREADY_ENTERED))
+            }
+        }
     }
 }
 
 impl Drop for ThreadAclScope {
     fn drop(&mut self) {
-        THREAD_ACL_USER.with(|u| {
-            u.replace(None);
-        });
+        // `clear` hands the identity back out of the thread-local access, so its server
+        // objects are released here, still under the lock, but not inside it. See [`install`].
+        let identity = THREAD_ACL_USER.with(clear);
+        drop(identity);
     }
+}
+
+/// Put `value` in `cell` unless it is occupied, in which case `value` comes back.
+///
+/// The slot's two operations ([`install`], [`clear`]) never drop a value themselves: a
+/// refused or displaced one is returned, so the caller drops it with `cell` not borrowed and
+/// outside the closure it reached the thread-local through. That is not decoration:
+/// [`AclIdentity`] owns server objects (`RM_FreeString`, `RM_FreeModuleUser`) whose release is
+/// no business of this slot's bookkeeping, and a destructor that ever touched the slot again
+/// would panic on a borrowed cell. Today none does; this keeps it from depending on that, or on
+/// the order Rust happens to drop a closure's captures in.
+fn install<T>(cell: &RefCell<Option<Rc<T>>>, value: T) -> Result<(), T> {
+    let mut slot = cell.borrow_mut();
+    if slot.is_some() {
+        return Err(value);
+    }
+    *slot = Some(Rc::new(value));
+    Ok(())
+}
+
+/// Empty `cell`, handing back what it held. See [`install`].
+fn clear<T>(cell: &RefCell<Option<Rc<T>>>) -> Option<Rc<T>> {
+    cell.borrow_mut().take()
 }
 
 /// The identity the current thread's [`ThreadAclScope`] attached, if any.
@@ -581,6 +606,53 @@ mod tests {
         assert!(thread_acl_scope_active());
         drop(again);
         assert!(!thread_acl_scope_active());
+    }
+
+    /// A value the slot refuses or gives up is dropped by the caller, with the cell free: a
+    /// destructor that re-enters the slot must find it unborrowed.
+    #[test]
+    fn a_refused_or_cleared_value_is_dropped_with_the_cell_free() {
+        thread_local! {
+            static CELL: RefCell<Option<Rc<Probe>>> = const { RefCell::new(None) };
+            static FREE_AT_DROP: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+        }
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                let free = CELL.with(|cell| cell.try_borrow_mut().is_ok());
+                FREE_AT_DROP.with(|seen| seen.borrow_mut().push(free));
+            }
+        }
+        let dropped = || FREE_AT_DROP.with(|seen| seen.borrow().len());
+
+        assert!(CELL.with(|cell| install(cell, Probe)).is_ok());
+
+        let Err(refused) = CELL.with(|cell| install(cell, Probe)) else {
+            panic!("a second value was installed over the first");
+        };
+        assert_eq!(
+            dropped(),
+            0,
+            "the refusal dropped the value instead of returning it"
+        );
+        drop(refused);
+        assert_eq!(dropped(), 1);
+
+        let cleared = CELL.with(clear);
+        assert_eq!(
+            dropped(),
+            1,
+            "clearing dropped the value instead of returning it"
+        );
+        drop(cleared);
+        assert_eq!(dropped(), 2);
+        assert!(CELL.with(|cell| cell.borrow().is_none()));
+
+        assert_eq!(
+            FREE_AT_DROP.with(|seen| seen.borrow().clone()),
+            [true, true],
+            "a destructor found the cell borrowed"
+        );
     }
 
     #[test]
