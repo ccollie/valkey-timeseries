@@ -9,6 +9,7 @@
 
 use crate::common::context::is_real_user_client;
 use crate::common::logging::log_warning;
+use crate::common::threads::check_holds_gil;
 use crate::error_consts;
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -62,19 +63,22 @@ thread_local! {
 /// the thread's identity while the first still lived, switching its later checks to the
 /// context's own user without a sound.
 #[must_use = "ACL checks run as this user only while the scope is live"]
-pub struct ThreadAclScope {
+pub(crate) struct ThreadAclScope {
     // An `Rc` marker: the identity it installs is an `Rc` in a thread-local.
     _not_send: PhantomData<Rc<()>>,
 }
 
 impl ThreadAclScope {
     /// Run this thread's checks as `user`, resolving the user's handle once, now. Call it
-    /// under the module lock.
+    /// under the module lock; threading rule R6 checks that (see `common::threads`), at entry
+    /// and again when the scope drops.
     ///
     /// Fails when the user does not exist or is disabled, so a caller cannot silently run
     /// without enforcement, and when a scope is already live on this thread (see the type
     /// docs).
-    pub fn enter_as(user: &str) -> ValkeyResult<Self> {
+    pub(crate) fn enter_as(user: &str) -> ValkeyResult<Self> {
+        // Before the lookup: it reads the server's user table, which the GIL guards.
+        check_holds_gil();
         // Created with no context, so it belongs to the scope alone and is freed with it,
         // under the caller's lock, whatever context that lock came from. Built from the
         // bytes, so a name with a NUL in it is an unknown user, not a panic.
@@ -92,6 +96,7 @@ impl ThreadAclScope {
     /// thread-local scope: they have no live server to create a string or resolve a user.
     #[cfg(test)]
     fn enter_unresolved() -> ValkeyResult<Self> {
+        check_holds_gil();
         Self::enter_with_identity(AclIdentity {
             user: None,
             // A null string: dropping one frees nothing, and nothing reads it.
@@ -128,6 +133,8 @@ impl ThreadAclScope {
 
 impl Drop for ThreadAclScope {
     fn drop(&mut self) {
+        // The identity's server objects are freed below; R6 says the GIL must still be held.
+        check_holds_gil();
         // `clear` hands the identity back out of the thread-local access, so its server
         // objects are released here, still under the lock, but not inside it. See [`install`].
         let identity = THREAD_ACL_USER.with(clear);
@@ -618,9 +625,49 @@ pub fn check_metadata_permissions(ctx: &Context) -> ValkeyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::threads::GilToken;
+
+    /// Marks this thread as holding the GIL: a stand-in for the module lock, which unit tests
+    /// have no server to take. A scope is entered and dropped only under it (R6).
+    fn fake_gil() -> GilToken {
+        GilToken::take(|| ()).0
+    }
+
+    /// R6: a scope is entered, and dropped, only by a thread holding the GIL. A debug build
+    /// panics on either; a release build logs the first, so this runs in debug builds only.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_scope_is_entered_and_dropped_only_under_the_gil() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        std::thread::spawn(|| {
+            let entered = catch_unwind(|| ThreadAclScope::enter_unresolved().map(drop));
+            assert!(entered.is_err(), "a scope was entered without the GIL");
+            assert!(
+                !thread_acl_scope_active(),
+                "the refused entry installed an identity"
+            );
+        })
+        .join()
+        .unwrap();
+
+        std::thread::spawn(|| {
+            let gil = fake_gil();
+            let scope = ThreadAclScope::enter_unresolved().expect("entered under the GIL");
+            drop(gil);
+            let dropped = catch_unwind(AssertUnwindSafe(|| drop(scope)));
+            assert!(
+                dropped.is_err(),
+                "a scope was dropped after the GIL was released"
+            );
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn a_nested_scope_is_rejected_and_the_outer_one_stays_in_force() {
+        let _gil = fake_gil();
         let outer = ThreadAclScope::enter_unresolved().expect("no scope is live");
         let outer_identity = thread_identity().expect("the outer scope attached an identity");
 
@@ -699,6 +746,7 @@ mod tests {
 
     #[test]
     fn test_acl_scope_is_thread_local() {
+        let _gil = fake_gil();
         assert!(!thread_acl_scope_active());
         let scope = ThreadAclScope::enter_unresolved().expect("no scope is live");
         assert!(thread_acl_scope_active());
