@@ -167,6 +167,12 @@ pub const READ_BLOCKING_NOT_ALLOWED: &str = "TSDB: blocking TS.READ (with BLOCK)
 // INVALID_COMPARISON_OPERATOR, which `ComparisonOperator::try_from` already returns.
 pub const READ_CONDITION_VALUE_MUST_BE_A_NUMBER: &str = "TSDB: CONDITION value must be a number";
 
+// Fan-out
+/// A fan-out share stopped because its requester's time budget ran out: the requester
+/// has already answered its client without it.
+pub const FANOUT_REQUESTER_GAVE_UP: &str =
+    "TSDB: fan-out request abandoned: the requester's time budget ran out";
+
 // TS.QUERYLABELS
 pub const UNKNOWN_QUERY_LABELS_SUBTYPE: &str =
     "TSDB: unknown subtype, must be one of LABELS|VALUES";

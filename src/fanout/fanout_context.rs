@@ -1,6 +1,8 @@
 use crate::common::acl::AclContextGuard;
 use crate::common::context::set_current_db;
 use crate::common::threads::LockGil;
+use std::sync::OnceLock;
+use std::time::Instant;
 use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The shard-local side of one fan-out request: the ACL user it executes as,
@@ -22,6 +24,8 @@ pub struct FanoutContext {
     user: Option<String>,
     db: i32,
     ctx: &'static DetachedContext,
+    /// When the requester stops waiting, if it said ([`Self::set_deadline`]).
+    deadline: OnceLock<Instant>,
 }
 
 impl FanoutContext {
@@ -33,7 +37,26 @@ impl FanoutContext {
             user,
             db,
             ctx: &MODULE_CONTEXT,
+            deadline: OnceLock::new(),
         }
+    }
+
+    /// Record when the requester stops waiting for this answer. Reads walking the
+    /// keyspace for it stop between batches from then on ([`Self::expired`]). Only the
+    /// first call counts.
+    ///
+    /// Nothing on this branch sets one yet: the PromQL fan-out does, from its
+    /// request's time budget. Until then [`Self::expired`] is always false.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_deadline(&self, deadline: Instant) {
+        let _ = self.deadline.set(deadline);
+    }
+
+    /// Whether the requester has stopped waiting: its answer would arrive after it gave up.
+    pub fn expired(&self) -> bool {
+        self.deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= *deadline)
     }
 
     /// The ACL user the request executes as, if enforcement applies.
@@ -80,6 +103,20 @@ mod tests {
         let ctx = FanoutContext::new(Some("alice".to_owned()), 3);
         assert_eq!(ctx.user(), Some("alice"));
         assert_eq!(ctx.db(), 3);
+    }
+
+    #[test]
+    fn test_fanout_context_expires_only_with_a_deadline_in_the_past() {
+        let ctx = FanoutContext::new(None, 0);
+        assert!(!ctx.expired(), "no deadline: never expires");
+        ctx.set_deadline(Instant::now() + std::time::Duration::from_secs(60));
+        assert!(!ctx.expired());
+        ctx.set_deadline(Instant::now());
+        assert!(!ctx.expired(), "only the first deadline counts");
+
+        let past = FanoutContext::new(None, 0);
+        past.set_deadline(Instant::now());
+        assert!(past.expired());
     }
 
     #[test]
