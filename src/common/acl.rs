@@ -1,13 +1,143 @@
-use crate::common::context::{get_acl_user, is_acl_enforced};
+//! ACL checks, and the identity they run as.
+//!
+//! This is the one place that decides *whether* a key may be touched ([`KeyAccess`],
+//! [`check_key_permissions`], [`check_metadata_permissions`]) and *as whom*. A command on the
+//! main thread runs as its client's user. Work done on another thread, or for a fan-out
+//! request from another node, has no such client: it captures the caller's name with
+//! [`caller_user_name`] where the caller is known, and runs its checks inside a
+//! [`ThreadAclScope`] for that name.
+
+use crate::common::context::is_acl_enforced;
 use crate::error_consts;
-use crate::fanout::acl::fanout_module_user;
-use std::ptr::NonNull;
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     AclPermissions, CallOptionsBuilder, CallReply, CallResult, Context, ValkeyError, ValkeyResult,
     ValkeyString, raw,
 };
+
+/// The ACL identity a [`ThreadAclScope`] attaches to the current thread.
+///
+/// `user` is the [`ModuleUser`] handle [`ThreadAclScope::enter_with_user`] resolves via
+/// `RM_GetModuleUserFromUserName` and keeps for the life of the scope, so every
+/// [`KeyAccess`] built under it reuses the handle instead of resolving the same name again.
+/// It is `None` only for the test-only unresolved scope, which has no live server to
+/// resolve against.
+///
+/// `name` is the string `user` was resolved from, kept alive for as long as `user` is. Both
+/// are server objects, freed when the scope drops, so the scope must not outlive the module
+/// lock it was entered under.
+///
+/// Field order matters: fields drop in declaration order, so `user` is released
+/// before the `name` it was resolved from.
+struct AclIdentity {
+    user: Option<Rc<ModuleUser>>,
+    name: ValkeyString,
+}
+
+thread_local! {
+    static THREAD_ACL_USER: RefCell<Option<Rc<AclIdentity>>> = const { RefCell::new(None) };
+}
+
+/// Runs this thread's ACL checks as a given user until it drops.
+///
+/// For code holding the module lock on a context that is not the caller's own client: a
+/// fan-out request handler on `MODULE_CONTEXT`, or a background job for a blocked client.
+/// Whether checks apply at all is still decided by the context ([`is_acl_enforced`]); the
+/// scope only says *which* user they check.
+///
+/// # Invariant
+/// Thread-local, so it is not `Send`: any ACL-relevant operation must run on the thread
+/// that entered it, and it must drop before the module lock it was entered under is
+/// released.
+///
+/// Scopes do not nest. Entering one while another is live on the thread fails and leaves the
+/// first untouched: a second would replace the first's identity, and dropping it would clear
+/// the thread's identity while the first still lived, switching its later checks to the
+/// context's own user without a sound.
+pub struct ThreadAclScope {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl ThreadAclScope {
+    /// Run this thread's checks as `user`, resolving the user's handle once, now. Call it
+    /// under the module lock.
+    ///
+    /// Fails when the user does not exist or is disabled, so a caller cannot silently run
+    /// without enforcement, and when a scope is already live on this thread (see the type
+    /// docs).
+    pub fn enter_with_user(user: &str) -> ValkeyResult<Self> {
+        // Created with no context, so it belongs to the scope alone and is freed with it,
+        // under the caller's lock, whatever context that lock came from. Built from the
+        // bytes, so a name with a NUL in it is an unknown user, not a panic.
+        let name = ValkeyString::create_from_slice(ptr::null_mut(), user.as_bytes());
+        let module_user = ModuleUser::from_name(&name).ok_or_else(|| {
+            ValkeyError::String(format!("ACL user '{user}' does not exist or is disabled"))
+        })?;
+        Self::enter_with_identity(AclIdentity {
+            user: Some(Rc::new(module_user)),
+            name,
+        })
+    }
+
+    /// Attach an identity with no user handle and no name, for tests that only exercise the
+    /// thread-local scope: they have no live server to create a string or resolve a user.
+    #[cfg(test)]
+    fn enter_unresolved() -> ValkeyResult<Self> {
+        Self::enter_with_identity(AclIdentity {
+            user: None,
+            // A null string: dropping one frees nothing, and nothing reads it.
+            name: ValkeyString::from_redis_module_string(ptr::null_mut(), ptr::null_mut()),
+        })
+    }
+
+    /// Install `identity` on this thread unless a scope already has one. On refusal no scope
+    /// value exists, so nothing runs a `Drop` that could clear the live scope's identity;
+    /// `identity` itself is released here, under the caller's lock.
+    fn enter_with_identity(identity: AclIdentity) -> ValkeyResult<Self> {
+        THREAD_ACL_USER.with(|u| {
+            let mut slot = u.borrow_mut();
+            if slot.is_some() {
+                return Err(ValkeyError::Str(error_consts::ACL_SCOPE_ALREADY_ENTERED));
+            }
+            *slot = Some(Rc::new(identity));
+            Ok(Self {
+                _not_send: PhantomData,
+            })
+        })
+    }
+}
+
+impl Drop for ThreadAclScope {
+    fn drop(&mut self) {
+        THREAD_ACL_USER.with(|u| {
+            u.replace(None);
+        });
+    }
+}
+
+/// The identity the current thread's [`ThreadAclScope`] attached, if any.
+fn thread_identity() -> Option<Rc<AclIdentity>> {
+    THREAD_ACL_USER.with(|u| u.borrow().clone())
+}
+
+#[cfg(test)]
+fn thread_acl_scope_active() -> bool {
+    THREAD_ACL_USER.with(|u| u.borrow().is_some())
+}
+
+/// The ACL user name of `ctx`'s client, to carry to where the checks will run: another
+/// thread, or another node. `None` when the client has no user name.
+///
+/// Call it only for a client [`is_acl_enforced`] accepts: a replicated or AOF client has no
+/// user, and asking for its name dereferences a null pointer.
+pub(crate) fn caller_user_name(ctx: &Context) -> Option<String> {
+    let user = ctx.get_current_user().to_string();
+    (!user.is_empty()).then_some(user)
+}
 
 /// A server user handle, as `RM_GetModuleUserFromUserName` returns it.
 ///
@@ -18,10 +148,11 @@ use valkey_module::{
 /// whole of the check loop, which is why [`KeyAccess`] is built per request
 /// and never stored.
 ///
-/// A fan-out request handler resolves this once per GIL acquisition, in
-/// `FanoutContext::lock`, and shares it (as an `Rc`) with every `KeyAccess`
-/// built under that lock via [`fanout_module_user`] — never re-resolving the
-/// name. The handle is dropped before the lock is released.
+/// Code running under a [`ThreadAclScope`] resolves this once, when the scope is
+/// entered (for a fan-out request, once per GIL acquisition in
+/// `FanoutContext::lock`), and shares it (as an `Rc`) with every `KeyAccess`
+/// built under that scope — never re-resolving the name. The handle is dropped
+/// with the scope, before the lock is released.
 pub(crate) struct ModuleUser(NonNull<raw::RedisModuleUser>);
 
 impl ModuleUser {
@@ -284,8 +415,8 @@ impl KeyAccess {
         let identity = if !is_acl_enforced(ctx) {
             Identity::Unrestricted
         } else {
-            // Reuse the handle a fan-out request handler already resolved (an `Rc`
-            // clone, no FFI call) rather than resolving the name again here.
+            // Reuse the handle a thread scope already resolved (an `Rc` clone, no FFI
+            // call) rather than resolving the name again here.
             let identify = |user: Rc<ModuleUser>, name: &dyn Fn() -> ValkeyString| {
                 if user.allows_all_keys(ctx, name, &permissions) {
                     Identity::Unrestricted
@@ -293,8 +424,10 @@ impl KeyAccess {
                     Identity::User(user)
                 }
             };
-            if let Some(user) = fanout_module_user() {
-                identify(user, &|| get_acl_user(ctx))
+            let scoped =
+                thread_identity().and_then(|identity| Some((identity.user.clone()?, identity)));
+            if let Some((user, identity)) = scoped {
+                identify(user, &|| identity.name.safe_clone(ctx))
             } else {
                 let name = ctx.get_current_user();
                 match ModuleUser::from_name(&name) {
@@ -418,6 +551,52 @@ pub fn check_metadata_permissions(ctx: &Context) -> ValkeyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_scope_is_rejected_and_the_outer_one_stays_in_force() {
+        let outer = ThreadAclScope::enter_unresolved().expect("no scope is live");
+        let outer_identity = thread_identity().expect("the outer scope attached an identity");
+
+        let Err(err) = ThreadAclScope::enter_unresolved() else {
+            panic!("a second scope was accepted while the first was live");
+        };
+        assert!(
+            matches!(err, ValkeyError::Str(msg) if msg == error_consts::ACL_SCOPE_ALREADY_ENTERED),
+            "unexpected error: {err:?}"
+        );
+        let current = thread_identity().expect("the refusal cleared the outer identity");
+        assert!(
+            Rc::ptr_eq(&outer_identity, &current),
+            "the refusal replaced the outer identity"
+        );
+
+        // The refused attempt created no scope, so there is nothing whose drop could
+        // clear the live one: the outer scope still governs until it drops itself.
+        assert!(thread_acl_scope_active());
+        drop(outer);
+        assert!(!thread_acl_scope_active());
+
+        // A scope is enterable again once the first is gone.
+        let again = ThreadAclScope::enter_unresolved().expect("the thread is free again");
+        assert!(thread_acl_scope_active());
+        drop(again);
+        assert!(!thread_acl_scope_active());
+    }
+
+    #[test]
+    fn test_acl_scope_is_thread_local() {
+        assert!(!thread_acl_scope_active());
+        let scope = ThreadAclScope::enter_unresolved().expect("no scope is live");
+        assert!(thread_acl_scope_active());
+
+        let child = std::thread::spawn(thread_acl_scope_active)
+            .join()
+            .expect("thread join failed");
+        assert!(!child);
+
+        drop(scope);
+        assert!(!thread_acl_scope_active());
+    }
 
     fn grants(selectors: &[&[u8]]) -> AllKeysGrants {
         let mut grants = AllKeysGrants(0);

@@ -25,12 +25,12 @@
 use super::postings::{EMPTY_BITMAP, Postings};
 use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
+use crate::common::acl::KeyAccess;
 use crate::common::context::{create_key_string, get_current_db};
 use crate::common::hash::IntMap;
 use crate::common::threads::IterIntoParRayon;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
-use crate::series::acl::KeyAccess;
 use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{
     SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,

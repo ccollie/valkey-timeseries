@@ -4,12 +4,12 @@ use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::commands::command_parser::LabelStatsOptions;
 use crate::commands::ts_labelstats::reply_with_postings_stats;
 use crate::commands::utils::get_multi_command_targets;
+use crate::common::acl::check_metadata_permissions;
 use crate::common::replies::ReplyContext;
 use crate::common::threads::join;
 use crate::fanout::{
     FanoutClientCommand, FanoutCommandResult, FanoutContext, FanoutTarget, NodeInfo,
 };
-use crate::series::acl::check_metadata_permissions;
 use crate::series::index::{
     PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
     get_timeseries_index, serialize_bitmap,

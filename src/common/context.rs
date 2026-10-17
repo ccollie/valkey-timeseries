@@ -6,8 +6,6 @@ use valkey_module::{
     ValkeyModuleServerInfoData, ValkeyResult, ValkeyString, raw,
 };
 
-use crate::fanout::FANOUT_ACL_USER;
-
 /// Build a `ValkeyString` from raw key bytes without going through `CString`.
 ///
 /// `Context::create_string` funnels its argument through `CString::new(..).unwrap()`, so any
@@ -98,17 +96,9 @@ pub fn is_acl_enforced(ctx: &Context) -> bool {
     //
     // Fan-out request handlers run on the detached `MODULE_CONTEXT`, whose client is a
     // real (fake-flagged) client with a non-zero id and no REPLICATED flag, so they are
-    // enforced by this same test; the fan-out ACL scope only supplies *which* user to
-    // check (see `get_acl_user`), never *whether* to check.
+    // enforced by this same test; a `common::acl::ThreadAclScope` only supplies *which*
+    // user to check, never *whether* to check.
     is_real_user_client(ctx)
-}
-
-pub fn get_acl_user(ctx: &Context) -> valkey_module::ValkeyString {
-    let fanout_identity = FANOUT_ACL_USER.with(|u| u.borrow().clone());
-    if let Some(identity) = fanout_identity {
-        return ctx.create_string(identity.name.as_str());
-    }
-    ctx.get_current_user()
 }
 
 pub fn get_server_info(ctx: &Context, section: &str) -> *mut ValkeyModuleServerInfoData {

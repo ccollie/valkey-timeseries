@@ -1,9 +1,7 @@
+use crate::common::acl::ThreadAclScope;
 use crate::common::context::set_current_db;
 use crate::common::threads::{GilGuard, LockGil};
-use crate::fanout::{FanoutAclScope, FanoutIdentity};
-use crate::series::acl::ModuleUser;
 use std::ops::Deref;
-use std::rc::Rc;
 use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The GIL, held for one step of a shard-local fan-out request.
@@ -13,8 +11,8 @@ use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyErro
 /// when it drops, before the GIL is released. Like [`GilGuard`],
 /// it has no client behind it and must not be used to send replies.
 pub struct FanoutContextGuard {
-    // Declared first so the resolved `ModuleUser` handle is freed under the lock.
-    _acl: Option<FanoutAclScope>,
+    // Declared first so the scope, and the user handle it resolved, drop under the lock.
+    _acl: Option<ThreadAclScope>,
     ctx: GilGuard,
 }
 
@@ -89,17 +87,10 @@ impl FanoutContext {
             )));
         }
 
+        // Resolved afresh on every lock: a user deleted or disabled mid-request fails the
+        // next step rather than finishing with rights it no longer has.
         let acl = match &self.user {
-            Some(user) => {
-                let user_name = ctx.create_string(user.as_str());
-                let module_user = ModuleUser::from_name(&user_name).ok_or_else(|| {
-                    ValkeyError::String(format!("ACL user '{user}' does not exist or is disabled"))
-                })?;
-                Some(FanoutAclScope::enter(FanoutIdentity {
-                    name: user.clone(),
-                    user: Some(Rc::new(module_user)),
-                }))
-            }
+            Some(user) => Some(ThreadAclScope::enter_with_user(user)?),
             None => None,
         };
 
