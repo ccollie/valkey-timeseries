@@ -3,13 +3,13 @@ use super::fanout_message::{
     FanoutMessage, FanoutMessageHeader, has_unsupported_features, serialize_request_message,
 };
 use super::utils::{is_clustered, is_multi_or_lua};
+use crate::common::acl::caller_user_name;
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
 use crate::common::sync::lock;
 use crate::common::threads::LockGil;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
-use crate::fanout::acl::get_fanout_user;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
 use crate::fanout::fanout_command::FanoutResponseCallback;
 use crate::fanout::fanout_context::FanoutContext;
@@ -279,7 +279,7 @@ pub(super) fn send_cluster_request(
 
     let id = generate_id();
     let db = get_current_db(ctx);
-    let user = get_fanout_user(ctx);
+    let user = caller_user_name(ctx);
 
     let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     serialize_request_message(

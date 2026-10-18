@@ -66,7 +66,6 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   - `chunks/`: three encodings — **Chimp** (default), **Gorilla**, **Uncompressed**
     (`DEFAULT_CHUNK_ENCODING` in `src/config.rs`). Storage encoding is a user choice; cluster *wire*
     encoding is a separate, internal policy (see Conventions below).
-  - Per-series ACL filtering: `acl.rs`.
   - `index/asm.rs` — atomic slot migration (ASM, Valkey 9.0+): event subscription, deferred
     indexing mid-import, source-side index cleanup after export. During an ASM the source node's
     forked `aof_rewrite` child can't take the module GIL, so it serializes via `rdb_save` and emits
@@ -80,8 +79,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   (`src/analysis/` — ESD/CUSUM/EWMA/IQR/MAD/z-score/RCF), `TS.ADDBULK`, `TS.LABELSTATS`,
   `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
 - Supporting: `src/aggregators/` (range-query aggregation), `src/common/` (encoding, logging, thread
-  pools, RDB, interning), `src/labels/`, `src/iterators/`, `src/server_events.rs` (keyspace event →
-  index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
+  pools, RDB, interning; `acl.rs` is the one home for ACL checks and the thread-scoped ACL identity
+  that fan-out and background work run them as), `src/labels/`, `src/iterators/`,
+  `src/server_events.rs` (keyspace event → index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
 
 ## Conventions
 
@@ -129,7 +129,7 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 - **`enable-system-alloc` is mandatory** for anything linking the crate outside a live server (tests,
   doctests, benches, `tools/` binaries) — without it the binary SIGABRTs at startup
   (`Critical error: the Valkey Allocator isn't available`). `build.sh` passes it for you.
-- **Threading rules (R1–R5) live in the `src/common/threads/mod.rs` docs.** Take the GIL with
+- **Threading rules (R1–R6) live in the `src/common/threads/mod.rs` docs.** Take the GIL with
   `MODULE_CONTEXT.lock_gil()`, enter parallel work through the `*_rayon` adapters or
   `threads::join`, and put work that blocks or takes the GIL on a `BoundedExecutor` or
   `spawn_background` — never a pool. Reserve a lane slot (`try_reserve`) before blocking a

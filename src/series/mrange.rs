@@ -1,4 +1,5 @@
 use crate::aggregators::{PartialReducer, PartialRowReducer, PartialSampleReducer, PartialState};
+use crate::common::acl::check_metadata_permissions;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::context::key_for_display;
 use crate::common::threads::{IntoParRayon, IterIntoParRayon};
@@ -10,7 +11,6 @@ use crate::iterators::{
 };
 use crate::labels::Label;
 use crate::series::TimeSeries;
-use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk, samples_to_chunk_lossless};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
