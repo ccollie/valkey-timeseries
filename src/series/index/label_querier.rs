@@ -487,12 +487,11 @@ fn collect_limited_with_heap(
 ) -> LabelQueryResult {
     let cmp = compare_search_results(order);
 
-    let mut items = if order.is_ascending() {
-        iter.k_smallest_relaxed_by(limit + 1, &cmp)
-    } else {
-        iter.k_largest_relaxed_by(limit + 1, &cmp)
-    }
-    .collect::<Vec<_>>();
+    // The comparator already includes the requested direction: the best results
+    // compare less, even for descending scores or cardinalities.
+    let mut items = iter
+        .k_smallest_relaxed_by(limit + 1, &cmp)
+        .collect::<Vec<_>>();
 
     items.sort_by(cmp);
 
@@ -1428,13 +1427,15 @@ impl LabelQuerier for DefaultLabelQuerier {
 mod tests {
     use super::{
         FuzzyFilter, LabelQueryResult, LabelSearchResult, SearchHints, SearchResultOrdering,
-        SimilarityFilter, TimeSeriesIndex, collect_limited_with_heap, collect_unscoped_label_names,
-        collect_unscoped_label_values, collect_unscoped_label_values_in_holds,
-        get_label_names_desc_in_holds, iterate_label_names_asc_in_holds,
-        label_cardinality_in_holds, label_search_exceeds_inline_budget,
+        SimilarityFilter, TimeSeriesIndex, apply_search_hints, collect_limited_with_heap,
+        collect_unscoped_label_names, collect_unscoped_label_values,
+        collect_unscoped_label_values_in_holds, get_label_names_desc_in_holds,
+        iterate_label_names_asc_in_holds, label_cardinality_in_holds,
+        label_search_exceeds_inline_budget,
     };
     use crate::series::index::FuzzyAlgorithm;
     use crate::series::index::postings::Postings;
+    use itertools::Itertools;
 
     /// An index holding `postings`, for the collectors that take the index and lock it
     /// themselves.
@@ -1897,33 +1898,35 @@ mod tests {
     #[test]
     fn collect_unscoped_label_values_score_orders_descending_with_ties() {
         let postings = build_label_values_postings();
-        let hints = SearchHints {
-            filter: Some(Box::new(StaticScoreFilter)),
-            limit: 2,
-            order_by: SearchResultOrdering::ScoreDesc,
-            include_meta: false,
-        };
-
-        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints);
-
-        assert!(result.has_more);
-        assert_eq!(values(result), vec!["us-east", "us-west"]);
+        let index = index_of(postings);
+        for limit in [1, 2] {
+            let hints = SearchHints {
+                filter: Some(Box::new(StaticScoreFilter)),
+                limit,
+                order_by: SearchResultOrdering::ScoreDesc,
+                include_meta: false,
+            };
+            let result = collect_unscoped_label_values(&index, "region", &hints);
+            assert!(result.has_more);
+            assert_eq!(values(result), ["us-east", "us-west"][..limit]);
+        }
     }
 
     #[test]
     fn collect_unscoped_label_values_cardinality_orders_descending_with_limit() {
         let postings = build_label_values_cardinality_postings();
-        let hints = SearchHints {
-            filter: None,
-            limit: 2,
-            order_by: SearchResultOrdering::CardinalityDesc,
-            include_meta: false,
-        };
-
-        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints);
-
-        assert!(result.has_more);
-        assert_eq!(values(result), vec!["eu-west", "us-west"]);
+        let index = index_of(postings);
+        for limit in [1, 2] {
+            let hints = SearchHints {
+                filter: None,
+                limit,
+                order_by: SearchResultOrdering::CardinalityDesc,
+                include_meta: false,
+            };
+            let result = collect_unscoped_label_values(&index, "region", &hints);
+            assert!(result.has_more);
+            assert_eq!(values(result), ["eu-west", "us-west"][..limit]);
+        }
     }
 
     #[test]
@@ -2096,6 +2099,50 @@ mod tests {
             10,
         );
         assert_eq!(values(result), vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn limited_heap_selection_matches_full_sort() {
+        // Both ties and distinct ranks; more than limit + 1 candidates must be
+        // offered to exercise selection rather than just the final sort.
+        let items = [("a", 0.9, 1), ("b", 0.9, 3), ("c", 0.5, 3), ("d", 0.7, 2)].map(
+            |(value, score, cardinality)| LabelSearchResult {
+                value: value.to_owned(),
+                score,
+                cardinality,
+            },
+        );
+        let orders = [
+            SearchResultOrdering::ValueAsc,
+            SearchResultOrdering::ValueDesc,
+            SearchResultOrdering::ScoreDesc,
+            SearchResultOrdering::CardinalityAsc,
+            SearchResultOrdering::CardinalityDesc,
+        ];
+        for permutation in items.into_iter().permutations(4) {
+            for count in 0..=permutation.len() {
+                let input = &permutation[..count];
+                for order in orders {
+                    for limit in 1..=5 {
+                        let hints = SearchHints {
+                            limit,
+                            order_by: order,
+                            ..Default::default()
+                        };
+                        let expected = apply_search_hints(input.to_vec(), &hints);
+                        let actual = collect_limited_with_heap(input.iter().cloned(), order, limit);
+                        assert_eq!(
+                            actual.results, expected.results,
+                            "input {input:?}, order {order:?}, limit {limit}"
+                        );
+                        assert_eq!(
+                            actual.has_more, expected.has_more,
+                            "input {input:?}, order {order:?}, limit {limit}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Accepts every name but `beta`, scoring each by its length.

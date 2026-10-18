@@ -94,6 +94,26 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesClusterTestCase):
         parsed = LabelSearchResponse.parse(raw)
         assert sorted(lv.value for lv in parsed.results) == [b'bucket', b'idx', b'job']
 
+    def test_unscoped_ranked_search_keeps_best_values_above_shard_limit(self):
+        """Shard selection must retain the best ties before the coordinator applies LIMIT."""
+        cluster = self.new_cluster_client()
+        client = self.new_client_for_primary(0)
+        pipe = cluster.pipeline()
+        # One shard exceeds its 1000-result limit plus the lookahead entry.
+        for i in range(1300):
+            value = f'rank{i:04}'
+            pipe.execute_command('TS.CREATE', f'ranked:{{ranked}}:{i}', 'LABELS',
+                                 'instance', value, '__name__', value)
+        pipe.execute()
+
+        for command in [('TS.LABELVALUES', 'instance'), ('TS.METRICNAMES',)]:
+            for ranking in [('SEARCH', 'rank'), ('SORTBY', 'cardinality', 'DESC')]:
+                raw = client.execute_command(*command, *ranking, 'LIMIT', 3, 'INCLUDE_METADATA')
+                parsed = LabelSearchResponse.parse(raw)
+                assert [item.value for item in parsed.results] == [b'rank0000', b'rank0001', b'rank0002']
+                assert all(item.cardinality == 1 for item in parsed.results)
+                assert parsed.has_more
+
     def test_label_values_with_filter(self):
         """Test retrieving label values with a filter"""
         cluster: ValkeyCluster = self.new_cluster_client()

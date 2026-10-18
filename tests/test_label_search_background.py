@@ -46,10 +46,7 @@ class TestLabelSearchBackground(ValkeyTimeSeriesTestCaseBase):
             else:
                 prefix = b'metric' if command[0] == 'TS.METRICNAMES' else b'host'
                 values = [r.value for r in parsed.results]
-                assert all(value.startswith(prefix) for value in values)
-                assert values == sorted(values)
-                if 'FILTER' in command:
-                    assert values == [b'host0000', b'host0001', b'host0002']
+                assert values == [prefix + b'0000', prefix + b'0001', prefix + b'0002']
                 assert parsed.has_more
 
             # A script cannot block its client either.

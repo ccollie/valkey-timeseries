@@ -128,6 +128,9 @@ with the rule.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
 * `TS.LABELSTATS`: Get statistics about label usage in the index.
 
+Ranked label-value and metric-name searches select the best results before applying `LIMIT`.
+Descending score and cardinality orderings break ties by value ascending.
+
 On standalone servers, `TS.LABELNAMES`, `TS.LABELVALUES` and `TS.METRICNAMES` run on a bounded
 pool of background workers when the index size and query options suggest substantial work, and
 give the index back to writers between batches. The pool and its queue (256 jobs) are shared

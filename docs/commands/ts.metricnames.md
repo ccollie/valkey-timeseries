@@ -33,6 +33,8 @@ TS.METRICNAMES
 
 ### Notes
 
+- `SORTBY score DESC` and `SORTBY cardinality DESC` select the highest-ranked metric names
+  before applying `LIMIT`. Equal scores or cardinalities are ordered by metric name ascending.
 - On standalone servers, a search that would read many index entries runs on a bounded pool of
   background workers, shared with `TS.OUTLIERS`, and gives the index back to writers between
   batches. Small searches, and any search inside `MULTI`, a script or a module call, run inline.
