@@ -1,30 +1,7 @@
+use crate::common::acl::AclContextGuard;
 use crate::common::context::set_current_db;
-use crate::common::threads::{GilGuard, LockGil};
-use crate::fanout::{FanoutAclScope, FanoutIdentity};
-use crate::series::acl::ModuleUser;
-use std::ops::Deref;
-use std::rc::Rc;
-use valkey_module::{Context, DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
-
-/// The GIL, held for one step of a shard-local fan-out request.
-///
-/// Dereferences to [`Context`]. While it is alive, the request's database is
-/// selected, and its ACL identity is active on this thread; both are torn down
-/// when it drops, before the GIL is released. Like [`GilGuard`],
-/// it has no client behind it and must not be used to send replies.
-pub struct FanoutContextGuard {
-    // Declared first so the resolved `ModuleUser` handle is freed under the lock.
-    _acl: Option<FanoutAclScope>,
-    ctx: GilGuard,
-}
-
-impl Deref for FanoutContextGuard {
-    type Target = Context;
-
-    fn deref(&self) -> &Context {
-        &self.ctx
-    }
-}
+use crate::common::threads::LockGil;
+use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The shard-local side of one fan-out request: the ACL user it executes as,
 /// the database it targets, and the module's detached context used to take
@@ -79,7 +56,7 @@ impl FanoutContext {
     /// Fails when the request's database cannot be selected or its ACL user no
     /// longer exists, so a request cannot silently run against the wrong
     /// database or without enforcement.
-    pub fn lock(&self) -> ValkeyResult<FanoutContextGuard> {
+    pub fn lock(&self) -> ValkeyResult<AclContextGuard> {
         let ctx = self.ctx.lock_gil();
 
         if set_current_db(&ctx, self.db) == Status::Err {
@@ -88,22 +65,9 @@ impl FanoutContext {
                 self.db
             )));
         }
-
-        let acl = match &self.user {
-            Some(user) => {
-                let user_name = ctx.create_string(user.as_str());
-                let module_user = ModuleUser::from_name(&user_name).ok_or_else(|| {
-                    ValkeyError::String(format!("ACL user '{user}' does not exist or is disabled"))
-                })?;
-                Some(FanoutAclScope::enter(FanoutIdentity {
-                    name: user.clone(),
-                    user: Some(Rc::new(module_user)),
-                }))
-            }
-            None => None,
-        };
-
-        Ok(FanoutContextGuard { _acl: acl, ctx })
+        // Resolved afresh on every lock: a user deleted or disabled mid-request fails the
+        // next step rather than finishing with rights it no longer has.
+        AclContextGuard::for_user(self.user.as_deref(), ctx)
     }
 }
 

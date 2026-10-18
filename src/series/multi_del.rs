@@ -1,9 +1,9 @@
 use crate::common::Timestamp;
+use crate::common::acl::KeyAccess;
 use crate::common::context::{create_key_string, notify_keyspace_event};
 use crate::common::threads::ParMutRayon;
 use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
-use crate::series::acl::KeyAccess;
 use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
 use crate::series::{
     SeriesGuardMut, SeriesRef, TimestampRange, resync_rules_after_removal, try_get_timeseries_mut,

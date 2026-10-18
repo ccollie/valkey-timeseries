@@ -12,10 +12,10 @@ use super::{
     FuzzyFilter, IndexKey, PostingsBitmap, SimilarityFilter, get_timeseries_index,
     series_by_selectors,
 };
+use crate::common::acl::check_metadata_permissions;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::filters::SeriesSelector;
-use crate::series::acl::check_metadata_permissions;
 use crate::series::index::key_buffer::KeyBuffer;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MetaDateRangeFilter;
