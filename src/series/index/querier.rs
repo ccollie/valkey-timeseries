@@ -250,10 +250,8 @@ fn count_series_from_postings(
     let Some(date_range) = date_range else {
         let mut count = 0usize;
         for (id, k) in resolved {
-            if try_get_timeseries_as(ctx, &k, &access)?.is_some() {
+            if open_resolved_series(ctx, &access, id, &k, stale)?.is_some() {
                 count += 1;
-            } else {
-                stale.push(id);
             }
         }
         return Ok(count);
@@ -263,10 +261,8 @@ fn count_series_from_postings(
     // per-key `ValkeyString` retained) long enough to evaluate the predicate.
     let mut guards: Vec<SeriesGuard> = Vec::with_capacity(resolved.len());
     for (id, k) in resolved {
-        if let Some(guard) = try_get_timeseries_as(ctx, &k, &access)? {
+        if let Some(guard) = open_resolved_series(ctx, &access, id, &k, stale)? {
             guards.push(guard);
-        } else {
-            stale.push(id);
         }
     }
 
@@ -343,13 +339,37 @@ fn get_multi_series_by_id<'a>(
     let mut result = Vec::with_capacity(resolved.len());
     let access = KeyAccess::new(ctx, AclPermissions::ACCESS);
     for (id, k) in resolved {
-        if let Some(guard) = try_get_timeseries_as(ctx, &k, &access)? {
+        if let Some(guard) = open_resolved_series(ctx, &access, id, &k, stale)? {
             result.push((guard, k));
-        } else {
-            stale.push(id);
         }
     }
     Ok(result)
+}
+
+/// Opens `key`, the key `id` resolved to, as the series `id` names. `None` when the key no
+/// longer holds a series, which records `id` as stale, or when it holds a different series,
+/// which an index out of step with the keyspace can map it to.
+///
+/// A key holding another id is skipped, not marked stale: the id may live on under another
+/// key, and marking it would drop a live series from the index. The batched reader
+/// (`batched_querier::visit_batch`) applies the same rule, so batched and unbatched reads over
+/// one selector agree. It also keeps one series from being returned under two keys, which the
+/// id-keyed date-range filter below cannot tell apart.
+fn open_resolved_series<'a>(
+    ctx: &'a Context,
+    access: &KeyAccess,
+    id: SeriesRef,
+    key: &ValkeyString,
+    stale: &mut StaleIds,
+) -> ValkeyResult<Option<SeriesGuard<'a>>> {
+    match try_get_timeseries_as(ctx, key, access)? {
+        Some(guard) if guard.id == id => Ok(Some(guard)),
+        Some(_) => Ok(None),
+        None => {
+            stale.push(id);
+            Ok(None)
+        }
+    }
 }
 
 #[inline(always)]

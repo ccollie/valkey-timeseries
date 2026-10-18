@@ -603,7 +603,8 @@ where
             Ok(Some(guard)) => {
                 // Resolved and opened in one lock hold, so the key holds this id unless the
                 // index is out of step with the keyspace. Another series is not this read's
-                // to report, and this id is not stale: it may live on under another key.
+                // to report, and this id is not stale: it may live on under another key. The
+                // unbatched read applies the same rule (`querier::open_resolved_series`).
                 if guard.id != id {
                     continue;
                 }
