@@ -15,17 +15,16 @@
 //! Query bridge between command handlers and the low-level postings planner.
 //!
 //! This module is responsible for translating selector-oriented command workflows into
-//! series IDs/keys/guards by delegating bitmap planning to [`Postings`].
+//! series IDs/keys/guards by delegating bitmap planning to [`Postings`](super::postings::Postings).
 //! It owns cross-cutting concerns that sit above raw index lookups, such as ACL checks,
 //! date-range filtering, and materializing time-series references from posting IDs.
 //!
 //! For label-centric exploration and ranking APIs (for example, fuzzy/similarity label
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
-use super::postings::{EMPTY_BITMAP, Postings};
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, PostingsBitmap, SeriesSelection,
-    for_each_readable_series, get_db_index, get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_readable_series, get_db_index,
+    get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
@@ -39,7 +38,6 @@ use crate::series::{SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries_as};
 use blart::AsBytes;
 use orx_parallel::Par;
 use smallvec::SmallVec;
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
@@ -52,8 +50,7 @@ pub(super) type StaleIds = SmallVec<[SeriesRef; 8]>;
 /// Series ids paired with the key each resolved to, captured under the postings read lock.
 type ResolvedKeys = Vec<(SeriesRef, ValkeyString)>;
 
-/// Turn posting ids into key names while the caller holds the postings read guard, recording
-/// ids that resolve to nothing as stale.
+/// Turn selectors into key names, recording ids that resolve to nothing as stale.
 ///
 /// Every query in this module is split around this call for one reason: **no series key may be
 /// opened while the postings lock is held.** `RM_OpenKey` runs the server's lazy-expiry check,
@@ -68,22 +65,60 @@ type ResolvedKeys = Vec<(SeriesRef, ValkeyString)>;
 ///       -> module unlink callback -> remove_series_from_index -> write_lock   [blocks forever]
 /// ```
 ///
-/// Resolving to owned `ValkeyString`s first lets the guard drop before any key is touched.
-fn resolve_series_keys(
+/// So this takes the postings read lock itself and returns owned `ValkeyString`s, with the
+/// lock already released: callers open the keys afterwards. `f` runs under the read lock and
+/// must not touch the keyspace or the index.
+///
+/// The lock is taken once to plan and then once per [`DEFAULT_SERIES_BATCH_SIZE`] ids to
+/// resolve, rather than held across the whole match. Callers hold the module lock throughout,
+/// so this does not shorten a main-thread stall; what it bounds is how long a thread that
+/// writes the index without the module lock (the stale-id sweep, the posting-list
+/// optimizer) waits behind a broad selector. Planning copies the matched bitmap so the
+/// lock can be released between batches.
+fn resolve_series_keys<F, T>(
     ctx: &Context,
-    postings: &Postings,
-    ids: impl Iterator<Item = SeriesRef>,
+    selectors: &[SeriesSelector],
     stale: &mut StaleIds,
-) -> ResolvedKeys {
-    let capacity_estimate = ids.size_hint().1.unwrap_or(8);
-    let mut resolved = Vec::with_capacity(capacity_estimate);
-    for id in ids {
-        match postings.get_key_by_id(id) {
-            Some(key) => resolved.push((id, create_key_string(ctx, key.as_bytes()))),
-            None => stale.push(id),
+    mut f: F,
+) -> ValkeyResult<Vec<T>>
+where
+    F: FnMut(SeriesRef, ValkeyString) -> T,
+{
+    let index = get_db_index(get_current_db(ctx));
+
+    let series_refs = {
+        let postings = index.get_postings();
+        postings.postings_for_selectors(selectors)?.into_owned()
+    };
+
+    let mut resolved = Vec::with_capacity(series_refs.cardinality() as usize);
+
+    let mut cursor = series_refs.cursor();
+    // 4 KiB on the stack: one batch of ids, reused for every batch.
+    let mut batch = [0; DEFAULT_SERIES_BATCH_SIZE.get()];
+    loop {
+        let count = cursor.read_many(&mut batch);
+        if count == 0 {
+            break;
+        }
+        let postings = index.get_postings();
+        for &id in &batch[..count] {
+            match postings.get_key_by_id(id) {
+                Some(key) => resolved.push(f(id, create_key_string(ctx, key.as_bytes()))),
+                None => stale.push(id),
+            }
         }
     }
-    resolved
+
+    Ok(resolved)
+}
+
+/// Record the ids a query found with no backing key. Must run with the postings lock released:
+/// it takes the write lock.
+fn mark_stale(ctx: &Context, stale: &StaleIds) {
+    if !stale.is_empty() {
+        get_db_index(get_current_db(ctx)).mark_ids_as_stale(stale);
+    }
 }
 
 pub fn series_by_selectors<'a>(
@@ -95,20 +130,11 @@ pub fn series_by_selectors<'a>(
         return Ok(Vec::new());
     }
 
-    let db = get_current_db(ctx);
-    let index = get_db_index(db);
-
     let mut stale = StaleIds::new();
-    // The read guard is confined to this block: neither opening the keys below nor recording
-    // the stale ids afterwards may happen while it is held. See [`resolve_series_keys`].
-    let resolved = {
-        let postings = index.get_postings();
-        let series_refs = postings.postings_for_selectors(selectors)?;
-        resolve_series_keys(ctx, &postings, series_refs.iter(), &mut stale)
-    };
+    let resolved = resolve_series_keys(ctx, selectors, &mut stale, |id, key| (id, key))?;
 
     let result = collect_series_from_postings(ctx, resolved, range, &mut stale);
-    index.mark_ids_as_stale(&stale);
+    mark_stale(ctx, &stale);
     result
 }
 
@@ -170,38 +196,6 @@ pub fn query_labels_distinct<S: GilSource + ?Sized>(
     Ok(result)
 }
 
-#[allow(dead_code)]
-pub(super) fn series_posting_ids_by_selectors<'a>(
-    ctx: &Context,
-    selectors: &[SeriesSelector],
-    date_range: Option<MetaDateRangeFilter>,
-) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    if selectors.is_empty() {
-        return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
-    }
-    let db = get_current_db(ctx);
-    let index = get_db_index(db);
-
-    let mut stale = StaleIds::new();
-    let resolved = {
-        let postings = index.get_postings();
-        let series_ids = postings.postings_for_selectors(selectors)?;
-        if series_ids.is_empty() {
-            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
-        }
-        if date_range.is_none() {
-            return Ok(Cow::Owned(series_ids.into_owned()));
-        }
-        resolve_series_keys(ctx, &postings, series_ids.iter(), &mut stale)
-    };
-
-    let result = collect_series_from_postings(ctx, resolved, date_range, &mut stale);
-    index.mark_ids_as_stale(&stale);
-
-    let id_iter = result?.into_iter().map(|(guard, _)| guard.id);
-    Ok(Cow::Owned(PostingsBitmap::from_iter(id_iter)))
-}
-
 pub fn series_keys_by_selectors(
     ctx: &Context,
     selectors: &[SeriesSelector],
@@ -211,19 +205,15 @@ pub fn series_keys_by_selectors(
         return Ok(Vec::new());
     }
 
-    let db = get_current_db(ctx);
-    let index = get_db_index(db);
-
     let mut stale = StaleIds::new();
-    let resolved = {
-        let postings = index.get_postings();
-        let series_refs = postings.postings_for_selectors(selectors)?;
-        resolve_series_keys(ctx, &postings, series_refs.iter(), &mut stale)
+    let resolved = if range.is_none() {
+        resolve_series_keys(ctx, selectors, &mut stale, |_id, key| key)?
+    } else {
+        let ids_and_keys = resolve_series_keys(ctx, selectors, &mut stale, |id, key| (id, key))?;
+        collect_series_keys(ctx, ids_and_keys, range, &mut stale)?
     };
-
-    let result = collect_series_keys(ctx, resolved, range, &mut stale);
-    index.mark_ids_as_stale(&stale);
-    result
+    mark_stale(ctx, &stale);
+    Ok(resolved)
 }
 
 /// Cardinality-only counterpart of [`series_by_selectors`].
@@ -240,18 +230,11 @@ pub fn count_series_by_selectors(
         return Ok(0);
     }
 
-    let db = get_current_db(ctx);
-    let index = get_db_index(db);
-
     let mut stale = StaleIds::new();
-    let resolved = {
-        let postings = index.get_postings();
-        let series_refs = postings.postings_for_selectors(selectors)?;
-        resolve_series_keys(ctx, &postings, series_refs.iter(), &mut stale)
-    };
+    let ids_and_keys = resolve_series_keys(ctx, selectors, &mut stale, |id, key| (id, key))?;
 
-    let result = count_series_from_postings(ctx, resolved, range, &mut stale);
-    index.mark_ids_as_stale(&stale);
+    let result = count_series_from_postings(ctx, ids_and_keys, range, &mut stale);
+    mark_stale(ctx, &stale);
     result
 }
 
