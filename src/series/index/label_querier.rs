@@ -484,10 +484,10 @@ where
     let mut count: usize = 0;
 
     'hold: loop {
-        /// Note: releasing the lock costs the scan its point-in-time view: an entry added before the resume
-        /// point after it was passed is not seen, and a label name whose entries straddle a release
-        /// is counted from both holds. `f` gets each name as it is completed; the `&str` is valid only
-        /// for that call.
+        // Note: releasing the lock costs the scan its point-in-time view: an entry added before the resume
+        // point after it was passed is not seen, and a label name whose entries straddle a release
+        // is counted from both holds. `f` gets each name as it is completed; the `&str` is valid only
+        // for that call.
         let postings = index.get_postings();
         let mut read_this_hold = 0usize;
 
@@ -575,65 +575,111 @@ fn get_label_names_asc(
 
 /// Get label names in descending order, applying a fuzzy filter if provided. Efficiently skips label names
 /// that don't match the filter by using the index ordering to jump past them.
+///
+/// Like [`iterate_label_names_asc`], it takes the postings read lock itself and gives it back
+/// every [`LABEL_SCAN_ENTRIES_PER_HOLD`] entries, so it must not be called with the postings
+/// lock held, and it is not a point-in-time view.
 fn get_label_names_desc(
-    postings: &Postings,
+    index: &TimeSeriesIndex,
     filter: &dyn FuzzyFilter,
     limit: Option<usize>,
 ) -> LabelQueryResult {
+    get_label_names_desc_in_holds(index, filter, limit, LABEL_SCAN_ENTRIES_PER_HOLD)
+}
+
+/// [`get_label_names_desc`] reading at most `entries_per_hold` entries per lock hold.
+fn get_label_names_desc_in_holds(
+    index: &TimeSeriesIndex,
+    filter: &dyn FuzzyFilter,
+    limit: Option<usize>,
+    entries_per_hold: usize,
+) -> LabelQueryResult {
+    let entries_per_hold = entries_per_hold.max(1);
     let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
     let mut current_result: Option<LabelSearchResult> = None;
     let mut has_more = false;
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
-    // When Some, use Excluded(buf) as the upper bound; when None, use Unbounded.
-    let mut upper_bound_buf: Option<Vec<u8>> = None;
-    let mut curr_key: &str = "";
+    // The scan resumes below this key: each restart, whether to skip a rejected name or to
+    // re-take the lock, is a fresh range under it. `None` means from the top of the index.
+    let mut resume_below: Option<Vec<u8>> = None;
+    // The name of the entries being read. Owned, so a name whose entries straddle a release
+    // keeps accumulating into `current_result` after the lock is taken again.
+    let mut curr_name = String::new();
 
-    'outer: loop {
-        let end_bound: Bound<&[u8]> = match &upper_bound_buf {
-            Some(buf) => Bound::Excluded(buf.as_slice()),
-            None => Bound::Unbounded,
-        };
+    'hold: loop {
+        let postings = index.get_postings();
+        let mut read_this_hold = 0usize;
 
-        for (key, map) in postings
-            .label_index
-            .range::<[u8], _>((Bound::<&[u8]>::Unbounded, end_bound))
-            .rev()
-        {
-            let Some((key_name, _)) = key.split() else {
-                continue;
+        'range: loop {
+            let end_bound: Bound<&[u8]> = match &resume_below {
+                Some(buf) => Bound::Excluded(buf.as_slice()),
+                None => Bound::Unbounded,
             };
 
-            if curr_key != key_name {
-                curr_key = key_name;
-
-                if let Some(stored) = current_result.take() {
-                    if results.len() == limit {
-                        has_more = true;
-                        break 'outer;
+            for (key, map) in postings
+                .label_index
+                .range::<[u8], _>((Bound::<&[u8]>::Unbounded, end_bound))
+                .rev()
+            {
+                read_this_hold += 1;
+                let Some((key_name, _)) = key.split() else {
+                    if read_this_hold >= entries_per_hold {
+                        // Malformed entries still count toward the lock budget.
+                        let next = resume_below.get_or_insert_with(Vec::new);
+                        next.clear();
+                        next.extend_from_slice(key.as_ref());
+                        continue 'hold;
                     }
-                    results.push(stored);
+                    continue;
+                };
+
+                if curr_name != key_name {
+                    if let Some(stored) = current_result.take() {
+                        if results.len() == limit {
+                            has_more = true;
+                            break 'hold;
+                        }
+                        results.push(stored);
+                    }
+                    curr_name.clear();
+                    curr_name.push_str(key_name);
+
+                    let (accepted, score) = filter.accept(key_name);
+                    if !accepted {
+                        // Jump past every value of this name: each is "name=value", so all of
+                        // them are at or above "name=". The bound must be "name=", not "name":
+                        // a longer name such as "name2" sorts between the two ("2" < "=") and
+                        // would be skipped with it.
+                        let next = resume_below.get_or_insert_with(Vec::new);
+                        next.clear();
+                        next.extend_from_slice(key_name.as_bytes());
+                        next.push(b'=');
+                        if read_this_hold >= entries_per_hold {
+                            continue 'hold;
+                        }
+                        continue 'range;
+                    }
+
+                    current_result = Some(LabelSearchResult {
+                        value: key_name.to_owned(),
+                        score,
+                        cardinality: map.cardinality() as usize,
+                    });
+                } else if let Some(active) = current_result.as_mut() {
+                    active.cardinality += map.cardinality() as usize;
                 }
 
-                let (accepted, score) = filter.accept(key_name);
-                if !accepted {
-                    // Jump past all values for this label name.
-                    // "name" < "name=..." lexicographically, so Excluded("name") skips
-                    // all index entries for this label name.
-                    upper_bound_buf = Some(key_name.as_bytes().to_vec());
-                    continue 'outer;
+                if read_this_hold >= entries_per_hold {
+                    // Give the lock back and resume below this entry.
+                    let next = resume_below.get_or_insert_with(Vec::new);
+                    next.clear();
+                    next.extend_from_slice(key.as_ref());
+                    continue 'hold;
                 }
-
-                current_result = Some(LabelSearchResult {
-                    value: key_name.to_owned(),
-                    score,
-                    cardinality: map.cardinality() as usize,
-                });
-            } else if let Some(active) = current_result.as_mut() {
-                active.cardinality += map.cardinality() as usize;
             }
+            // The range ran out: the scan is done.
+            break 'hold;
         }
-
-        break;
     }
 
     if let Some(stored) = current_result
@@ -800,19 +846,16 @@ fn get_label_names_top_k(
 
 /// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
 ///
-/// Takes the index rather than locked postings so that each scan owns its postings read lock.
-/// The ascending and ranked scans give it back periodically so writers are not starved (see
-/// [`iterate_label_names_asc`]); the descending scan still holds it throughout. No lock is held
-/// here: the ascending scans take it themselves, and a read lock taken again behind a waiting
-/// writer can deadlock.
+/// Takes the index rather than locked postings so that each scan owns its postings read lock
+/// and gives it back periodically, so writers are not starved (see
+/// [`iterate_label_names_asc`]). No lock is held here: the scans take it themselves, and a read
+/// lock taken again behind a waiting writer can deadlock.
 fn collect_unscoped_label_names(index: &TimeSeriesIndex, hints: &SearchHints) -> LabelQueryResult {
     let limit = normalize_limit(hints.limit);
 
     with_search_filter(hints, |filter| match hints.order_by {
         SearchResultOrdering::ValueAsc => get_label_names_asc(index, filter, Some(hints.limit)),
-        SearchResultOrdering::ValueDesc => {
-            get_label_names_desc(&index.get_postings(), filter, Some(hints.limit))
-        }
+        SearchResultOrdering::ValueDesc => get_label_names_desc(index, filter, Some(hints.limit)),
         SearchResultOrdering::ScoreDesc
         | SearchResultOrdering::CardinalityAsc
         | SearchResultOrdering::CardinalityDesc => {
@@ -1084,7 +1127,7 @@ mod tests {
     use super::{
         FuzzyFilter, LabelQueryResult, LabelSearchResult, Postings, SearchHints,
         SearchResultOrdering, SimilarityFilter, TimeSeriesIndex, collect_limited_with_heap,
-        collect_unscoped_label_names, collect_unscoped_label_values,
+        collect_unscoped_label_names, collect_unscoped_label_values, get_label_names_desc_in_holds,
         iterate_label_names_asc_in_holds,
     };
     use crate::series::index::FuzzyAlgorithm;
@@ -1664,6 +1707,90 @@ mod tests {
                     "limit {limit:?}, {entries_per_hold} entries per hold"
                 );
             }
+        }
+    }
+
+    /// `beta` is rejected; `beta2` shares its prefix and sorts between `beta` and `beta=…`.
+    fn build_prefix_sharing_label_postings() -> Postings {
+        let mut postings = build_multi_value_label_postings();
+        postings.add_posting_for_label_value(10, "beta2", "x");
+        postings.add_posting_for_label_value(11, "beta2", "y");
+        postings
+    }
+
+    fn scan_names_desc(
+        index: &TimeSeriesIndex,
+        limit: Option<usize>,
+        entries_per_hold: usize,
+    ) -> (Vec<(String, f64, usize)>, bool) {
+        let result = get_label_names_desc_in_holds(index, &RejectBeta, limit, entries_per_hold);
+        let has_more = result.has_more;
+        let names = result
+            .into_iter()
+            .map(|r| (r.value, r.score, r.cardinality))
+            .collect();
+        (names, has_more)
+    }
+
+    #[test]
+    fn descending_name_scan_sums_cardinality_and_skips_rejected_names() {
+        let index = index_of(build_multi_value_label_postings());
+
+        let (names, has_more) = scan_names_desc(&index, None, usize::MAX);
+
+        assert!(!has_more);
+        assert_eq!(
+            names,
+            vec![
+                ("service".to_owned(), 7.0, 1),
+                ("gamma".to_owned(), 5.0, 2),
+                ("alpha".to_owned(), 5.0, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn descending_name_scan_is_unchanged_by_where_it_gives_the_lock_back() {
+        for postings in [
+            build_multi_value_label_postings(),
+            build_prefix_sharing_label_postings(),
+        ] {
+            let index = index_of(postings);
+            for limit in [None, Some(1), Some(2), Some(3)] {
+                let one_hold = scan_names_desc(&index, limit, usize::MAX);
+                for entries_per_hold in [1, 2, 3, 4] {
+                    assert_eq!(
+                        scan_names_desc(&index, limit, entries_per_hold),
+                        one_hold,
+                        "limit {limit:?}, {entries_per_hold} entries per hold"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Skipping a rejected name must not skip a longer name that starts with it.
+    #[test]
+    fn name_scans_keep_a_name_that_extends_a_rejected_one() {
+        let index = index_of(build_prefix_sharing_label_postings());
+        let expected_asc = vec![
+            ("alpha".to_owned(), 5.0, 3),
+            ("beta2".to_owned(), 5.0, 2),
+            ("gamma".to_owned(), 5.0, 2),
+            ("service".to_owned(), 7.0, 1),
+        ];
+        let mut expected_desc = expected_asc.clone();
+        expected_desc.reverse();
+
+        for entries_per_hold in [1, 2, usize::MAX] {
+            assert_eq!(
+                scan_names(&index, None, entries_per_hold),
+                (expected_asc.clone(), false)
+            );
+            assert_eq!(
+                scan_names_desc(&index, None, entries_per_hold),
+                (expected_desc.clone(), false)
+            );
         }
     }
 }
