@@ -5,14 +5,15 @@
 //! command on the main thread runs as its client's user. Work done on another thread, or for a
 //! fan-out request from another node, has no such client: it captures the caller's name with
 //! `caller_user_name` where the caller is known, and runs its checks inside a
-//! [`ThreadAclScope`] for that name.
+//! `ThreadAclScope` for that name.
 
 use crate::common::context::is_real_user_client;
 use crate::common::logging::log_warning;
-use crate::common::threads::check_holds_gil;
+use crate::common::threads::{GilGuard, check_holds_gil};
 use crate::error_consts;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -165,6 +166,48 @@ fn clear<T>(cell: &RefCell<Option<Rc<T>>>) -> Option<Rc<T>> {
     cell.borrow_mut().take()
 }
 
+/// The GIL, held together with a caller's ACL identity for one step of work done on its behalf.
+///
+/// Dereferences to [`Context`]. While it is alive, the caller's identity, when one was given,
+/// is active on this thread, so key checks made through it run as that user; with none, they
+/// run as the context's own user. On drop the identity goes first, then the GIL, so the
+/// identity never outlives the lock (R6).
+///
+/// It does not select a database: that is its creator's job, done before the guard is built
+/// (`FanoutContext::lock` selects the request's). Like [`GilGuard`], it has no client behind
+/// it and must not be used to send replies.
+pub struct AclContextGuard {
+    // Declared first so the scope, and the user handle it resolved, drop under the lock.
+    _acl: Option<ThreadAclScope>,
+    guard: GilGuard,
+}
+
+impl AclContextGuard {
+    /// Creates a new `AclContextGuard` from a `ThreadAclScope` and a `GilGuard`.
+    pub(crate) fn new(acl: Option<ThreadAclScope>, guard: GilGuard) -> Self {
+        Self { _acl: acl, guard }
+    }
+
+    pub(crate) fn for_user<S: AsRef<str>>(
+        user_name: Option<S>,
+        guard: GilGuard,
+    ) -> ValkeyResult<Self> {
+        let acl = match user_name {
+            Some(name) => Some(ThreadAclScope::enter_as(name.as_ref())?),
+            None => None,
+        };
+        Ok(Self::new(acl, guard))
+    }
+}
+
+impl Deref for AclContextGuard {
+    type Target = Context;
+
+    fn deref(&self) -> &Context {
+        &self.guard
+    }
+}
+
 /// The identity the current thread's [`ThreadAclScope`] attached, if any.
 fn thread_identity() -> Option<Rc<AclIdentity>> {
     THREAD_ACL_USER.with(|u| u.borrow().clone())
@@ -195,7 +238,7 @@ pub(crate) fn caller_user_name(ctx: &Context) -> Option<String> {
 /// runs on. Asking the ACL API about a user that client does not have would hand it a NULL
 /// name, which it dereferences.
 ///
-/// A live [`ThreadAclScope`] makes checks apply even on a context whose own client has no
+/// A live `ThreadAclScope` makes checks apply even on a context whose own client has no
 /// user: the scope names the user to check as.
 pub fn is_acl_enforced(ctx: &Context) -> bool {
     checked_as(ctx).is_some()
@@ -609,7 +652,7 @@ pub fn check_key_permissions(
 /// values, label statistics) rather than on keys the caller names: the caller must be
 /// able to read every key.
 ///
-/// "Every key" means the rules say so ([`ModuleUser::allows_all_keys`]), not that some
+/// "Every key" means the rules say so (`ModuleUser::allows_all_keys`), not that some
 /// sample keys pass: probing the literal key `*` admitted `~?`, `~[*]` and `~\*`, and a
 /// later two-key probe admitted any pattern built to match both probes.
 pub fn check_metadata_permissions(ctx: &Context) -> ValkeyResult<()> {
