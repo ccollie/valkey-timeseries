@@ -38,8 +38,9 @@ class TestTimeSeriesAclCluster(ValkeyTimeSeriesClusterTestCase):
 
     2. **Shard-side enforcement** - each fanout command applies the documented
        ACL policy on every shard:
-         * TS.QUERYINDEX / TS.CARD  -> index lookups, reveal matches regardless
-           of the caller's per-key read access.
+         * TS.QUERYINDEX / TS.CARD without range filters -> index lookups, reveal
+           matches regardless of the caller's per-key read access.
+         * TS.CARD with FILTER_BY_RANGE -> fail closed on unreadable matches.
          * TS.MGET / TS.MRANGE / TS.MREVRANGE -> data-returning, fail closed if
            the filter matches any key the caller cannot read.
          * TS.MDEL -> destructive, fails closed if the filter matches any key the
@@ -208,6 +209,40 @@ class TestTimeSeriesAclCluster(ValkeyTimeSeriesClusterTestCase):
 
         q = self._get_primary_user_client(0, "q", "pw")
         assert int(q.execute_command("TS.CARD", "FILTER", "name=cpu")) == 3
+
+    def test_card_date_range_enforces_acl_after_first_batch(self):
+        """Range counts check access before the date predicate, including in later batches."""
+        cluster = self.new_cluster_client()
+        pipe = cluster.pipeline(transaction=False)
+        # One shard holds two full batches the reader may access, followed by a denied key.
+        for i in range(1024):
+            pipe.execute_command(
+                'TS.ADD', f'card:allowed:{{3}}:{i}', 1000, i,
+                'LABELS', 'fleet', 'card-acl', 'access', 'allowed',
+            )
+        pipe.execute_command(
+            'TS.ADD', 'card:denied:{3}:last', 5000, 1,
+            'LABELS', 'fleet', 'card-acl', 'access', 'denied',
+        )
+        pipe.execute()
+        self._create_user_on_all_primaries(
+            'card-reader', 'pw', '+ts.card', '~card:allowed:*',
+        )
+
+        for coordinator in range(self.CLUSTER_SIZE):
+            reader = self._get_primary_user_client(coordinator, 'card-reader', 'pw')
+            # The index-only count still reveals every match.
+            assert reader.execute_command('TS.CARD', 'FILTER', 'fleet=card-acl') == 1025
+            assert reader.execute_command(
+                'TS.CARD', 'FILTER_BY_RANGE', 1000, 1000,
+                'FILTER', 'fleet=card-acl', 'access=allowed',
+            ) == 1024
+            for modifier in [(), ('NOT',)]:
+                with pytest.raises(ResponseError, match='permission'):
+                    reader.execute_command(
+                        'TS.CARD', 'FILTER_BY_RANGE', *modifier, 1000, 1000,
+                        'FILTER', 'fleet=card-acl',
+                    )
 
     def test_mget_returns_data_when_all_matched_keys_authorized(self):
         """TS.MGET succeeds when the filter matches only keys the caller can read,

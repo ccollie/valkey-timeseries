@@ -13,6 +13,11 @@ returns the number of unique time series that match a certain label set.
 
 Without arguments, it returns the number of unique time series in the database.
 
+In cluster mode, `FILTER_BY_RANGE` counts read each shard in batches, releasing the module lock
+between batches. Writes between batches may affect later reads; the result is not a point-in-time
+snapshot. Every matching series must be readable by the caller, even if the range excludes it.
+Counts without `FILTER_BY_RANGE` use the index directly, without per-key read checks.
+
 ### Required arguments
 
 <details open><summary><code>filter</code></summary>

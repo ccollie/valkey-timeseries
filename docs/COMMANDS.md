@@ -9,7 +9,7 @@ cardinalities are ordered by value ascending.
 - [`TS.ADD`](commands/ts.add.md)
 - [`TS.ADDBULK`](commands/ts.addbulk.md)
 - [`TS.ALTER`](commands/ts.alter.md)
-- [`TS.CARD`](commands/ts.card.md)
+- [`TS.CARD`](commands/ts.card.md) — index cardinality or a range-filtered count, read in batches per shard in cluster mode.
 - [`TS.CREATE`](commands/ts.create.md)
 - [`TS.CREATERULE`](commands/ts.createrule.md)
 - [`TS.DECRBY`](commands/ts.decrby.md)

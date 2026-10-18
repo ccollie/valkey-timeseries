@@ -122,7 +122,10 @@ with the rule.
 * `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
 * `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
 * `TS.QUERYLABELS`: Retrieve all label names, or all values of a given label, for series matching a filter.
-* `TS.CARD`: Get the cardinality of the index for a specific label filter.
+* `TS.CARD`: Get the cardinality of the index for a specific label filter. In cluster mode,
+  `FILTER_BY_RANGE` reads each shard in batches, releasing the module lock between batches;
+  later batches can observe intervening writes. Range-filtered counts require read access to
+  every matching series, while index-only counts have no per-key read checks.
 * `TS.LABELNAMES`: Get all label names used in the index.
 * `TS.METRICNAMES`: Search metric names with substring and optional fuzzy matching.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.

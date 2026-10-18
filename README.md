@@ -50,7 +50,7 @@ The following commands are supported
 - [`TS.ADD`](docs/commands/ts.add.md)
 - [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
 - [`TS.ALTER`](docs/commands/ts.alter.md)
-- [`TS.CARD`](docs/commands/ts.card.md)
+- [`TS.CARD`](docs/commands/ts.card.md) — index cardinality or a range-filtered count, read in batches per shard in cluster mode.
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)
 - [`TS.DELETERULE`](docs/commands/ts.deleterule.md)

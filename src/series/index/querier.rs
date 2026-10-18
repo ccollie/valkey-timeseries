@@ -23,8 +23,8 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_readable_series, get_db_index,
-    get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_readable_series,
+    for_each_series, get_db_index, get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
@@ -218,76 +218,25 @@ pub fn series_keys_by_selectors(
 
 /// Cardinality-only counterpart of [`series_by_selectors`].
 ///
-/// Applies the same posting lookup, ACL (`ACCESS`) filtering, and date-range predicate, but
-/// never materializes the `(guard, key)` pairs the caller would otherwise discard. Without a
-/// date range no series state is needed at all, so keys are only probed for existence.
-pub fn count_series_by_selectors(
-    ctx: &Context,
+/// Applies the same posting lookup, ACL (`ACCESS`) checks, and date-range predicate through
+/// the batched reader. A fan-out share gives the module lock back between batches and retains
+/// only the running count; a main-thread caller keeps its existing single lock hold.
+pub fn count_series_by_selectors<S: GilSource + ?Sized>(
+    src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<usize> {
-    if selectors.is_empty() {
-        return Ok(0);
-    }
-
-    let mut stale = StaleIds::new();
-    let ids_and_keys = resolve_series_keys(ctx, selectors, &mut stale, |id, key| (id, key))?;
-
-    let result = count_series_from_postings(ctx, ids_and_keys, range, &mut stale);
-    mark_stale(ctx, &stale);
-    result
-}
-
-fn count_series_from_postings(
-    ctx: &Context,
-    resolved: ResolvedKeys,
-    date_range: Option<MetaDateRangeFilter>,
-    stale: &mut StaleIds,
-) -> ValkeyResult<usize> {
-    // Without a date range, nothing about the series contents matters: open each key just long
-    // enough to confirm it still exists and the caller may read it.
-    let access = KeyAccess::new(ctx, AclPermissions::ACCESS);
-    let Some(date_range) = date_range else {
-        let mut count = 0usize;
-        for (id, k) in resolved {
-            if open_resolved_series(ctx, &access, id, &k, stale)?.is_some() {
-                count += 1;
-            }
-        }
-        return Ok(count);
-    };
-
-    // With a date range we need the series state, so hold the guards (bare pointers, no
-    // per-key `ValkeyString` retained) long enough to evaluate the predicate.
-    let mut guards: Vec<SeriesGuard> = Vec::with_capacity(resolved.len());
-    for (id, k) in resolved {
-        if let Some(guard) = open_resolved_series(ctx, &access, id, &k, stale)? {
-            guards.push(guard);
-        }
-    }
-
-    if guards.is_empty() {
-        return Ok(0);
-    }
-
-    let (start, end) = date_range.range();
-    let exclude = date_range.is_exclude();
-
-    if guards.len() == 1 {
-        // SAFETY: we have already checked above that we have at least one element.
-        let ts = unsafe { guards.get_unchecked(0).as_ref() };
-        return Ok(matches_date_range(ts, start, end, exclude) as usize);
-    }
-
-    // Mirrors `filter_series_by_date_range`: the guards borrow the non-`Send` `Context`, so we
-    // hand the parallel iterator plain `&TimeSeries` references instead.
-    let count = guards
-        .iter()
-        .map(|guard| guard.as_ref())
-        .iter_into_par_rayon()
-        .filter(|ts| matches_date_range(ts, start, end, exclude))
-        .count();
-
+    let mut count = 0;
+    for_each_series(
+        src,
+        selectors,
+        range,
+        DEFAULT_SERIES_BATCH_SIZE,
+        |_ctx, _series, _key| {
+            count += 1;
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
     Ok(count)
 }
 
@@ -440,32 +389,34 @@ fn filter_series_by_date_range<'a>(
     }
 }
 
-pub fn count_matched_series(
-    ctx: &Context,
+pub fn count_matched_series<S: GilSource + ?Sized>(
+    src: &S,
     date_range: Option<MetaDateRangeFilter>,
     matchers: &[SeriesSelector],
 ) -> ValkeyResult<usize> {
     let count = match (date_range, matchers.is_empty()) {
         (None, true) => {
+            let ctx = src.lock()?;
             // check to see if the user can read all keys, otherwise error
             // a bare TS.CARD is a request for the cardinality of the entire index. Reuses a
             // fan-out request's already-resolved identity, when there is one, instead of
             // resolving the ACL user by name here.
-            let access = KeyAccess::new(ctx, AclPermissions::ACCESS);
+            let access = KeyAccess::new(&ctx, AclPermissions::ACCESS);
             if !access.is_unrestricted() {
                 return Err(ValkeyError::Str(
                     error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
                 ));
             }
-            let index = get_timeseries_index(ctx);
+            let index = get_timeseries_index(&ctx);
             index.count()
         }
         (None, false) => {
             // if we don't have a date range, we can simply count postings...
-            let index = get_timeseries_index(ctx);
+            let ctx = src.lock()?;
+            let index = get_timeseries_index(&ctx);
             index.get_cardinality_by_selectors(matchers)?
         }
-        (Some(range), false) => count_series_by_selectors(ctx, matchers, Some(range))?,
+        (Some(range), false) => count_series_by_selectors(src, matchers, Some(range))?,
         _ => {
             // if we don't have a date range, we need at least one matcher, otherwise we
             // end up scanning the entire index
