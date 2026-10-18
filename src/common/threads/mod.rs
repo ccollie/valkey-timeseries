@@ -49,6 +49,9 @@
 //!   a pool, except the GIL where R2 allows it. Nor is the postings write lock held while
 //!   taking the GIL: the order is always GIL, then postings. That is what keeps R1's lock waits
 //!   finite.
+//! - **R6.** Work that reads or frees server state the GIL protects, and that no lock guard's
+//!   type ties to the lock, runs on a thread holding the GIL: entering and dropping an ACL scope
+//!   (`common::acl::ThreadAclScope`), whose user handle points into the server's ACL table.
 //!
 //! Work that takes the GIL or blocks therefore runs on a blocking thread: a [`BoundedExecutor`]
 //! lane for per-request work (bounded queue, refused when full — reserve with
@@ -59,8 +62,8 @@
 //!
 //! `clippy.toml` forbids the raw pool and GIL entry points outside this module. At runtime,
 //! [`LockGil::lock_gil`] (and [`GilToken::take`], for other guards over the lock) checks R1 and
-//! re-entry, [`check_may_wait_on_blocking_pool`] R2 and [`check_may_block`] R3, in release
-//! builds too: a debug build panics, a release build logs the first violation of each rule
+//! re-entry, [`check_may_wait_on_blocking_pool`] R2, [`check_may_block`] R3 and
+//! [`check_holds_gil`] R6, in release builds too: a debug build panics, a release build logs the first violation of each rule
 //! with a backtrace. R4 holds by construction; R5 is for review.
 
 // The raw pool and GIL entry points that `clippy.toml` forbids elsewhere are wrapped here.
@@ -74,7 +77,8 @@ mod single_flight;
 
 pub use executor::{BoundedExecutor, Capacity, ExecutorStats, Rejected, Reservation};
 pub use gil::{
-    GilGuard, GilToken, LockGil, check_may_block, check_may_wait_on_blocking_pool, holds_gil,
+    GilGuard, GilToken, LockGil, check_holds_gil, check_may_block, check_may_wait_on_blocking_pool,
+    holds_gil,
 };
 pub use orx_pool::{
     IntoParRayon, IterIntoParRayon, ModulePool, ParCollectionRayon, ParMutRayon, ParRayon,

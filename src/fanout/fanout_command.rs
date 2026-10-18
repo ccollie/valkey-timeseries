@@ -1,6 +1,6 @@
-use super::acl::get_fanout_user;
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
+use crate::common::acl::caller_user_name;
 use crate::common::context::get_current_db;
 use crate::common::sync::lock;
 use crate::common::threads::Rejected;
@@ -118,7 +118,7 @@ where
 
     let req = op.generate_request();
     let outstanding = targets.len();
-    let fanout_user = get_fanout_user(ctx);
+    let fanout_user = caller_user_name(ctx);
     let db = get_current_db(ctx);
     let deadline = Instant::now() + timeout;
 

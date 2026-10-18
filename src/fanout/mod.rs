@@ -1,4 +1,3 @@
-pub mod acl;
 mod blocked_client;
 mod cluster_map;
 mod cluster_rpc;
@@ -21,7 +20,6 @@ use valkey_module::Context;
 use valkey_module::logging::{log_notice, log_warning};
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
-pub use acl::*;
 pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;

@@ -113,6 +113,16 @@ pub fn check_may_block() {
     }
 }
 
+/// R6: the caller is about to do work only a GIL holder may do — read or free server state
+/// the GIL protects, such as entering or dropping an ACL scope, whose user handle points into
+/// the server's ACL table. For work nothing in the type system ties to a lock guard.
+#[track_caller]
+pub fn check_holds_gil() {
+    if !holds_gil() {
+        violated(Rule::GilRequired);
+    }
+}
+
 /// R2: the caller is about to wait on a blocking pool, whose workers park on blocking
 /// threads, which may need the GIL. A GIL holder waiting there can wait forever.
 #[track_caller]
@@ -128,10 +138,11 @@ enum Rule {
     GilReentry,
     GilHolderWaitsOnBlockingPool,
     BlockingWait,
+    GilRequired,
 }
 
 impl Rule {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     fn describe(self) -> &'static str {
         match self {
@@ -149,6 +160,9 @@ impl Rule {
             Self::BlockingWait => {
                 "R3: a thread that must not block waited for another thread's answer; only \
                  blocking threads and blocking-pool workers may, and not while holding the GIL"
+            }
+            Self::GilRequired => {
+                "R6: work that needs the GIL ran on a thread that does not hold it"
             }
         }
     }

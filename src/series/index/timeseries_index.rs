@@ -5,6 +5,7 @@ use std::sync::{RwLock, RwLockReadGuard};
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{Postings, PostingsBitmap};
+use crate::common::acl::{KeyAccess, clone_permissions};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::create_key_string;
 use crate::common::hash::DeterministicHasher;
@@ -12,7 +13,6 @@ use crate::common::sync::{read_lock, write_lock};
 use crate::error_consts;
 use crate::labels::filters::{LabelFilter, SeriesSelector};
 use crate::labels::{Label, SeriesLabel};
-use crate::series::acl::{KeyAccess, clone_permissions};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::Bitmap64;

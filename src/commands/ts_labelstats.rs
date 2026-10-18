@@ -1,9 +1,9 @@
 use crate::commands::command_parser::{CommandArgToken, parse_command_arg_token};
 use crate::commands::parse_stats_command_args;
 use crate::commands::ts_labelstats_fanout_command::LabelStatsFanoutCommand;
+use crate::common::acl::check_metadata_permissions;
 use crate::common::replies::ReplyContext;
 use crate::fanout::{FanoutClientCommand, is_clustered};
-use crate::series::acl::check_metadata_permissions;
 use crate::series::index::{PostingStat, PostingsStats, get_timeseries_index};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 

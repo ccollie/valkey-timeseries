@@ -1,3 +1,4 @@
+use crate::common::acl::{KeyAccess, check_key_permissions};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{
     create_key_string, get_current_db, is_real_user_client, notify_keyspace_event,
@@ -6,7 +7,6 @@ use crate::common::rounding::{NO_ROUNDING_KEYWORD, RoundingStrategy};
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, MetricName};
 use crate::parser::metric_name::parse_metric_name;
-use crate::series::acl::{KeyAccess, check_key_permissions};
 use crate::series::chunks::ChunkEncoding;
 use crate::series::index::{get_db_index, next_timeseries_id};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
