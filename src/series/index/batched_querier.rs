@@ -134,8 +134,9 @@ pub trait GilSource {
 }
 
 /// A shard-local fan-out share: each lock re-selects the request's database and re-installs
-/// its ACL identity. A `FanoutContext` with no user is also how a background thread reads
-/// a given database through `MODULE_CONTEXT`.
+/// its ACL identity. A background thread reads a given database through `MODULE_CONTEXT` the
+/// same way: with the caller's user for a background label search, with none for internal
+/// work.
 impl GilSource for FanoutContext {
     type Guard<'s> = AclContextGuard;
 

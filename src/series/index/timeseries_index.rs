@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{RwLock, RwLockReadGuard};
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
@@ -64,8 +65,19 @@ impl<'a> DerefMut for PostingsWriteGuard<'a> {
     }
 }
 
+/// Source of [`TimeSeriesIndex::generation`] values: global, so an index created to replace a
+/// flushed one never repeats the generation of the index it replaces.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<Postings>,
+    /// Changes whenever this index's contents are exchanged for another database's (`SWAPDB`).
+    /// See [`Self::generation`].
+    generation: AtomicU64,
 }
 
 impl Default for TimeSeriesIndex {
@@ -78,16 +90,28 @@ impl Clone for TimeSeriesIndex {
     fn clone(&self) -> Self {
         let inner = read_lock(&self.inner);
         let new_inner = inner.clone();
-        TimeSeriesIndex {
-            inner: RwLock::new(new_inner),
-        }
+        Self::from_postings(new_inner)
     }
 }
 impl TimeSeriesIndex {
     pub fn new() -> Self {
+        Self::from_postings(Postings::default())
+    }
+
+    pub(crate) fn from_postings(postings: Postings) -> Self {
         TimeSeriesIndex {
-            inner: RwLock::new(Postings::default()),
+            inner: RwLock::new(postings),
+            generation: AtomicU64::new(next_generation()),
         }
+    }
+
+    /// Identifies which database's contents this index holds. A scan that gives the postings
+    /// lock back between holds compares it before and after: if it changed, a `SWAPDB` moved
+    /// another database's postings in mid-scan, and the scan must be run again rather than
+    /// return a mix of the two. A flushed database's index is replaced by a new one, which has
+    /// a generation of its own.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     #[allow(dead_code)]
@@ -117,6 +141,10 @@ impl TimeSeriesIndex {
         let mut first_inner = write_lock(&first.inner);
         let mut second_inner = write_lock(&second.inner);
         first_inner.swap(&mut second_inner);
+        // Under the write locks, so a scan's next hold cannot see the swapped postings with
+        // the old generation.
+        first.generation.store(next_generation(), Ordering::SeqCst);
+        second.generation.store(next_generation(), Ordering::SeqCst);
     }
 
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {

@@ -128,6 +128,14 @@ with the rule.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
 * `TS.LABELSTATS`: Get statistics about label usage in the index.
 
+On standalone servers, `TS.LABELNAMES`, `TS.LABELVALUES` and `TS.METRICNAMES` run on a bounded
+pool of background workers when the index size and query options suggest substantial work, and
+give the index back to writers between batches. The pool and its queue (256 jobs) are shared
+with `TS.OUTLIERS`, so long outlier jobs can delay large searches and the reverse. Small
+searches, transactions and scripts run inline. Background searches can observe changes between
+batches rather than a database snapshot. If the queue is full, a large search returns an error so
+queued requests stay bounded.
+
 ### Anomaly Detection
 
 * `TS.OUTLIERS`: Identify outliers in a series based on a specified algorithm and parameters.

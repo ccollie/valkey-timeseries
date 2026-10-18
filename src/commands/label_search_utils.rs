@@ -1,3 +1,4 @@
+use crate::commands::analysis_runner::run_on_analysis_lane;
 use crate::commands::command_parser::{
     parse_filter_by_range_options, parse_hash_tags, validate_selector_list,
 };
@@ -5,16 +6,20 @@ use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::commands::utils::get_multi_command_targets;
 use crate::common::SortDir;
+use crate::common::acl::caller_user_name;
+use crate::common::constants::METRIC_NAME_LABEL;
+use crate::common::context::{get_current_db, is_blocking_denied};
 use crate::common::replies::{
     reply_with_array, reply_with_bool, reply_with_bulk_string, reply_with_integer, reply_with_map,
 };
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
+use crate::fanout::{FanoutClientCommand, FanoutContext, FanoutTarget, is_clustered};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
     DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, GilSource, LabelNameSearchFilter,
     LabelQuerier, LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX,
-    SearchHints, SearchResultOrdering, SelectHints, SortBy,
+    SearchHints, SearchResultOrdering, SelectHints, SortBy, check_label_query_permissions,
+    get_db_index, label_search_exceeds_inline_budget,
 };
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -324,8 +329,16 @@ pub(crate) fn process_label_search_request<S: GilSource + ?Sized>(
     src: &S,
     parsed: &LabelNameSearchArgs,
 ) -> ValkeyResult<LabelQueryResult> {
-    let querier = DefaultLabelQuerier;
     let raw_hints = parsed.build_search_hints()?;
+    process_label_search_with_hints(src, parsed, &raw_hints)
+}
+
+fn process_label_search_with_hints<S: GilSource + ?Sized>(
+    src: &S,
+    parsed: &LabelNameSearchArgs,
+    raw_hints: &SearchHints,
+) -> ValkeyResult<LabelQueryResult> {
+    let querier = DefaultLabelQuerier;
     let select_hints =
         if parsed.series_filter.matchers.is_empty() && parsed.series_filter.date_range.is_none() {
             None
@@ -339,17 +352,15 @@ pub(crate) fn process_label_search_request<S: GilSource + ?Sized>(
         LabelSearchType::Unspecified => Err(ValkeyError::Str(
             "TSDB: LabelSearchType::Unspecified on the wire — protocol error",
         )),
-        LabelSearchType::Name => {
-            Ok(querier.get_label_names(src, select_hints, Some(&raw_hints))?)
-        }
+        LabelSearchType::Name => Ok(querier.get_label_names(src, select_hints, Some(raw_hints))?),
         LabelSearchType::Value => {
             let label = parsed.label.as_ref().ok_or({
                 ValkeyError::Str("TSDB: label name must be provided for label value search")
             })?;
-            Ok(querier.get_label_values(src, label.as_str(), select_hints, Some(&raw_hints))?)
+            Ok(querier.get_label_values(src, label.as_str(), select_hints, Some(raw_hints))?)
         }
         LabelSearchType::MetricName => {
-            Ok(querier.get_metric_names(src, select_hints, Some(&raw_hints))?)
+            Ok(querier.get_metric_names(src, select_hints, Some(raw_hints))?)
         }
     }
 }
@@ -392,6 +403,102 @@ pub(super) fn run_label_search(
         return operation.exec(ctx);
     }
 
-    let query_result = process_label_search_request(ctx, &parsed)?;
+    // Checked before anything is queued: a caller who may not query labels must not take a
+    // place on the analysis lane only to be refused there, nor see a full lane's error in
+    // place of the permission error. The worker checks again under its own identity.
+    check_label_query_permissions(ctx)?;
+
+    let hints = parsed.build_search_hints()?;
+    if !is_blocking_denied(ctx) && should_run_in_background(ctx, &parsed, &hints) {
+        let src = FanoutContext::new(caller_user_name(ctx), get_current_db(ctx));
+        return run_on_analysis_lane(ctx, "label search", move |thread_ctx| {
+            match process_label_search_with_hints(&src, &parsed, &hints) {
+                Ok(result) => {
+                    let reply_ctx = thread_ctx.get_reply_context();
+                    let _ =
+                        reply_with_label_search_result(&reply_ctx, result, parsed.include_metadata);
+                }
+                Err(err) => {
+                    thread_ctx.reply(Err(err));
+                }
+            }
+        });
+    }
+
+    let query_result = process_label_search_with_hints(ctx, &parsed, &hints)?;
     reply_with_label_search_result(ctx, query_result, parsed.include_metadata)
+}
+
+/// Starting budgets, not a latency guarantee: strings, bitmaps and selector complexity
+/// vary. See `docs/plans/label-search-precheck-benchmark.md` for the measurements.
+const INLINE_LABEL_SEARCH_ENTRIES: usize = 1024;
+/// The budget for a value scan with `SEARCH`, which scores every entry it reads.
+const INLINE_LABEL_SEARCH_WITH_SEARCH_ENTRIES: usize = 256;
+/// The least a value scan with `SEARCH` may read inline, however many terms it has: terms
+/// are ORed, and each value is scored once against all of them, so cost grows with the
+/// term count far less than linearly.
+const INLINE_LABEL_SEARCH_WITH_SEARCH_MIN_ENTRIES: usize =
+    INLINE_LABEL_SEARCH_WITH_SEARCH_ENTRIES / 4;
+
+/// How many label-index entries a search may read on the main thread.
+///
+/// Only a value scan pays more per entry for `SEARCH`: it scores every `name=value` entry.
+/// A name scan scores each distinct name once and only sums cardinalities per entry, so its
+/// per-entry cost does not depend on `SEARCH`.
+fn inline_entries_budget(is_name_scan: bool, search_terms: usize) -> usize {
+    if is_name_scan || search_terms == 0 {
+        return INLINE_LABEL_SEARCH_ENTRIES;
+    }
+    (INLINE_LABEL_SEARCH_WITH_SEARCH_ENTRIES / search_terms)
+        .max(INLINE_LABEL_SEARCH_WITH_SEARCH_MIN_ENTRIES)
+}
+
+fn should_run_in_background(
+    ctx: &Context,
+    parsed: &LabelNameSearchArgs,
+    hints: &SearchHints,
+) -> bool {
+    let label_name = match parsed.search_type {
+        LabelSearchType::Name => None,
+        LabelSearchType::Value => parsed.label.as_deref(),
+        LabelSearchType::MetricName => Some(METRIC_NAME_LABEL),
+        LabelSearchType::Unspecified => return false,
+    };
+    // `hints.filter` is the one source of "has SEARCH": the probe's stop-after rule reads it
+    // too, so the two cannot disagree.
+    let search_terms = if hints.filter.is_some() {
+        parsed.search_terms.len().max(1)
+    } else {
+        0
+    };
+    let entries_budget = inline_entries_budget(label_name.is_none(), search_terms);
+    let index = get_db_index(get_current_db(ctx));
+    label_search_exceeds_inline_budget(
+        &index,
+        label_name,
+        !parsed.series_filter.matchers.is_empty() || parsed.series_filter.date_range.is_some(),
+        hints,
+        entries_budget,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_scans_keep_the_full_budget_with_search() {
+        assert_eq!(inline_entries_budget(true, 0), INLINE_LABEL_SEARCH_ENTRIES);
+        assert_eq!(inline_entries_budget(true, 1), INLINE_LABEL_SEARCH_ENTRIES);
+        assert_eq!(inline_entries_budget(true, 8), INLINE_LABEL_SEARCH_ENTRIES);
+    }
+
+    #[test]
+    fn value_scans_with_search_get_a_divided_budget_with_a_floor() {
+        assert_eq!(inline_entries_budget(false, 0), INLINE_LABEL_SEARCH_ENTRIES);
+        assert_eq!(inline_entries_budget(false, 1), 256);
+        assert_eq!(inline_entries_budget(false, 2), 128);
+        assert_eq!(inline_entries_budget(false, 4), 64);
+        assert_eq!(inline_entries_budget(false, 100), 64);
+    }
 }

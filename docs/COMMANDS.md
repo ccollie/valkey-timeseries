@@ -1,5 +1,8 @@
 # Command List
 
+Standalone `TS.LABELNAMES`, `TS.LABELVALUES` and `TS.METRICNAMES` searches run on bounded
+background workers when estimated work is large. Small searches, transactions and scripts run inline.
+
 - [`TS.ADD`](commands/ts.add.md)
 - [`TS.ADDBULK`](commands/ts.addbulk.md)
 - [`TS.ALTER`](commands/ts.alter.md)

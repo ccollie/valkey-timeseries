@@ -11,7 +11,9 @@ use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, Valkey
 ///
 /// Built by the two fan-out entry points (the coordinator's own shard and the
 /// cluster RPC receiver) and handed to `FanoutCommand::get_local_response`,
-/// which runs on a worker thread with the GIL *not* held. [`FanoutContext::lock`]
+/// which runs on a worker thread with the GIL *not* held. The analysis lane
+/// builds one too, for a standalone label search moved off the main thread: it
+/// carries the calling client's ACL name and selected database the same way. [`FanoutContext::lock`]
 /// is the only way that code should take it: the detached context is shared by
 /// every worker, so the request's database has to be re-selected on each
 /// acquisition, and the [`ModuleUser`] handle the ACL checks rely on is only
@@ -29,8 +31,10 @@ pub struct FanoutContext {
 }
 
 impl FanoutContext {
-    /// `user` is the coordinator-side client's ACL name (`None`/empty = no
-    /// enforcement), `db` the database the request runs against.
+    /// `user` is the requesting client's ACL name — the coordinator-side client
+    /// for a fan-out share, the caller for a background label search — with
+    /// `None`/empty meaning no enforcement; `db` the database the request runs
+    /// against.
     pub fn new(user: Option<String>, db: i32) -> Self {
         let user = user.filter(|name| !name.is_empty());
         Self {
