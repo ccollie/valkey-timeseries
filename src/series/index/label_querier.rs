@@ -501,6 +501,12 @@ where
                 read_this_hold += 1;
                 let Some((key_name, _)) = key.split() else {
                     // Defensive: a malformed entry is passed over, never re-visited.
+                    if read_this_hold >= entries_per_hold {
+                        // Malformed entries still count toward the lock budget.
+                        resume_after.clear();
+                        resume_after.extend_from_slice(key.as_ref());
+                        continue 'hold;
+                    }
                     continue;
                 };
 
