@@ -23,7 +23,10 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::postings::{EMPTY_BITMAP, Postings};
-use super::{PostingsBitmap, get_db_index, get_timeseries_index};
+use super::{
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, PostingsBitmap, SeriesSelection,
+    for_each_readable_series, get_db_index, get_timeseries_index,
+};
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
 use crate::common::context::{create_key_string, get_current_db};
@@ -32,14 +35,13 @@ use crate::common::threads::IterIntoParRayon;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::request_types::MetaDateRangeFilter;
-use crate::series::{
-    SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,
-};
+use crate::series::{SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries_as};
 use blart::AsBytes;
 use orx_parallel::Par;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Series IDs found to have no backing key during a query, accumulated under the postings
@@ -118,59 +120,53 @@ pub fn series_by_selectors<'a>(
 /// unlike the coarse all-or-nothing gate the label-search commands apply, this applies
 /// per-series `ACCESS` checks and *silently omits* series the caller may not read, so
 /// names/values belonging only to unreadable series never appear in the result.
-pub fn query_labels_distinct(
-    ctx: &Context,
+///
+/// The series are read through the batched reader ([`for_each_readable_series`]): only the
+/// names or values not yet seen are copied out under the module lock. On a fan-out share
+/// the lock is given back between batches; a caller on the main thread already holds it and
+/// reads in one batch. Must not be called while holding the lock through a [`GilSource`]
+/// that releases it.
+pub fn query_labels_distinct<S: GilSource + ?Sized>(
+    src: &S,
     selectors: &[SeriesSelector],
     label: Option<&str>,
 ) -> ValkeyResult<BTreeSet<String>> {
-    let db = get_current_db(ctx);
-    let index = get_db_index(db);
-
-    let mut stale = StaleIds::new();
-    // Resolve under the guard, open afterwards. See [`resolve_series_keys`].
-    let resolved = {
-        let postings = index.get_postings();
-        if selectors.is_empty() {
-            // Iterate the bitmap in place: collecting it first would allocate a `Vec` holding
-            // every series id in the database before a single key is resolved.
-            resolve_series_keys(ctx, &postings, postings.all_postings.iter(), &mut stale)
-        } else {
-            let refs = postings.postings_for_selectors(selectors)?;
-            resolve_series_keys(ctx, &postings, refs.iter(), &mut stale)
-        }
+    let selection = if selectors.is_empty() {
+        SeriesSelection::All
+    } else {
+        SeriesSelection::Matching(selectors)
     };
-
     let mut result: BTreeSet<String> = BTreeSet::new();
-    let access = KeyAccess::new(ctx, AclPermissions::ACCESS);
-    for (id, k) in resolved {
-        // TS.QUERYLABELS contract: silently omit series the caller may not read rather
-        // than erroring on the first unreadable match (that is the coarse gate the
-        // label-search commands use, and it is deliberately not applied here).
-        if !access.allows(&k) {
-            continue;
-        }
-        // No `ACCESS` permission is passed here: the read check above already ran, and
-        // passing it would turn an unreadable key into a hard error instead of a skip.
-        let Some(guard) = try_get_timeseries(ctx, &k, None)? else {
-            stale.push(id);
-            continue;
-        };
-        let ts = guard.as_ref();
-        match label {
-            None => {
-                for lbl in ts.labels.iter() {
-                    result.insert(lbl.name.to_string());
+    // TS.QUERYLABELS contract: series the caller may not read are skipped, not an error on
+    // the first one (that is the coarse gate the label-search commands use, and it is
+    // deliberately not applied here).
+    for_each_readable_series(
+        src,
+        selection,
+        None,
+        DEFAULT_SERIES_BATCH_SIZE,
+        |_ctx, ts, _key| {
+            // Looked up before inserting: `insert(x.to_string())` would allocate for every
+            // label, seen or not.
+            match label {
+                None => {
+                    for lbl in ts.labels.iter() {
+                        if !result.contains(lbl.name) {
+                            result.insert(lbl.name.to_string());
+                        }
+                    }
+                }
+                Some(name) => {
+                    if let Some(lbl) = ts.get_label(name)
+                        && !result.contains(lbl.value)
+                    {
+                        result.insert(lbl.value.to_string());
+                    }
                 }
             }
-            Some(name) => {
-                if let Some(lbl) = ts.get_label(name) {
-                    result.insert(lbl.value.to_string());
-                }
-            }
-        }
-    }
-
-    index.mark_ids_as_stale(&stale);
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
     Ok(result)
 }
 

@@ -37,16 +37,18 @@
 //! - **Requester deadline** ([`GilSource::expired`]): nothing sets one on a `FanoutContext`
 //!   yet, so a read is never abandoned between batches.
 
-use super::get_db_index;
 use super::postings::Postings;
 use super::querier::{StaleIds, matches_date_range};
+use super::{PostingsBitmap, get_db_index};
 use crate::common::acl::{AclContextGuard, KeyAccess};
 use crate::common::context::{create_key_string, get_current_db};
 use crate::error_consts;
 use crate::fanout::FanoutContext;
 use crate::labels::filters::SeriesSelector;
 use crate::series::request_types::MetaDateRangeFilter;
-use crate::series::{SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries_as};
+use crate::series::{
+    SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,
+};
 use blart::AsBytes;
 use std::num::NonZeroUsize;
 use std::ops::{ControlFlow, Deref};
@@ -187,6 +189,48 @@ pub fn for_each_series<S, F>(
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
     batch_size: NonZeroUsize,
+    f: F,
+) -> ValkeyResult<()>
+where
+    S: GilSource + ?Sized,
+    F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
+{
+    let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
+    visit_each_series(src, cursor, batch_size, f)
+}
+
+/// Which series a read visits.
+#[derive(Clone, Copy)]
+pub enum SeriesSelection<'a> {
+    /// Those the selectors match: none when there are none.
+    Matching(&'a [SeriesSelector]),
+    /// Every series the database indexes.
+    All,
+}
+
+/// [`for_each_series`] for a read that leaves out what the caller may not read: a matched
+/// series without `ACCESS` is skipped, not an error, so nothing of it reaches `f`. It can
+/// also read every series ([`SeriesSelection::All`]).
+pub fn for_each_readable_series<S, F>(
+    src: &S,
+    selection: SeriesSelection<'_>,
+    range: Option<MetaDateRangeFilter>,
+    batch_size: NonZeroUsize,
+    f: F,
+) -> ValkeyResult<()>
+where
+    S: GilSource + ?Sized,
+    F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
+{
+    let cursor = SeriesCursor::plan(src.db(), selection, range)?;
+    visit_each_series(src, cursor.skip_unreadable(), batch_size, f)
+}
+
+/// The per-series entry points over a planned `cursor`.
+fn visit_each_series<S, F>(
+    src: &S,
+    cursor: SeriesCursor,
+    batch_size: NonZeroUsize,
     mut f: F,
 ) -> ValkeyResult<()>
 where
@@ -195,8 +239,7 @@ where
 {
     visit_batches(
         src,
-        selectors,
-        range,
+        cursor,
         BatchLimit::series(batch_size.get()),
         |ctx, batch| {
             for (guard, key) in batch.drain(..) {
@@ -226,10 +269,10 @@ where
         &[(SeriesGuard<'g>, ValkeyString)],
     ) -> ValkeyResult<ControlFlow<()>>,
 {
+    let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
     visit_batches(
         src,
-        selectors,
-        range,
+        cursor,
         BatchLimit::series(batch_size.get()),
         |ctx, batch| f(ctx, batch),
         Ok,
@@ -261,24 +304,17 @@ where
     F: for<'g> FnMut(&'g Context, &[(SeriesGuard<'g>, ValkeyString)]) -> ValkeyResult<T>,
     G: FnMut(T) -> ValkeyResult<ControlFlow<()>>,
 {
-    visit_batches(
-        src,
-        selectors,
-        range,
-        limit,
-        |ctx, batch| copy(ctx, batch),
-        process,
-    )
+    let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
+    visit_batches(src, cursor, limit, |ctx, batch| copy(ctx, batch), process)
 }
 
-/// The engine of every entry point. `visit` runs under each batch's lock and `after` gets
-/// its result once the lock is released. `visit` gets the batch by `&mut Vec` so the
+/// The engine of every entry point, reading what `cursor` planned. `visit` runs under each
+/// batch's lock and `after` gets its result once the lock is released. `visit` gets the batch by `&mut Vec` so the
 /// per-series entry point can move each guard out; this is private because that would also
 /// let a caller move a `ValkeyString` out from under the lock.
 fn visit_batches<S, B, W, F, G>(
     src: &S,
-    selectors: &[SeriesSelector],
-    range: Option<MetaDateRangeFilter>,
+    mut cursor: SeriesCursor,
     limit: BatchLimit<W>,
     mut visit: F,
     mut after: G,
@@ -289,10 +325,6 @@ where
     F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
     G: FnMut(B) -> ValkeyResult<ControlFlow<()>>,
 {
-    if selectors.is_empty() {
-        return Ok(());
-    }
-    let mut cursor = SeriesCursor::plan(src.db(), selectors, range)?;
     let limit = if src.can_release() {
         limit
     } else {
@@ -343,33 +375,73 @@ fn read_another_batch<S: GilSource + ?Sized>(src: &S, cursor: &SeriesCursor) -> 
 ///
 /// Planned with no lock; each [`Self::next_batch`] then runs under a lock the caller holds.
 /// The entry points above are this, driven one lock per batch.
+///
+/// The plan is kept as the bitmap the postings produced, not as a list of its ids: a
+/// roaring bitmap of a database's series ids, which are dense, costs a fraction of the
+/// 8 bytes per id a list would. Each batch reads its ids out of it from where the last one
+/// stopped.
 pub struct SeriesCursor {
     db: i32,
     range: Option<MetaDateRangeFilter>,
-    ids: Vec<SeriesRef>,
-    next: usize,
+    /// Every id the plan matched, read or not.
+    ids: PostingsBitmap,
+    /// Where the next batch starts: the smallest id it may read.
+    next: SeriesRef,
+    /// Ids planned and not yet read.
+    remaining: usize,
+    /// The current batch's ids, kept for its allocation.
+    batch: Vec<SeriesRef>,
+    /// Skip, rather than fail on, a series the caller may not read.
+    skip_unreadable: bool,
 }
 
 impl SeriesCursor {
-    /// Plan a read of `selectors` in database `db`: only the postings read lock is taken.
+    /// Plan a read of `selection` in database `db`: only the postings read lock is taken.
+    ///
+    /// The plan is an owned copy of the matched bitmap, even for [`SeriesSelection::All`] and
+    /// even when the read will be one batch: the cursor outlives the postings read lock, and
+    /// each batch takes that lock again, and the write lock to record stale ids, which a
+    /// borrowed bitmap would hold it against. The copy is a fraction of a byte per id.
     pub fn plan(
         db: i32,
-        selectors: &[SeriesSelector],
+        selection: SeriesSelection<'_>,
         range: Option<MetaDateRangeFilter>,
     ) -> ValkeyResult<Self> {
-        let ids = if selectors.is_empty() {
-            Vec::new()
-        } else {
-            let index = get_db_index(db);
-            let postings = index.get_postings();
-            postings.postings_for_selectors(selectors)?.iter().collect()
+        let ids = match selection {
+            SeriesSelection::Matching([]) => PostingsBitmap::new(),
+            SeriesSelection::Matching(selectors) => {
+                let index = get_db_index(db);
+                let postings = index.get_postings();
+                postings.postings_for_selectors(selectors)?.into_owned()
+            }
+            SeriesSelection::All => {
+                let index = get_db_index(db);
+                let postings = index.get_postings();
+                postings.all_postings.clone()
+            }
         };
-        Ok(Self {
+        Ok(Self::planned(db, range, ids))
+    }
+
+    fn planned(db: i32, range: Option<MetaDateRangeFilter>, ids: PostingsBitmap) -> Self {
+        // A plan cannot outgrow memory, so its ids fit a `usize`.
+        let remaining = ids.cardinality() as usize;
+        Self {
             db,
             range,
             ids,
             next: 0,
-        })
+            remaining,
+            batch: Vec::new(),
+            skip_unreadable: false,
+        }
+    }
+
+    /// Leave out the series the caller may not read, rather than failing the read on the
+    /// first one.
+    pub fn skip_unreadable(mut self) -> Self {
+        self.skip_unreadable = true;
+        self
     }
 
     /// The database the read runs against: the caller selects it before each batch.
@@ -378,17 +450,17 @@ impl SeriesCursor {
     }
 
     pub fn is_done(&self) -> bool {
-        self.next >= self.ids.len()
+        self.remaining == 0
     }
 
     /// Abandon the rest of the read: [`Self::is_done`] from here on.
     pub fn finish(&mut self) {
-        self.next = self.ids.len();
+        self.remaining = 0;
     }
 
     /// Ids planned and not yet read: an upper bound on the series still to come.
     pub fn remaining(&self) -> usize {
-        self.ids.len() - self.next.min(self.ids.len())
+        self.remaining
     }
 
     /// Read up to `max` more of the planned series and visit those that survive, under the
@@ -419,18 +491,56 @@ impl SeriesCursor {
         W: Fn(&TimeSeries) -> usize,
         F: for<'g> FnMut(&'g Context, &mut Vec<(SeriesGuard<'g>, ValkeyString)>) -> ValkeyResult<B>,
     {
-        let start = self.next;
-        let end = self
-            .ids
-            .len()
-            .min(start.saturating_add(limit.series.max(1)));
         // Taken in full unless the batch reports otherwise: a failed read stays consumed.
-        self.next = end;
-        let ids = &self.ids[start..end];
-        let BatchRead { visited, ids_taken } =
-            visit_batch(ctx, self.db, ids, self.range.as_ref(), limit, visit)?;
-        self.next = start + ids_taken;
+        if self.take_batch(limit.series.max(1)) == 0 {
+            return Ok(None);
+        }
+        let BatchRead { visited, ids_taken } = visit_batch(
+            ctx,
+            self.db,
+            &self.batch,
+            self.range.as_ref(),
+            self.skip_unreadable,
+            limit,
+            visit,
+        )?;
+        self.give_back(ids_taken);
         Ok(visited)
+    }
+
+    /// Read up to `max` of the ids not yet read into `self.batch`, and count them as read.
+    /// Returns how many it read: none once the plan is done.
+    ///
+    /// A source that cannot release the lock reads everything in one batch, so this then
+    /// holds every remaining id at once — as the batch holds a guard for every series anyway.
+    fn take_batch(&mut self, max: usize) -> usize {
+        self.batch.clear();
+        self.batch.resize(self.remaining.min(max), 0);
+        let taken = {
+            let mut ids = self.ids.cursor();
+            ids.reset_at_or_after(self.next);
+            ids.read_many(&mut self.batch)
+        };
+        self.batch.truncate(taken);
+        match self.batch.last() {
+            Some(&last) => {
+                self.next = last.saturating_add(1);
+                self.remaining -= taken;
+            }
+            // Unreachable while `remaining` counts what the bitmap holds from `next` on.
+            None => self.finish(),
+        }
+        taken
+    }
+
+    /// Hand back the ids of the batch after its first `read`, which the batch left unread
+    /// when it reached its weight: the next batch starts with them.
+    fn give_back(&mut self, read: usize) {
+        let unread = self.batch.len().saturating_sub(read);
+        if unread > 0 {
+            self.next = self.batch[read];
+            self.remaining += unread;
+        }
     }
 }
 
@@ -439,16 +549,18 @@ struct BatchRead<B> {
     /// What `visit` returned: `None` when no series of the batch survived to be visited.
     visited: Option<B>,
     /// How many of the batch's ids it took, from the front: fewer than all when the series
-    /// opened reached the limit's weight first. The rest are left for the next batch.
+    /// opened reached the limit's weight first. The rest are handed back to the cursor.
     ids_taken: usize,
 }
 
-/// One batch, under the lock: resolve, open, filter, visit, and record the stale ids.
+/// One batch, under the lock: resolve, check access, open, filter, visit, and record the
+/// stale ids.
 fn visit_batch<'g, B, W, F>(
     ctx: &'g Context,
     db: i32,
     ids: &[SeriesRef],
     range: Option<&MetaDateRangeFilter>,
+    skip_unreadable: bool,
     limit: &BatchLimit<W>,
     visit: &mut F,
 ) -> ValkeyResult<BatchRead<B>>
@@ -476,7 +588,17 @@ where
     // lock. Their ids are resolved afresh by the batch that reads them; any stale id among
     // them was found stale under this lock, and is recorded below either way.
     for (id, key) in resolved {
-        match try_get_timeseries_as(ctx, &key, &access) {
+        let series = if skip_unreadable {
+            // Checked before the key is opened, as `try_get_timeseries_as` does, so an
+            // unreadable series is neither opened nor taken for stale.
+            if !access.allows(&key) {
+                continue;
+            }
+            try_get_timeseries(ctx, &key, None)
+        } else {
+            try_get_timeseries_as(ctx, &key, &access)
+        };
+        match series {
             Ok(Some(guard)) => {
                 // Resolved and opened in one lock hold, so the key holds this id unless the
                 // index is out of step with the keyspace. Another series is not this read's
@@ -563,6 +685,7 @@ mod tests {
     use super::*;
     use crate::labels::{Label, MetricName};
     use crate::series::TimeSeries;
+    use crate::series::index::clear_timeseries_index;
     use std::time::Instant;
 
     fn series(id: SeriesRef, name: &str) -> TimeSeries {
@@ -570,6 +693,70 @@ mod tests {
         series.id = id;
         series.labels = MetricName::new(&[Label::new("__name__", name)]);
         series
+    }
+
+    /// Every id, in order, `take_batch` hands out `max` at a time.
+    fn drain(cursor: &mut SeriesCursor, max: usize) -> Vec<Vec<SeriesRef>> {
+        let mut batches = Vec::new();
+        while cursor.take_batch(max) > 0 {
+            batches.push(cursor.batch.clone());
+        }
+        batches
+    }
+
+    #[test]
+    fn a_cursor_pages_through_its_bitmap() {
+        let ids = PostingsBitmap::from_iter([3, 5, 8, 13, 21, 1 << 40]);
+        let mut cursor = SeriesCursor::planned(0, None, ids);
+        assert_eq!(cursor.remaining(), 6);
+
+        let batches = drain(&mut cursor, 4);
+
+        assert_eq!(batches, vec![vec![3, 5, 8, 13], vec![21, 1 << 40]]);
+        assert!(cursor.is_done());
+        assert_eq!(cursor.remaining(), 0);
+    }
+
+    #[test]
+    fn an_empty_plan_is_done_at_once() {
+        let mut cursor = SeriesCursor::planned(0, None, PostingsBitmap::new());
+        assert!(cursor.is_done());
+        assert_eq!(cursor.take_batch(4), 0);
+    }
+
+    /// A batch that reaches its weight part-way hands the rest back, and the next batch
+    /// starts with them.
+    #[test]
+    fn ids_given_back_are_read_by_the_next_batch() {
+        let ids = PostingsBitmap::from_iter([1, 2, 3, 4, 5]);
+        let mut cursor = SeriesCursor::planned(0, None, ids);
+
+        assert_eq!(cursor.take_batch(3), 3);
+        cursor.give_back(1);
+        assert_eq!(cursor.remaining(), 4);
+
+        assert_eq!(drain(&mut cursor, 3), vec![vec![2, 3, 4], vec![5]]);
+    }
+
+    #[test]
+    fn a_batch_read_in_full_gives_nothing_back() {
+        let ids = PostingsBitmap::from_iter([1, 2, 3]);
+        let mut cursor = SeriesCursor::planned(0, None, ids);
+
+        assert_eq!(cursor.take_batch(2), 2);
+        cursor.give_back(2);
+
+        assert_eq!(drain(&mut cursor, 2), vec![vec![3]]);
+    }
+
+    #[test]
+    fn finish_abandons_the_rest() {
+        let ids = PostingsBitmap::from_iter([1, 2, 3]);
+        let mut cursor = SeriesCursor::planned(0, None, ids);
+        cursor.take_batch(1);
+        cursor.finish();
+        assert!(cursor.is_done());
+        assert_eq!(cursor.take_batch(1), 0);
     }
 
     fn live_keys(postings: &Postings, ids: &[SeriesRef]) -> (Vec<(SeriesRef, Vec<u8>)>, StaleIds) {
@@ -641,12 +828,7 @@ mod tests {
 
     /// A cursor with `ids` planned and none of them read yet.
     fn unread(ids: &[SeriesRef]) -> SeriesCursor {
-        SeriesCursor {
-            db: 0,
-            range: None,
-            ids: ids.to_vec(),
-            next: 0,
-        }
+        SeriesCursor::planned(0, None, PostingsBitmap::from_iter(ids.iter().copied()))
     }
 
     #[test]
@@ -674,8 +856,36 @@ mod tests {
         let src = FanoutContext::new(None, 0);
         src.set_deadline(Instant::now());
         let mut cursor = unread(&[1, 2]);
-        cursor.finish();
+        assert_eq!(cursor.take_batch(8), 2);
 
         assert!(!read_another_batch(&src, &cursor).unwrap());
+    }
+
+    /// `SeriesSelection` decides what a plan holds: `All` every indexed id, `Matching` the
+    /// selectors' matches, and an empty `Matching` nothing — not everything.
+    #[test]
+    fn a_plan_holds_what_its_selection_names() {
+        // A database no other test indexes into: the index is process-global.
+        const DB: i32 = 7301;
+        clear_timeseries_index(DB);
+        let index = get_db_index(DB);
+        for (id, name) in [(1, "cpu"), (2, "cpu"), (3, "mem")] {
+            index.index_timeseries(&series(id, name), format!("k{id}").as_bytes());
+        }
+        let planned = |selection| {
+            let mut cursor = SeriesCursor::plan(DB, selection, None).unwrap();
+            drain(&mut cursor, 8).concat()
+        };
+        let cpu = [SeriesSelector::parse(r#"__name__="cpu""#).unwrap()];
+
+        assert_eq!(planned(SeriesSelection::All), vec![1, 2, 3]);
+        assert_eq!(planned(SeriesSelection::Matching(&cpu)), vec![1, 2]);
+        assert_eq!(
+            planned(SeriesSelection::Matching(&[])),
+            Vec::<SeriesRef>::new()
+        );
+
+        drop(index);
+        clear_timeseries_index(DB);
     }
 }
