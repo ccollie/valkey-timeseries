@@ -69,10 +69,10 @@ Returns an error reply in the following cases:
   call is read inline. Unreadable series are omitted either way.
 - A background read is not a snapshot: it can observe changes made while it runs. The set of
   series it visits is fixed when it is planned: when every selector is an `=` or `!=` match on
-  non-empty values, that is when the command arrives, otherwise when the read starts. A read
-  that waits in the queue therefore misses series created in the meantime, while series
-  deleted before their batch is read are omitted. When the workers' queue is full, the command
-  fails with `TSDB: label query: too many queued jobs (limit 256)`.
+  non-empty values, that is when the command arrives, otherwise when the read starts. A read that waits in the queue therefore
+  misses series created in the meantime, while series deleted before their batch is read are
+  omitted. When the workers' queue is full, the command fails with
+  `TSDB: label query: too many queued jobs (limit 256)`.
 - In cluster mode, each shard reads its share in batches in the same way.
 
 #### Examples

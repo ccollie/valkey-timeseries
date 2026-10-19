@@ -149,9 +149,9 @@ The pool and its queue (256 jobs) are shared with `TS.OUTLIERS`, so long outlier
 large reads and the reverse. Small reads, transactions and scripts run inline, as do standalone
 `TS.CARD` counts without a range filter. Background reads can observe changes between batches
 rather than a database snapshot. A read of series fixes which series it visits when it is
-planned, on arrival for cheap filters, so one that waits in the queue misses series created
-in the meantime. If the queue is full, a large read returns an error so queued requests
-stay bounded.
+planned, on arrival for cheap filters, so one that waits in the queue misses series created in
+the meantime. If the queue is full, a large read returns an error so queued
+requests stay bounded.
 
 ### Anomaly Detection
 

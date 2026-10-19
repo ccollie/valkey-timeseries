@@ -31,11 +31,7 @@ valkey-timeseries achieves high performance by storing series data in-memory and
 - **Parallelism:** Low-overhead threading model that enables concurrent lock-free reads across series and chunks.
 - **CPU Cache Efficiency:** Modern, cache-friendly algorithms for data and index storage.
 - **Memory Efficiency:** Uses string interning for label-value pairs.
-- **Background Index Reads:** Large standalone label discovery (`TS.LABELNAMES`,
-  `TS.LABELVALUES`, `TS.METRICNAMES`, `TS.QUERYLABELS`) and range-filtered `TS.CARD` reads
-  run on bounded background workers, releasing the module lock between batches so writes
-  and other clients are not stalled. See [Command List](docs/COMMANDS.md) for when a request
-  runs inline.
+- **Background Index Reads:** Large standalone label discovery (`TS.LABELNAMES`, `TS.LABELVALUES`, `TS.METRICNAMES`, `TS.QUERYLABELS`) and range-filtered `TS.CARD` reads run on bounded background workers, releasing the module lock between batches so writes and other clients are not stalled. See [Command List](docs/COMMANDS.md) for when a request runs inline.
 
 ## Commands
 

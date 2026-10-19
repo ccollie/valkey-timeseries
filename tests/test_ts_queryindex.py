@@ -263,7 +263,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Query for series with data
         result = self.client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', start_ts, end_ts, 'name=cpu')
-        assert result == [b'ts11', b'ts9']
+        assert sorted(result) == [b'ts11', b'ts9']
 
         # query for series without data in range
         result = self.client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', 'NOT', start_ts, end_ts, 'name=cpu')
@@ -277,7 +277,9 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         try:
             for key in keys:
                 self.client.execute_command('TS.ADD', key, 1000, 1, 'LABELS', 'fleet', 'binary')
-            assert self.client.execute_command('TS.QUERYINDEX', *range_args, 'fleet=binary') == sorted(keys)
+            # Reply order is undefined; distinct byte strings must stay distinct.
+            result = self.client.execute_command('TS.QUERYINDEX', *range_args, 'fleet=binary')
+            assert sorted(result) == sorted(keys)
         finally:
             self.client.execute_command('SELECT', 0)
         assert self.client.execute_command('TS.QUERYINDEX', *range_args, 'fleet=binary') == [b'qi:db0']

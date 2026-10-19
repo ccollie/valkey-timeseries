@@ -78,8 +78,8 @@ mod single_flight;
 
 pub use executor::{BoundedExecutor, Capacity, ExecutorStats, Rejected, Reservation};
 pub use gil::{
-    GilGuard, GilToken, LockGil, check_holds_gil, check_may_block, check_may_wait_on_blocking_pool,
-    holds_gil,
+    GilGuard, GilToken, LockGil, YieldMode, check_holds_gil, check_may_block,
+    check_may_wait_on_blocking_pool, holds_gil, yield_gil,
 };
 pub use orx_pool::{
     IntoParRayon, IterIntoParRayon, ModulePool, ParCollectionRayon, ParMutRayon, ParRayon,

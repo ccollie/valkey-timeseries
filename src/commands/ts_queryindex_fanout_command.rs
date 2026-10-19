@@ -40,9 +40,11 @@ impl FanoutClientCommand for QueryIndexFanoutCommand {
         req: MetaQueryRequest,
     ) -> ValkeyResult<KeyListResponse> {
         let options = deserialize_match_filter_options(req.range, Some(req.filters))?;
-        // Owned key bytes survive both the batch's lock and the protobuf round trip.
+        // The protobuf message owns each key separately.
         let keys = series_keys_by_selectors(ctx, &options.matchers, options.date_range)?;
-        Ok(KeyListResponse { keys })
+        Ok(KeyListResponse {
+            keys: keys.into_vecs(),
+        })
     }
 
     fn generate_request(&self) -> MetaQueryRequest {

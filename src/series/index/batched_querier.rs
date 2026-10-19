@@ -39,7 +39,7 @@
 
 use super::postings::Postings;
 use super::querier::{StaleIds, matches_date_range};
-use super::{PostingsBitmap, get_db_index};
+use super::{KeyList, PostingsBitmap, get_db_index};
 use crate::common::acl::{AclContextGuard, KeyAccess};
 use crate::common::context::{create_key_string, get_current_db};
 use crate::error_consts;
@@ -274,45 +274,35 @@ fn filter_plans_cheaply(filter: &LabelFilter) -> bool {
     }
 }
 
-/// Resolve matching ids to owned key bytes without opening keys or checking per-key ACLs.
+/// Resolve matching ids to key names without opening keys or checking per-key ACLs.
 /// Backs index-only `TS.QUERYINDEX` reads, which reveal every indexed match.
 ///
 /// "Indexed", not "series": unlike [`for_each_series`] and [`for_each_series_batch`], this
 /// reports what the index lists. It opens no key, so it applies no per-key `ACCESS` check and
 /// no date range. Use it only where revealing a key the caller may not read is the contract.
 ///
-/// Planning takes only the postings lock. Each batch resolves under the module lock, and
-/// `f` receives its owned keys after that hold is released. `f` is called only for a batch
-/// with at least one key: a batch whose every id was deleted, stale or unknown since planning
-/// is skipped, as `visit_batches` skips one, so an empty batch never reads as a signal. A
-/// main-thread caller keeps its existing module lock, but still bounds each postings-lock
-/// hold by `batch_size` ids. Must not be called while holding the lock through a releasing
-/// [`GilSource`].
-pub fn for_each_indexed_key_batch<S, F>(
+/// `cursor` comes from [`SeriesCursor::plan`] or [`plan_if_cheap`] without a date range. Each
+/// batch of `batch_size` ids resolves under the module lock; ids deleted, stale or unknown
+/// since planning are skipped. A main-thread caller keeps its existing module lock, but still
+/// bounds each postings-lock hold by `batch_size` ids. Must not be called while holding the
+/// lock through a releasing [`GilSource`].
+pub fn collect_indexed_keys<S: GilSource + ?Sized>(
     src: &S,
-    selectors: &[SeriesSelector],
+    mut cursor: SeriesCursor,
     batch_size: NonZeroUsize,
-    mut f: F,
-) -> ValkeyResult<()>
-where
-    S: GilSource + ?Sized,
-    F: FnMut(Vec<Vec<u8>>) -> ValkeyResult<ControlFlow<()>>,
-{
-    let mut cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), None)?;
+) -> ValkeyResult<KeyList> {
+    let mut keys = KeyList::new();
+    keys.reserve(cursor.remaining());
     while !cursor.is_done() {
-        let keys = {
+        {
             let _ctx = src.lock()?;
-            cursor.next_key_batch(batch_size.get())
-        };
-        // A batch whose every id was gone or stale has nothing to report.
-        if !keys.is_empty() && f(keys)?.is_break() {
-            break;
+            cursor.next_key_batch(batch_size.get(), &mut keys);
         }
         if src.can_release() && !read_another_batch(src, &cursor)? {
             break;
         }
     }
-    Ok(())
+    Ok(keys)
 }
 
 /// Which series a read visits.
@@ -554,6 +544,11 @@ impl SeriesCursor {
         self.db
     }
 
+    /// Whether the plan carries a date range, which only a read that opens series applies.
+    pub fn has_date_range(&self) -> bool {
+        self.range.is_some()
+    }
+
     pub fn is_done(&self) -> bool {
         self.remaining == 0
     }
@@ -613,7 +608,7 @@ impl SeriesCursor {
         Ok(visited)
     }
 
-    /// Copy a batch of live key names, without touching the server keyspace.
+    /// Append a batch of live key names to `keys`, without touching the server keyspace.
     ///
     /// The caller holds the module lock, although nothing here calls the module API: it is
     /// what keeps a command's index changes from interleaving with the copy. The postings read
@@ -625,20 +620,17 @@ impl SeriesCursor {
     /// of the other batched reads. The cost is one module-lock acquisition per batch: about
     /// 2,000 for a million matched keys at the default 512 ids per batch, each held only for
     /// the copy. Going GIL-free would need `RENAME`'s index change made atomic first.
-    fn next_key_batch(&mut self, max: usize) -> Vec<Vec<u8>> {
+    fn next_key_batch(&mut self, max: usize, keys: &mut KeyList) {
         self.take_batch(max.max(1));
         let index = get_db_index(self.db);
         let mut stale = StaleIds::new();
-        let keys = {
+        {
             let postings = index.get_postings();
-            let mut keys = Vec::with_capacity(self.batch.len());
             for_live_keys(&postings, &self.batch, &mut stale, |_id, key| {
-                keys.push(key.to_vec());
+                keys.push(key)
             });
-            keys
-        };
+        }
         index.mark_ids_as_stale(&stale);
-        keys
     }
 
     /// Read up to `max` of the ids not yet read into `self.batch`, and count them as read.
@@ -974,17 +966,22 @@ mod tests {
             .get_postings_mut()
             .add_posting_for_label_value(3, "__name__", "cpu");
         let mut cursor = SeriesCursor::plan(DB, SeriesSelection::All, None).unwrap();
+        let next_batch = |cursor: &mut SeriesCursor, max| {
+            let mut keys = KeyList::new();
+            cursor.next_key_batch(max, &mut keys);
+            keys.into_vecs()
+        };
 
         assert!(index.remove_timeseries_for_key(&renamed, b"old"));
         index.index_timeseries(&renamed, b"new");
-        assert_eq!(cursor.next_key_batch(1), vec![b"new".to_vec()]);
+        assert_eq!(next_batch(&mut cursor, 1), vec![b"new".to_vec()]);
 
         index.remove_timeseries(&deleted);
         // Deleted and dangling ids consume their batch without ending the scan.
-        assert!(cursor.next_key_batch(2).is_empty());
+        assert!(next_batch(&mut cursor, 2).is_empty());
         assert!(!cursor.is_done());
         assert!(!index.get_postings().all_postings.contains(3));
-        assert_eq!(cursor.next_key_batch(2), vec![b"binary:\xff\0".to_vec()]);
+        assert_eq!(next_batch(&mut cursor, 2), vec![b"binary:\xff\0".to_vec()]);
         assert!(cursor.is_done());
 
         drop(index);

@@ -23,9 +23,8 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesCursor, SeriesSelection,
-    for_each_indexed_key_batch, for_each_planned_series, for_each_series, get_db_index,
-    get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, KeyList, SeriesCursor, SeriesSelection,
+    collect_indexed_keys, for_each_planned_series, get_db_index, get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
@@ -213,7 +212,7 @@ pub fn query_labels_distinct_planned<S: GilSource + ?Sized>(
     Ok(result)
 }
 
-/// Matching key names, copied into owned bytes so they can outlive each batch's lock.
+/// Matching key names, copied out so they can outlive each batch's lock.
 /// Without a range this reads only the index and reveals matches regardless of key ACLs;
 /// with a range it opens each series and fails on the first unreadable match.
 /// A fan-out share releases the module lock between batches; a main-thread caller keeps it.
@@ -222,25 +221,32 @@ pub fn series_keys_by_selectors<S: GilSource + ?Sized>(
     src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
-) -> ValkeyResult<Vec<Vec<u8>>> {
-    let mut keys = Vec::new();
-    if range.is_none() {
-        for_each_indexed_key_batch(src, selectors, DEFAULT_SERIES_BATCH_SIZE, |batch| {
-            keys.extend(batch);
-            Ok(ControlFlow::Continue(()))
-        })?;
-    } else {
-        for_each_series(
-            src,
-            selectors,
-            range,
-            DEFAULT_SERIES_BATCH_SIZE,
-            |_ctx, _series, key| {
-                keys.push(key.as_slice().to_vec());
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
+) -> ValkeyResult<KeyList> {
+    let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
+    series_keys_by_selectors_planned(src, cursor)
+}
+
+/// [`series_keys_by_selectors`] over a read planned already
+/// ([`plan_if_cheap`](super::plan_if_cheap)). A plan with a date range opens and checks every
+/// key as [`for_each_series`](super::for_each_series) does; otherwise the keys are what the
+/// index lists.
+pub fn series_keys_by_selectors_planned<S: GilSource + ?Sized>(
+    src: &S,
+    cursor: SeriesCursor,
+) -> ValkeyResult<KeyList> {
+    if !cursor.has_date_range() {
+        return collect_indexed_keys(src, cursor, DEFAULT_SERIES_BATCH_SIZE);
     }
+    let mut keys = KeyList::new();
+    for_each_planned_series(
+        src,
+        cursor,
+        DEFAULT_SERIES_BATCH_SIZE,
+        |_ctx, _series, key| {
+            keys.push(key.as_slice());
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
     Ok(keys)
 }
 

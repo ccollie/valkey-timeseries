@@ -26,11 +26,12 @@ In cluster mode, `FILTER_BY_RANGE` counts read each shard in batches. Background
 reads can observe writes between batches, so their results are not point-in-time snapshots.
 The set of series a read visits is fixed when it is planned: when every filter is a literal
 equality or inequality on non-empty values, that is when the command arrives, otherwise when
-the read starts. A background count that waits in the queue therefore misses series created
-in the meantime, while series deleted before their batch is read are not counted. Every
-matching series must be readable by the caller, even if the range excludes it. Filtered
-counts without `FILTER_BY_RANGE` use the index directly, without per-key read checks, and
-stay inline on standalone servers. Bare `TS.CARD` also stays inline and requires read
+the read starts. A
+background count that waits in the queue therefore misses series created in the meantime,
+while series deleted before their batch is read are not counted.
+Every matching series must be readable by the caller, even if the range excludes it.
+Filtered counts without `FILTER_BY_RANGE` use the index directly, without per-key read checks,
+and stay inline on standalone servers. Bare `TS.CARD` also stays inline and requires read
 permission for all keys.
 
 ### Required arguments

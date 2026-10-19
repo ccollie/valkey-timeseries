@@ -81,8 +81,19 @@ keys are merged into one reply.
   - a deleted series is skipped;
   - a series created after the query was planned is not included;
   - range checks in later batches can see writes made in between.
-
-  A standalone query holds the module lock for the whole read.
+- On a standalone server, a query estimated to match more than 512 series runs
+  on a bounded pool of background workers, shared with `TS.OUTLIERS` and
+  label-discovery reads, and reads in batches in the same way. When every
+  selector is an `=` or `!=` match on non-empty values, the estimate is the
+  exact match count, so a narrow query on a large database stays on the main
+  thread. Other selectors (regular expressions, prefix and substring matches,
+  empty values) are sized by how many series the database indexes. Building
+  the reply happens on the worker too. When the workers' queue is full, the
+  command fails with
+  `TSDB: series query: too many queued jobs (limit 256)`.
+- Smaller queries, and any query inside `MULTI`, a script or a module call,
+  hold the module lock for the whole read. Use `MULTI` when the reply must
+  reflect a single instant.
 
 ## Examples
 

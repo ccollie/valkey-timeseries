@@ -1,5 +1,5 @@
-//! The analysis lane: outlier detection, and standalone label searches, `TS.QUERYLABELS`
-//! and range-filtered `TS.CARD` reads too large for the main thread.
+//! The analysis lane: outlier detection, and standalone label searches, `TS.QUERYLABELS`,
+//! `TS.QUERYINDEX` and range-filtered `TS.CARD` reads too large for the main thread.
 //!
 //! A [`BoundedExecutor`] rather than the shared pool: an analysis job runs for a long time,
 //! and would hold a shared worker that GIL holders wait on (R2 in `common::threads`). Bounded,
