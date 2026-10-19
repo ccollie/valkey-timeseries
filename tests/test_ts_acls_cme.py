@@ -3,7 +3,7 @@ from valkey import ResponseError, Valkey, ValkeyCluster
 
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 from valkeytestframework.conftest import resource_port_tracker
-from common import LabelSearchResponse
+from common import LabelSearchResponse, parse_stats_response
 
 
 # Keys placed deterministically on distinct shards of a 3-primary cluster.
@@ -335,6 +335,28 @@ class TestTimeSeriesAclCluster(ValkeyTimeSeriesClusterTestCase):
         # must still exist.
         assert cluster.execute_command("EXISTS", KEY_SHARD0) == 1
         assert cluster.execute_command("EXISTS", KEY_SHARD2) == 1
+
+    def test_labelstats_checks_metadata_permissions_on_every_shard(self):
+        cluster = self.new_cluster_client()
+        self._setup_per_shard_data(cluster)
+        self._create_user_on_all_primaries('stats-reader', 'pw', '+ts.labelstats', '~*')
+        # The coordinators on shards 0 and 2 admit the request; shard 1 must reject its share.
+        self.client_for_primary(1).execute_command(
+            'ACL', 'SETUSER', 'stats-reader', 'RESETKEYS', PATTERN_SHARD1,
+        )
+        for coordinator in range(self.CLUSTER_SIZE):
+            reader = self._get_primary_user_client(coordinator, 'stats-reader', 'pw')
+            try:
+                with pytest.raises(ResponseError, match='permission'):
+                    reader.execute_command('TS.LABELSTATS', 'FILTER', 'name=cpu')
+            finally:
+                reader.close()
+        self.client_for_primary(1).execute_command('ACL', 'SETUSER', 'stats-reader', '~*')
+        reader = self._get_primary_user_client(0, 'stats-reader', 'pw')
+        try:
+            assert parse_stats_response(reader.execute_command('TS.LABELSTATS'))['totalSeries'] == 3
+        finally:
+            reader.close()
 
     def test_labelvalues_requires_all_keys_read_permission(self):
         """TS.LABELVALUES exposes metadata that could leak across keys, so it

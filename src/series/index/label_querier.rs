@@ -31,7 +31,7 @@ use std::cmp::Ordering;
 use std::collections::{Bound, VecDeque};
 use std::fmt::Display;
 use std::ops::ControlFlow;
-use valkey_module::ValkeyError;
+use valkey_module::{ValkeyError, ValkeyResult};
 
 const DEFAULT_LIMIT: usize = 100;
 
@@ -577,25 +577,6 @@ fn collect_limited_with_heap(
 /// over a large index, long enough that re-taking the lock is noise.
 const LABEL_SCAN_ENTRIES_PER_HOLD: usize = 1024;
 
-/// How many times a scan is run because a `SWAPDB` landed while it ran, after which the last
-/// attempt's result is returned as it is. Three swaps during one scan is not a workload.
-const LABEL_SCAN_ATTEMPTS: usize = 3;
-
-/// Runs `scan`, a scan that gives the postings lock back between holds, again if a `SWAPDB`
-/// exchanged the index's contents while it ran (see [`TimeSeriesIndex::generation`]). Such a
-/// scan resumes by key in the other database's postings, so it would return one database's
-/// entries up to its resume point and the other's after it.
-fn scan_without_swap<R>(index: &TimeSeriesIndex, mut scan: impl FnMut() -> R) -> R {
-    for _ in 1..LABEL_SCAN_ATTEMPTS {
-        let generation = index.generation();
-        let result = scan();
-        if index.generation() == generation {
-            return result;
-        }
-    }
-    scan()
-}
-
 /// `name=`: no key of `name`'s values sorts below it.
 fn first_label_key(name: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(name.len() + 1);
@@ -745,8 +726,8 @@ fn get_label_names_asc(
     index: &TimeSeriesIndex,
     filter: &dyn FuzzyFilter,
     limit: usize,
-) -> LabelQueryResult {
-    scan_without_swap(index, || {
+) -> ValkeyResult<LabelQueryResult> {
+    index.read_without_swap(|| {
         let mut results: Vec<LabelSearchResult> = Vec::with_capacity(limit.min(DEFAULT_LIMIT));
         let has_more = iterate_label_names_asc(
             index,
@@ -760,7 +741,7 @@ fn get_label_names_asc(
                 });
             },
         );
-        LabelQueryResult::new(results, has_more)
+        Ok(LabelQueryResult::new(results, has_more))
     })
 }
 
@@ -774,9 +755,14 @@ fn get_label_names_desc(
     index: &TimeSeriesIndex,
     filter: &dyn FuzzyFilter,
     limit: usize,
-) -> LabelQueryResult {
-    scan_without_swap(index, || {
-        get_label_names_desc_in_holds(index, filter, limit, LABEL_SCAN_ENTRIES_PER_HOLD)
+) -> ValkeyResult<LabelQueryResult> {
+    index.read_without_swap(|| {
+        Ok(get_label_names_desc_in_holds(
+            index,
+            filter,
+            limit,
+            LABEL_SCAN_ENTRIES_PER_HOLD,
+        ))
     })
 }
 
@@ -889,7 +875,7 @@ fn get_label_names_desc_in_holds(
 /// single unbroken scan would.
 ///
 /// It is not a point-in-time view: a value added behind the resume point after it was passed
-/// is not seen. Callers run it under [`scan_without_swap`].
+/// is not seen. Callers run it under [`TimeSeriesIndex::read_without_swap`].
 struct LabelValueScan<'a, F> {
     index: &'a TimeSeriesIndex,
     /// See [`first_label_key`].
@@ -1140,11 +1126,9 @@ fn get_label_names_top_k(
     filter: &dyn FuzzyFilter,
     order: SearchResultOrdering,
     limit: usize,
-) -> LabelQueryResult {
+) -> ValkeyResult<LabelQueryResult> {
     let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
-    scan_without_swap(index, || {
-        get_label_names_top_k_once(index, filter, order, limit)
-    })
+    index.read_without_swap(|| Ok(get_label_names_top_k_once(index, filter, order, limit)))
 }
 
 /// One attempt of [`get_label_names_top_k`].
@@ -1194,7 +1178,10 @@ fn get_label_names_top_k_once(
 /// and gives it back periodically, so writers are not starved (see
 /// [`iterate_label_names_asc`]). No lock is held here: the scans take it themselves, and a read
 /// lock taken again behind a waiting writer can deadlock.
-fn collect_unscoped_label_names(index: &TimeSeriesIndex, hints: &SearchHints) -> LabelQueryResult {
+fn collect_unscoped_label_names(
+    index: &TimeSeriesIndex,
+    hints: &SearchHints,
+) -> ValkeyResult<LabelQueryResult> {
     let limit = normalize_limit(hints.limit);
 
     with_search_filter(hints, |filter| match hints.order_by {
@@ -1218,7 +1205,7 @@ fn collect_unscoped_label_values(
     index: &TimeSeriesIndex,
     label_name: &str,
     hints: &SearchHints,
-) -> LabelQueryResult {
+) -> ValkeyResult<LabelQueryResult> {
     collect_unscoped_label_values_in_holds(index, label_name, hints, LABEL_SCAN_ENTRIES_PER_HOLD)
 }
 
@@ -1228,11 +1215,11 @@ fn collect_unscoped_label_values_in_holds(
     label_name: &str,
     hints: &SearchHints,
     entries_per_hold: usize,
-) -> LabelQueryResult {
+) -> ValkeyResult<LabelQueryResult> {
     let limit = normalize_limit(hints.limit);
 
-    scan_without_swap(index, || {
-        with_search_filter(hints, |filter| {
+    index.read_without_swap(|| {
+        Ok(with_search_filter(hints, |filter| {
             let check = |entry: &IndexKey, map: &PostingsBitmap| {
                 if map.is_empty() {
                     return None;
@@ -1286,7 +1273,7 @@ fn collect_unscoped_label_values_in_holds(
                     limit,
                 ),
             }
-        })
+        }))
     })
 }
 
@@ -1298,7 +1285,7 @@ fn collect_label_names<S: GilSource + ?Sized>(
     if can_use_unscoped_scan(select_hints.as_ref()) {
         // The index alone answers this: no series is opened, so no module lock is taken.
         let index = get_db_index(src.db());
-        return Ok(collect_unscoped_label_names(&index, hints));
+        return Ok(collect_unscoped_label_names(&index, hints)?);
     }
 
     // At this point we know we have non-empty selectors or a date range.
@@ -1379,7 +1366,7 @@ fn collect_label_values<S: GilSource + ?Sized>(
             &index,
             label_name,
             search_hints,
-        ));
+        )?);
     }
 
     // At this point we know we have non-empty selectors or a date range.
@@ -1754,7 +1741,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints);
+        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints).unwrap();
 
         assert!(!result.has_more);
         assert_eq!(values(result), vec!["eu-west", "us-east", "us-west"]);
@@ -1770,7 +1757,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints);
+        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints).unwrap();
 
         assert!(!result.has_more);
         assert_eq!(values(result), vec!["us-west", "us-east", "eu-west"]);
@@ -1804,7 +1791,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -1821,7 +1808,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -1839,7 +1826,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints);
+        let result = collect_unscoped_label_values(&index_of(postings), "region", &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
@@ -1883,7 +1870,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -1902,7 +1889,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
@@ -1920,7 +1907,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(values(result), vec!["alpha", "beta"]);
@@ -1936,7 +1923,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(values(result), vec!["alpha"]);
@@ -1952,7 +1939,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&index_of(postings), &hints);
+        let result = collect_unscoped_label_names(&index_of(postings), &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(values(result), vec!["gamma"]);
@@ -1969,7 +1956,7 @@ mod tests {
                 order_by: SearchResultOrdering::ScoreDesc,
                 include_meta: false,
             };
-            let result = collect_unscoped_label_values(&index, "region", &hints);
+            let result = collect_unscoped_label_values(&index, "region", &hints).unwrap();
             assert!(result.has_more);
             assert_eq!(values(result), ["us-east", "us-west"][..limit]);
         }
@@ -1986,7 +1973,7 @@ mod tests {
                 order_by: SearchResultOrdering::CardinalityDesc,
                 include_meta: false,
             };
-            let result = collect_unscoped_label_values(&index, "region", &hints);
+            let result = collect_unscoped_label_values(&index, "region", &hints).unwrap();
             assert!(result.has_more);
             assert_eq!(values(result), ["eu-west", "us-west"][..limit]);
         }
@@ -2413,7 +2400,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = collect_unscoped_label_names(&index, &hints);
+        let result = collect_unscoped_label_names(&index, &hints).unwrap();
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 1);
@@ -2490,17 +2477,19 @@ mod tests {
         let other = index_of(build_label_values_postings());
         let mut attempts = 0;
 
-        let names = super::scan_without_swap(&index, || {
-            attempts += 1;
-            let mut names = Vec::new();
-            iterate_label_names_asc_in_holds(&index, &RejectBeta, None, 1, |n, _, _| {
-                names.push(n.to_owned())
-            });
-            if attempts == 1 {
-                index.swap(&other);
-            }
-            names
-        });
+        let names = index
+            .read_without_swap(|| {
+                attempts += 1;
+                let mut names = Vec::new();
+                iterate_label_names_asc_in_holds(&index, &RejectBeta, None, 1, |n, _, _| {
+                    names.push(n.to_owned())
+                });
+                if attempts == 1 {
+                    index.swap(&other);
+                }
+                Ok(names)
+            })
+            .unwrap();
 
         assert_eq!(attempts, 2);
         assert_eq!(names, ["region", "service"]);
@@ -2542,7 +2531,8 @@ mod tests {
                         "region",
                         &hints(),
                         usize::MAX,
-                    );
+                    )
+                    .unwrap();
                     assert!(
                         one_hold
                             .results
@@ -2555,7 +2545,8 @@ mod tests {
                             "region",
                             &hints(),
                             entries_per_hold,
-                        );
+                        )
+                        .unwrap();
                         let context = format!(
                             "{order_by:?}, limit {limit}, filtered {filtered}, {entries_per_hold} per hold"
                         );
@@ -2575,7 +2566,8 @@ mod tests {
                 order_by,
                 ..Default::default()
             };
-            let result = collect_unscoped_label_values_in_holds(&index, "missing", &hints, 1);
+            let result =
+                collect_unscoped_label_values_in_holds(&index, "missing", &hints, 1).unwrap();
             assert!(result.results.is_empty());
             assert!(!result.has_more);
         }

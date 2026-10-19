@@ -132,7 +132,9 @@ with the rule.
 * `TS.LABELNAMES`: Get all label names used in the index.
 * `TS.METRICNAMES`: Search metric names with substring and optional fuzzy matching.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
-* `TS.LABELSTATS`: Get statistics about label usage in the index.
+* `TS.LABELSTATS`: Get statistics about label usage in the index. Cluster reads release the
+  module lock after checking permissions, then compute counts and distinct-label totals in
+  one batched scan. Writes can affect later batches, so the result is not a database snapshot.
 
 Ranked label-value and metric-name searches select the best results before applying `LIMIT`.
 Descending score and cardinality orderings break ties by value ascending.

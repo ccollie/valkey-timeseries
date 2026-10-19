@@ -137,6 +137,11 @@ pub const CANNOT_PARSE_COUNT: &str = "TSDB: Couldn't parse COUNT";
 pub const ROUNDING_ALREADY_SET: &str = "TSDB: rounding already set";
 pub const DUPLICATE_SAMPLE_BLOCKED: &str = "TSDB: Error at upsert, duplicate sample blocked";
 pub const PERMISSION_DENIED: &str = "TSDB: current user doesn't have read permission to one or more keys that match the specified filter";
+/// A read that gives the postings lock back between batches saw `SWAPDB` exchange the
+/// database under it on every attempt. Retryable. A fan-out share that returns it fails the
+/// whole command with this message (`ErrorKind::DatabaseSwapped`).
+pub const DATABASE_SWAPPED_DURING_READ: &str =
+    "TSDB: the database was swapped while it was being read; retry the command";
 pub const COMMAND_SERIALIZATION_ERROR: &str = "TSDB: command serialization error";
 pub const COMMAND_DESERIALIZATION_ERROR: &str = "TSDB: command deserialization error";
 pub const CLUSTER_MODE_ERROR: &str = "TSDB: cluster mode not supported";
