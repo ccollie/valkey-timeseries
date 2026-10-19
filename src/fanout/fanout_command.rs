@@ -1219,7 +1219,12 @@ mod tests {
             let _ = tx.send((op.responses, res.err().map(|e| e.kind)));
         });
         (
-            Arc::new(FanoutState::new(Counting::default(), 1, completion)),
+            Arc::new(FanoutState::new(
+                Counting::default(),
+                1,
+                completion,
+                Instant::now(),
+            )),
             rx,
         )
     }
