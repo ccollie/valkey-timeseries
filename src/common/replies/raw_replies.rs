@@ -223,15 +223,28 @@ pub fn reply_with_array<C: IntoRawCtx>(ctx: C, len: usize) -> Status {
 /// RESP2 clients receive a regular array (the wire form of a set there); RESP3
 /// clients receive a native set reply via `ValkeyModule_ReplyWithSet`. Used by
 /// `TS.QUERYLABELS`, whose reply is a set of distinct label names or values.
-pub fn reply_with_string_set<C: IntoRawCtx>(ctx: C, values: &[String]) -> Status {
+///
+/// Takes any collection whose iterator knows its length, so a `&BTreeSet<String>`
+/// or a slice is written as it is, without first being collected into a `Vec`.
+/// The length is written as the reply header before any element, so this relies on
+/// `ExactSizeIterator::len` being exact, which the standard collections guarantee. A
+/// wrong length from a custom iterator would corrupt the reply stream, not just this reply.
+pub fn reply_with_string_set<C, I>(ctx: C, values: I) -> Status
+where
+    C: IntoRawCtx,
+    I: IntoIterator,
+    I::IntoIter: ExactSizeIterator,
+    I::Item: AsRef<str>,
+{
     let raw_ctx = ctx.into_raw();
+    let values = values.into_iter();
     if is_resp3_client(raw_ctx) {
         raw::reply_with_set(raw_ctx, values.len() as c_long);
     } else {
         reply_with_array(raw_ctx, values.len());
     }
     for value in values {
-        reply_with_bulk_string(raw_ctx, value);
+        reply_with_bulk_string(raw_ctx, value.as_ref());
     }
     Status::Ok
 }

@@ -137,13 +137,13 @@ with the rule.
 Ranked label-value and metric-name searches select the best results before applying `LIMIT`.
 Descending score and cardinality orderings break ties by value ascending.
 
-On standalone servers, `TS.LABELNAMES`, `TS.LABELVALUES` and `TS.METRICNAMES` run on a bounded
-pool of background workers when the index size and query options suggest substantial work, and
-give the index back to writers between batches. The pool and its queue (256 jobs) are shared
-with `TS.OUTLIERS`, so long outlier jobs can delay large searches and the reverse. Small
-searches, transactions and scripts run inline. Background searches can observe changes between
-batches rather than a database snapshot. If the queue is full, a large search returns an error so
-queued requests stay bounded.
+On standalone servers, `TS.LABELNAMES`, `TS.LABELVALUES`, `TS.METRICNAMES` and
+`TS.QUERYLABELS` run on a bounded pool of background workers when the index size and query
+options suggest substantial work, and give the server back to other clients between batches.
+The pool and its queue (256 jobs) are shared with `TS.OUTLIERS`, so long outlier jobs can delay
+large searches and the reverse. Small searches, transactions and scripts run inline. Background
+searches can observe changes between batches rather than a database snapshot. If the queue is
+full, a large search returns an error so queued requests stay bounded.
 
 ### Anomaly Detection
 

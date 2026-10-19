@@ -15,8 +15,8 @@
 //! the main thread already holds it and reads in one batch.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, FuzzyFilter, GilSource, IndexKey, PostingsBitmap, SimilarityFilter,
-    TimeSeriesIndex, for_each_series, get_db_index,
+    DEFAULT_SERIES_BATCH_SIZE, FuzzyFilter, GilSource, IndexKey, PostingsBitmap, SeriesCursor,
+    SeriesSelection, SimilarityFilter, TimeSeriesIndex, for_each_planned_series, get_db_index,
 };
 use crate::common::acl::check_metadata_permissions;
 use crate::common::constants::METRIC_NAME_LABEL;
@@ -123,6 +123,10 @@ pub struct SelectHints {
     pub selectors: Vec<SeriesSelector>,
     /// Optional date range filter to apply to series selection.
     pub date_range: Option<MetaDateRangeFilter>,
+    /// `selectors` and `date_range` planned already, when the caller planned them to size the
+    /// read ([`plan_if_cheap`](super::plan_if_cheap)). The read uses it rather than planning
+    /// again.
+    planned: Option<SeriesCursor>,
 }
 
 impl SelectHints {
@@ -130,11 +134,32 @@ impl SelectHints {
         Self {
             selectors,
             date_range,
+            planned: None,
         }
+    }
+
+    /// Read `plan`, made from these hints' selectors and date range, instead of planning them
+    /// again.
+    pub fn with_plan(mut self, plan: Option<SeriesCursor>) -> Self {
+        self.planned = plan;
+        self
     }
 
     pub fn is_empty(&self) -> bool {
         self.selectors.is_empty() && self.date_range.is_none()
+    }
+
+    /// The read these hints select in database `db`: the plan given with
+    /// [`Self::with_plan`], or a new one.
+    fn into_cursor(self, db: i32) -> TsdbResult<SeriesCursor> {
+        match self.planned {
+            Some(cursor) => Ok(cursor),
+            None => Ok(SeriesCursor::plan(
+                db,
+                SeriesSelection::Matching(&self.selectors),
+                self.date_range,
+            )?),
+        }
     }
 }
 
@@ -395,9 +420,28 @@ fn can_use_unscoped_scan(select_hints: Option<&SelectHints>) -> bool {
     select_hints.map(|h| h.is_empty()).unwrap_or(true)
 }
 
-/// Series a scoped search may read on the main thread: one batch of the batched reader.
-/// Named separately so retuning the batch size does not silently move this policy.
-const INLINE_LABEL_SEARCH_SCOPED_SERIES: usize = 512;
+/// The most series a read that opens them may cover on the main thread. Applies to a
+/// scoped label search and to `TS.QUERYLABELS`. Equal to one batch of the batched reader
+/// today, but a constant of its own so that retuning the batch size does not silently move
+/// this policy.
+const INLINE_SERIES_READ_LIMIT: usize = 512;
+
+/// Whether a read that opens every series it matches should leave the main thread.
+///
+/// With `plan`, made by [`plan_if_cheap`](super::plan_if_cheap), the match count is exact.
+/// Without one the selectors were too costly to plan here, so the read is judged by how many
+/// series the database indexes: a selective query against a large database is then also sent
+/// to a worker, which costs it a lane round trip, not correctness.
+pub(crate) fn series_read_exceeds_inline_budget(
+    index: &TimeSeriesIndex,
+    plan: Option<&SeriesCursor>,
+) -> bool {
+    let series = match plan {
+        Some(plan) => plan.remaining(),
+        None => index.count(),
+    };
+    series > INLINE_SERIES_READ_LIMIT
+}
 
 /// A cheap, conservative estimate of whether a standalone search should leave the main
 /// thread. Never plans selectors or scores strings here: that could cost as much as the
@@ -407,10 +451,14 @@ const INLINE_LABEL_SEARCH_SCOPED_SERIES: usize = 512;
 /// `label_name = None` searches names; `Some` searches that label's values. Name scans
 /// sum cardinalities across every value of each name, so even LIMIT 1 can read many entries.
 /// Value scans can stop after limit + 1 live entries only without SEARCH and in value order.
+///
+/// A scoped search may pass `plan`, its selectors planned already because that was cheap
+/// ([`plan_if_cheap`](super::plan_if_cheap)): it is then sized by its exact match count.
 pub(crate) fn label_search_exceeds_inline_budget(
     index: &TimeSeriesIndex,
     label_name: Option<&str>,
     scoped: bool,
+    plan: Option<&SeriesCursor>,
     hints: &SearchHints,
     entries_budget: usize,
 ) -> bool {
@@ -425,13 +473,31 @@ pub(crate) fn label_search_exceeds_inline_budget(
         ))
     .then(|| normalize_limit(hints.limit) + 1);
 
-    let postings = index.get_postings();
     if scoped {
-        // Also bound the term dictionary: regex planning and name-cardinality lookups can
-        // scan it, even for few series.
-        return postings.count() > INLINE_LABEL_SEARCH_SCOPED_SERIES
-            || postings.label_index.len() > entries_budget;
+        // A name search reporting cardinalities walks every value of every name it finds,
+        // however few series matched.
+        let reads_name_cardinality = label_name.is_none()
+            && (hints.include_meta
+                || matches!(
+                    hints.order_by,
+                    SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
+                ));
+        let postings = index.get_postings();
+        return match plan {
+            // Planned already: the match count is exact, and planning is paid for.
+            Some(plan) => {
+                plan.remaining() > INLINE_SERIES_READ_LIMIT
+                    || (reads_name_cardinality && postings.label_index.len() > entries_budget)
+            }
+            // Also bound the term dictionary: regex planning and name-cardinality lookups can
+            // scan it, even for few series.
+            None => {
+                postings.count() > INLINE_SERIES_READ_LIMIT
+                    || postings.label_index.len() > entries_budget
+            }
+        };
     }
+    let postings = index.get_postings();
     let Some(label_name) = label_name else {
         return postings.label_index.len() > entries_budget;
     };
@@ -1226,18 +1292,17 @@ fn collect_unscoped_label_values_in_holds(
 
 fn collect_label_names<S: GilSource + ?Sized>(
     src: &S,
-    select_hints: Option<&SelectHints>,
+    select_hints: Option<SelectHints>,
     hints: &SearchHints,
 ) -> TsdbResult<LabelQueryResult> {
-    if can_use_unscoped_scan(select_hints) {
+    if can_use_unscoped_scan(select_hints.as_ref()) {
         // The index alone answers this: no series is opened, so no module lock is taken.
         let index = get_db_index(src.db());
         return Ok(collect_unscoped_label_names(&index, hints));
     }
 
     // At this point we know we have non-empty selectors or a date range.
-    let default_hints = SelectHints::default();
-    let opts = select_hints.unwrap_or(&default_hints);
+    let cursor = select_hints.unwrap_or_default().into_cursor(src.db())?;
 
     // Under the lock, only the distinct names are copied out: a hash lookup per label. The
     // fuzzy filter and the cardinality lookups wait until the read is over.
@@ -1246,22 +1311,16 @@ fn collect_label_names<S: GilSource + ?Sized>(
     // the match, and on the main thread (`&Context`) the whole scan is one lock hold. The
     // batched reader bounds only a fan-out share's lock holds, not the scan or the set.
     let mut names: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
-    for_each_series(
-        src,
-        &opts.selectors,
-        opts.date_range,
-        DEFAULT_SERIES_BATCH_SIZE,
-        |_ctx, ts, _key| {
-            for label in ts.labels.iter() {
-                // Not `names.insert(label.name.to_string())`: that allocates for every
-                // label, seen or not.
-                if !names.contains(label.name) {
-                    names.insert(label.name.to_string());
-                }
+    for_each_planned_series(src, cursor, DEFAULT_SERIES_BATCH_SIZE, |_ctx, ts, _key| {
+        for label in ts.labels.iter() {
+            // Not `names.insert(label.name.to_string())`: that allocates for every
+            // label, seen or not.
+            if !names.contains(label.name) {
+                names.insert(label.name.to_string());
             }
-            Ok(ControlFlow::Continue(()))
-        },
-    )?;
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
 
     let need_cardinality = matches!(
         hints.order_by,
@@ -1305,14 +1364,14 @@ fn collect_label_names<S: GilSource + ?Sized>(
 fn collect_label_values<S: GilSource + ?Sized>(
     src: &S,
     label_name: &str,
-    select_hints: Option<&SelectHints>,
+    select_hints: Option<SelectHints>,
     search_hints: &SearchHints,
 ) -> TsdbResult<LabelQueryResult> {
     if label_name.is_empty() {
         return Ok(LabelQueryResult::default());
     }
 
-    if can_use_unscoped_scan(select_hints) {
+    if can_use_unscoped_scan(select_hints.as_ref()) {
         // The index alone answers this: no series is opened, so no module lock is taken. No
         // postings lock either: the scan takes it a hold at a time.
         let index = get_db_index(src.db());
@@ -1324,8 +1383,7 @@ fn collect_label_values<S: GilSource + ?Sized>(
     }
 
     // At this point we know we have non-empty selectors or a date range.
-    let default_hints = SelectHints::default();
-    let opts = select_hints.unwrap_or(&default_hints);
+    let cursor = select_hints.unwrap_or_default().into_cursor(src.db())?;
 
     // Under the lock, only each distinct value and how many matched series carry it are
     // copied out. The filter then runs once per distinct value, after the read.
@@ -1333,23 +1391,17 @@ fn collect_label_values<S: GilSource + ?Sized>(
     // Still unbounded, as in `collect_label_names`: `counts` holds every distinct value in
     // the match, and a main-thread scan is one lock hold.
     let mut counts: AHashMap<String, usize> = AHashMap::with_capacity(DEFAULT_LIMIT);
-    for_each_series(
-        src,
-        &opts.selectors,
-        opts.date_range,
-        DEFAULT_SERIES_BATCH_SIZE,
-        |_ctx, ts, _key| {
-            if let Some(label) = ts.get_label(label_name) {
-                match counts.get_mut(label.value) {
-                    Some(count) => *count += 1,
-                    None => {
-                        counts.insert(label.value.to_string(), 1);
-                    }
+    for_each_planned_series(src, cursor, DEFAULT_SERIES_BATCH_SIZE, |_ctx, ts, _key| {
+        if let Some(label) = ts.get_label(label_name) {
+            match counts.get_mut(label.value) {
+                Some(count) => *count += 1,
+                None => {
+                    counts.insert(label.value.to_string(), 1);
                 }
             }
-            Ok(ControlFlow::Continue(()))
-        },
-    )?;
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
 
     let need_cardinality = matches!(
         search_hints.order_by,
@@ -1394,7 +1446,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         check_label_query_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_names(src, select_hints.as_ref(), hints)
+        collect_label_names(src, select_hints, hints)
     }
 
     fn get_label_values<S: GilSource + ?Sized>(
@@ -1407,7 +1459,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         check_label_query_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_values(src, name, select_hints.as_ref(), hints)
+        collect_label_values(src, name, select_hints, hints)
     }
 
     fn get_metric_names<S: GilSource + ?Sized>(
@@ -1419,7 +1471,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         check_label_query_permissions(src)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
-        collect_label_values(src, METRIC_NAME_LABEL, select_hints.as_ref(), hints)
+        collect_label_values(src, METRIC_NAME_LABEL, select_hints, hints)
     }
 }
 
@@ -1487,6 +1539,7 @@ mod tests {
             &index,
             Some("service"),
             false,
+            None,
             &hints,
             2,
         ));
@@ -1494,6 +1547,7 @@ mod tests {
             &index,
             Some("missing"),
             false,
+            None,
             &hints,
             2,
         ));
@@ -1501,6 +1555,7 @@ mod tests {
             &index,
             Some(""),
             false,
+            None,
             &hints,
             2,
         ));
@@ -1508,6 +1563,7 @@ mod tests {
             &index,
             Some("region"),
             false,
+            None,
             &hints,
             2,
         ));
@@ -1515,6 +1571,7 @@ mod tests {
             &index,
             Some("region"),
             false,
+            None,
             &hints,
             3,
         ));
@@ -1537,18 +1594,20 @@ mod tests {
                 &index,
                 Some("region"),
                 false,
+                None,
                 &hints,
                 2,
             ));
             // A name's cardinality may span all its values, even with LIMIT 1.
             assert!(label_search_exceeds_inline_budget(
-                &index, None, false, &hints, 2,
+                &index, None, false, None, &hints, 2,
             ));
             hints.filter = Some(Box::new(StaticScoreFilter));
             assert!(label_search_exceeds_inline_budget(
                 &index,
                 Some("region"),
                 false,
+                None,
                 &hints,
                 2,
             ));
@@ -1567,6 +1626,7 @@ mod tests {
                 &index,
                 Some("region"),
                 false,
+                None,
                 &hints,
                 2,
             ));
@@ -1597,6 +1657,7 @@ mod tests {
                 &index,
                 Some("region"),
                 false,
+                None,
                 &hints,
                 2,
             ));
@@ -1614,11 +1675,12 @@ mod tests {
             &index,
             Some("service"),
             true,
+            None,
             &hints,
             2,
         ));
         assert!(!label_search_exceeds_inline_budget(
-            &index, None, true, &hints, 4,
+            &index, None, true, None, &hints, 4,
         ));
 
         // A database can contain many series with the same label value.
@@ -1636,6 +1698,7 @@ mod tests {
             &index,
             Some("service"),
             true,
+            None,
             &hints,
             4,
         ));
@@ -2530,5 +2593,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// More series than may be read inline, with ids `1..=count`.
+    fn index_with_series(count: u64) -> TimeSeriesIndex {
+        let mut postings = Postings::default();
+        for id in 1..=count {
+            postings.add_posting_for_label_value(id, "service", "api");
+            postings.add_posting_for_label_value(id, "instance", &format!("host{id}"));
+            postings
+                .id_to_key
+                .insert(id, format!("series:{id}").into_bytes().into());
+        }
+        index_of(postings)
+    }
+
+    fn plan_of(ids: impl IntoIterator<Item = u64>) -> super::SeriesCursor {
+        super::SeriesCursor::from_ids(0, crate::series::index::PostingsBitmap::from_iter(ids))
+    }
+
+    /// With a plan, a read is sized by what it matches, not by the database.
+    #[test]
+    fn a_planned_read_is_sized_by_its_matches() {
+        let index = index_with_series(600);
+        assert!(super::series_read_exceeds_inline_budget(&index, None));
+        assert!(!super::series_read_exceeds_inline_budget(
+            &index,
+            Some(&plan_of([7]))
+        ));
+        assert!(!super::series_read_exceeds_inline_budget(
+            &index,
+            Some(&plan_of(1..=512))
+        ));
+        assert!(super::series_read_exceeds_inline_budget(
+            &index,
+            Some(&plan_of(1..=513))
+        ));
+    }
+
+    /// A planned scoped search stays inline when it matches few series, unless it is a name
+    /// search that reports cardinalities: those walk the term dictionary however few match.
+    #[test]
+    fn a_planned_scoped_search_is_sized_by_its_matches() {
+        // 1,101 index entries: over the 1,024-entry budget used below.
+        let index = index_with_series(1100);
+        let narrow = plan_of([7]);
+        let hints = SearchHints::default();
+        let budget = 1024;
+
+        // Without a plan: the database decides.
+        assert!(label_search_exceeds_inline_budget(
+            &index,
+            Some("instance"),
+            true,
+            None,
+            &hints,
+            budget
+        ));
+        // A narrow plan: values and plain names stay inline.
+        assert!(!label_search_exceeds_inline_budget(
+            &index,
+            Some("instance"),
+            true,
+            Some(&narrow),
+            &hints,
+            budget
+        ));
+        assert!(!label_search_exceeds_inline_budget(
+            &index,
+            None,
+            true,
+            Some(&narrow),
+            &hints,
+            budget
+        ));
+        // Names with cardinality read every value of every name.
+        for hints in [
+            SearchHints {
+                include_meta: true,
+                ..Default::default()
+            },
+            SearchHints {
+                order_by: SearchResultOrdering::CardinalityDesc,
+                ..Default::default()
+            },
+        ] {
+            assert!(label_search_exceeds_inline_budget(
+                &index,
+                None,
+                true,
+                Some(&narrow),
+                &hints,
+                budget
+            ));
+        }
+        // A broad plan still leaves.
+        assert!(label_search_exceeds_inline_budget(
+            &index,
+            Some("instance"),
+            true,
+            Some(&plan_of(1..=513)),
+            &hints,
+            budget
+        ));
     }
 }

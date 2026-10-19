@@ -75,6 +75,47 @@ class TestLabelSearchBackground(ValkeyTimeSeriesTestCaseBase):
             reader.close()
 
 
+    @pytest.mark.parametrize('protocol', [2, 3])
+    def test_background_querylabels_matches_inline(self, protocol):
+        client = Valkey(host=self.server.bind_ip, port=self.server.port,
+                        db=1, protocol=protocol, socket_timeout=10)
+        try:
+            populate(client)
+            for command in [('TS.QUERYLABELS', 'LABELS'),
+                            ('TS.QUERYLABELS', 'VALUES', 'instance'),
+                            ('TS.QUERYLABELS', 'VALUES', 'instance', 'FILTER', 'service=api')]:
+                background = client.execute_command(*command)
+                tx = client.pipeline(transaction=True)
+                tx.execute_command(*command)
+                assert tx.execute() == [background]
+                if command[1] == 'LABELS':
+                    assert set(background) == {b'__name__', b'instance', b'service'}
+                else:
+                    assert len(background) == 1300
+                # A script cannot block its client either.
+                assert client.eval('redis.call(unpack(ARGV)); return 1', 0, *command) == 1
+        finally:
+            client.close()
+
+    def test_background_querylabels_omits_unreadable_series(self):
+        populate(self.client)
+        self.client.execute_command(
+            'ACL', 'SETUSER', 'partial-reader', 'on', '>password', '+ts.querylabels', '+multi', '+exec',
+            '~series:1*',
+        )
+        reader = Valkey(host=self.server.bind_ip, port=self.server.port,
+                        username='partial-reader', password='password', socket_timeout=10)
+        try:
+            expected = {f'host{i:04}'.encode() for i in range(1300) if str(i).startswith('1')}
+            background = reader.execute_command('TS.QUERYLABELS', 'VALUES', 'instance')
+            assert set(background) == expected
+            tx = reader.pipeline(transaction=True)
+            tx.execute_command('TS.QUERYLABELS', 'VALUES', 'instance')
+            assert set(tx.execute()[0]) == expected
+        finally:
+            reader.close()
+
+
 class TestLabelSearchBackgroundScheduling(ValkeyTimeSeriesTestCaseDebugMode):
     def test_small_value_limit_stays_inline_and_large_name_scan_uses_lane(self):
         client = Valkey(host=self.server.bind_ip, port=self.server.port, socket_timeout=10)
@@ -156,4 +197,56 @@ class TestLabelSearchLaneUse(ValkeyTimeSeriesTestCaseDebugMode):
                 self.client.execute_command(*LANE_CASES[0])
         finally:
             reader.close()
+
+    def test_querylabels_uses_the_lane_only_for_a_large_database(self):
+        small = Valkey(host=self.server.bind_ip, port=self.server.port, db=1, socket_timeout=10)
+        large = Valkey(host=self.server.bind_ip, port=self.server.port, db=0, socket_timeout=10)
+        try:
+            populate(small, count=300)
+            populate(large)
+            self.arm(large)
+            # 300 series: at most one batch, read inline, so the hook stays armed.
+            assert set(small.execute_command('TS.QUERYLABELS', 'LABELS')) == {
+                b'__name__', b'instance', b'service',
+            }
+            with pytest.raises(ResponseError, match='internal error'):
+                large.execute_command('TS.QUERYLABELS', 'LABELS')
+            assert large.execute_command('TS.QUERYLABELS', 'LABELS')
+        finally:
+            small.close()
+            large.close()
+
+    def test_a_narrow_equality_filter_stays_inline_on_a_large_database(self):
+        """Equality filters are planned up front, so 1,300 series do not send them to the lane."""
+        client = Valkey(host=self.server.bind_ip, port=self.server.port, socket_timeout=10)
+        try:
+            populate(client)
+            self.arm(client)
+            assert client.execute_command(
+                'TS.QUERYLABELS', 'VALUES', 'instance', 'FILTER', 'instance=host0001',
+            ) == [b'host0001']
+            assert set(client.execute_command(
+                'TS.QUERYLABELS', 'LABELS', 'FILTER', 'instance=(host0001,host0002)',
+            )) == {b'__name__', b'instance', b'service'}
+            result = client.execute_command(
+                'TS.LABELVALUES', 'instance', 'FILTER', 'instance=host0001')
+            assert [r.value for r in LabelSearchResponse.parse(result).results] == [b'host0001']
+            result = client.execute_command('TS.LABELNAMES', 'FILTER', 'instance=host0001')
+            assert len(LabelSearchResponse.parse(result).results) == 3
+
+            # Every search above ran inline: the hook is still armed. Filters that are not
+            # planned up front are sized by the database and leave.
+            for command in [
+                ('TS.QUERYLABELS', 'VALUES', 'instance', 'FILTER', 'instance=~"host000.*"'),
+                ('TS.LABELVALUES', 'instance', 'FILTER', 'instance=~"host000.*"'),
+                # Narrow, but reporting name cardinalities walks the whole term dictionary.
+                ('TS.LABELNAMES', 'FILTER', 'instance=host0001', 'INCLUDE_METADATA'),
+            ]:
+                self.arm(client)
+                with pytest.raises(ResponseError, match='internal error'):
+                    client.execute_command(*command)
+                # The hook is spent; the same search now answers.
+                assert client.execute_command(*command)
+        finally:
+            client.close()
 

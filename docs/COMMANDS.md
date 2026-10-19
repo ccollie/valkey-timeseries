@@ -1,7 +1,8 @@
 # Command List
 
-Standalone `TS.LABELNAMES`, `TS.LABELVALUES` and `TS.METRICNAMES` searches run on bounded
-background workers when estimated work is large. Small searches, transactions and scripts run inline.
+Standalone `TS.LABELNAMES`, `TS.LABELVALUES`, `TS.METRICNAMES` and `TS.QUERYLABELS` run on
+bounded background workers when estimated work is large. Small requests, transactions and
+scripts run inline.
 
 Ranked label-value and metric-name searches apply `LIMIT` after ranking; equal scores or
 cardinalities are ordered by value ascending.

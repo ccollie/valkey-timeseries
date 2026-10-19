@@ -1,4 +1,4 @@
-use crate::commands::analysis_runner::run_on_analysis_lane;
+use crate::commands::analysis_runner::run_read_on_analysis_lane;
 use crate::commands::command_parser::{
     parse_filter_by_range_options, parse_hash_tags, validate_selector_list,
 };
@@ -6,20 +6,19 @@ use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::commands::utils::get_multi_command_targets;
 use crate::common::SortDir;
-use crate::common::acl::caller_user_name;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{get_current_db, is_blocking_denied};
 use crate::common::replies::{
     reply_with_array, reply_with_bool, reply_with_bulk_string, reply_with_integer, reply_with_map,
 };
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, FanoutContext, FanoutTarget, is_clustered};
+use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
     DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, GilSource, LabelNameSearchFilter,
     LabelQuerier, LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX,
-    SearchHints, SearchResultOrdering, SelectHints, SortBy, check_label_query_permissions,
-    get_db_index, label_search_exceeds_inline_budget,
+    SearchHints, SearchResultOrdering, SelectHints, SeriesCursor, SeriesSelection, SortBy,
+    check_label_query_permissions, get_db_index, label_search_exceeds_inline_budget, plan_if_cheap,
 };
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -330,23 +329,28 @@ pub(crate) fn process_label_search_request<S: GilSource + ?Sized>(
     parsed: &LabelNameSearchArgs,
 ) -> ValkeyResult<LabelQueryResult> {
     let raw_hints = parsed.build_search_hints()?;
-    process_label_search_with_hints(src, parsed, &raw_hints)
+    process_label_search_with_hints(src, parsed, &raw_hints, None)
 }
 
+/// `plan`, when given, is `parsed.series_filter` planned already ([`plan_series_filter`]).
 fn process_label_search_with_hints<S: GilSource + ?Sized>(
     src: &S,
     parsed: &LabelNameSearchArgs,
     raw_hints: &SearchHints,
+    plan: Option<SeriesCursor>,
 ) -> ValkeyResult<LabelQueryResult> {
     let querier = DefaultLabelQuerier;
     let select_hints =
         if parsed.series_filter.matchers.is_empty() && parsed.series_filter.date_range.is_none() {
             None
         } else {
-            Some(SelectHints::new(
-                parsed.series_filter.matchers.clone(),
-                parsed.series_filter.date_range,
-            ))
+            Some(
+                SelectHints::new(
+                    parsed.series_filter.matchers.clone(),
+                    parsed.series_filter.date_range,
+                )
+                .with_plan(plan),
+            )
         };
     match parsed.search_type {
         LabelSearchType::Unspecified => Err(ValkeyError::Str(
@@ -409,23 +413,20 @@ pub(super) fn run_label_search(
     check_label_query_permissions(ctx)?;
 
     let hints = parsed.build_search_hints()?;
-    if !is_blocking_denied(ctx) && should_run_in_background(ctx, &parsed, &hints) {
-        let src = FanoutContext::new(caller_user_name(ctx), get_current_db(ctx));
-        return run_on_analysis_lane(ctx, "label search", move |thread_ctx| {
-            match process_label_search_with_hints(&src, &parsed, &hints) {
-                Ok(result) => {
-                    let reply_ctx = thread_ctx.get_reply_context();
-                    let _ =
-                        reply_with_label_search_result(&reply_ctx, result, parsed.include_metadata);
-                }
-                Err(err) => {
-                    thread_ctx.reply(Err(err));
-                }
-            }
-        });
+    let plan = plan_series_filter(ctx, &parsed)?;
+    if !is_blocking_denied(ctx) && should_run_in_background(ctx, &parsed, &hints, plan.as_ref()) {
+        let include_metadata = parsed.include_metadata;
+        return run_read_on_analysis_lane(
+            ctx,
+            "label search",
+            move |src| process_label_search_with_hints(src, &parsed, &hints, plan),
+            move |reply_ctx, result| {
+                let _ = reply_with_label_search_result(reply_ctx, result, include_metadata);
+            },
+        );
     }
 
-    let query_result = process_label_search_with_hints(ctx, &parsed, &hints)?;
+    let query_result = process_label_search_with_hints(ctx, &parsed, &hints, plan)?;
     reply_with_label_search_result(ctx, query_result, parsed.include_metadata)
 }
 
@@ -453,10 +454,30 @@ fn inline_entries_budget(is_name_scan: bool, search_terms: usize) -> usize {
         .max(INLINE_LABEL_SEARCH_WITH_SEARCH_MIN_ENTRIES)
 }
 
+/// A scoped search's series filter, planned on the main thread when that is cheap
+/// ([`plan_if_cheap`]): the plan both sizes the search by its exact match count and is the
+/// read's own plan, so it is made once whichever thread reads it. `None` for an unscoped
+/// search, which reads the label index rather than series.
+fn plan_series_filter(
+    ctx: &Context,
+    parsed: &LabelNameSearchArgs,
+) -> ValkeyResult<Option<SeriesCursor>> {
+    let filter = &parsed.series_filter;
+    if filter.matchers.is_empty() && filter.date_range.is_none() {
+        return Ok(None);
+    }
+    plan_if_cheap(
+        get_current_db(ctx),
+        SeriesSelection::Matching(&filter.matchers),
+        filter.date_range,
+    )
+}
+
 fn should_run_in_background(
     ctx: &Context,
     parsed: &LabelNameSearchArgs,
     hints: &SearchHints,
+    plan: Option<&SeriesCursor>,
 ) -> bool {
     let label_name = match parsed.search_type {
         LabelSearchType::Name => None,
@@ -477,6 +498,7 @@ fn should_run_in_background(
         &index,
         label_name,
         !parsed.series_filter.matchers.is_empty() || parsed.series_filter.date_range.is_some(),
+        plan,
         hints,
         entries_budget,
     )

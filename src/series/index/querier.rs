@@ -23,8 +23,9 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_indexed_key_batch,
-    for_each_readable_series, for_each_series, get_db_index, get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesCursor, SeriesSelection,
+    for_each_indexed_key_batch, for_each_planned_series, for_each_series, get_db_index,
+    get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
@@ -147,7 +148,8 @@ pub fn series_by_selectors<'a>(
 /// per-series `ACCESS` checks and *silently omits* series the caller may not read, so
 /// names/values belonging only to unreadable series never appear in the result.
 ///
-/// The series are read through the batched reader ([`for_each_readable_series`]): only the
+/// The series are read through the batched reader ([`for_each_planned_series`], with the
+/// plan set to skip unreadable series): only the
 /// names or values not yet seen are copied out under the module lock. On a fan-out share
 /// the lock is given back between batches; a caller on the main thread already holds it and
 /// reads in one batch. Must not be called while holding the lock through a [`GilSource`]
@@ -157,19 +159,34 @@ pub fn query_labels_distinct<S: GilSource + ?Sized>(
     selectors: &[SeriesSelector],
     label: Option<&str>,
 ) -> ValkeyResult<BTreeSet<String>> {
-    let selection = if selectors.is_empty() {
+    let cursor = SeriesCursor::plan(src.db(), query_labels_selection(selectors), None)?;
+    query_labels_distinct_planned(src, cursor, label)
+}
+
+/// The series `TS.QUERYLABELS` reads for `selectors`: every indexed series when there are
+/// none. Plan it with no date range.
+pub fn query_labels_selection(selectors: &[SeriesSelector]) -> SeriesSelection<'_> {
+    if selectors.is_empty() {
         SeriesSelection::All
     } else {
         SeriesSelection::Matching(selectors)
-    };
+    }
+}
+
+/// [`query_labels_distinct`] over a read planned already, from [`query_labels_selection`].
+/// Unreadable series are omitted whatever the cursor was planned with.
+pub fn query_labels_distinct_planned<S: GilSource + ?Sized>(
+    src: &S,
+    cursor: SeriesCursor,
+    label: Option<&str>,
+) -> ValkeyResult<BTreeSet<String>> {
     let mut result: BTreeSet<String> = BTreeSet::new();
     // TS.QUERYLABELS contract: series the caller may not read are skipped, not an error on
     // the first one (that is the coarse gate the label-search commands use, and it is
     // deliberately not applied here).
-    for_each_readable_series(
+    for_each_planned_series(
         src,
-        selection,
-        None,
+        cursor.skip_unreadable(),
         DEFAULT_SERIES_BATCH_SIZE,
         |_ctx, ts, _key| {
             // Looked up before inserting: `insert(x.to_string())` would allocate for every

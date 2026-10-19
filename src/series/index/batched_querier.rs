@@ -44,7 +44,7 @@ use crate::common::acl::{AclContextGuard, KeyAccess};
 use crate::common::context::{create_key_string, get_current_db};
 use crate::error_consts;
 use crate::fanout::FanoutContext;
-use crate::labels::filters::SeriesSelector;
+use crate::labels::filters::{LabelFilter, PredicateMatch, PredicateValue, SeriesSelector};
 use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{
     SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,
@@ -197,7 +197,80 @@ where
     F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
 {
     let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
+    for_each_planned_series(src, cursor, batch_size, f)
+}
+
+/// [`for_each_series`] over a read planned already ([`plan_if_cheap`]): the cursor's database,
+/// date range and treatment of unreadable series are those it was planned with.
+pub fn for_each_planned_series<S, F>(
+    src: &S,
+    cursor: SeriesCursor,
+    batch_size: NonZeroUsize,
+    f: F,
+) -> ValkeyResult<()>
+where
+    S: GilSource + ?Sized,
+    F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
+{
+    debug_assert_eq!(
+        cursor.db(),
+        src.db(),
+        "a plan is read in the database it was made in"
+    );
     visit_each_series(src, cursor, batch_size, f)
+}
+
+/// Plan a read of `selection` now if planning is cheap, so that the caller can size the read
+/// by its exact match count and hand the plan to whichever thread reads it. `None` when
+/// planning could cost as much as the read itself; the read then plans when it starts.
+///
+/// Cheap means index lookups and bitmap operations only: every filter is an `=` or `!=` on
+/// non-empty values (single or a literal list), or matches everything or nothing. A regex,
+/// `^=`, `contains`, or an empty value (which means "label absent") walks every value of its
+/// label, and on a high-cardinality label that is the expensive part of a small read.
+/// [`SeriesSelection::All`] is a copy of the all-series bitmap, and always cheap.
+pub fn plan_if_cheap(
+    db: i32,
+    selection: SeriesSelection<'_>,
+    range: Option<MetaDateRangeFilter>,
+) -> ValkeyResult<Option<SeriesCursor>> {
+    let cheap = match selection {
+        SeriesSelection::All => true,
+        SeriesSelection::Matching(selectors) => selectors_plan_cheaply(selectors),
+    };
+    if !cheap {
+        return Ok(None);
+    }
+    SeriesCursor::plan(db, selection, range).map(Some)
+}
+
+/// See [`plan_if_cheap`].
+fn selectors_plan_cheaply(selectors: &[SeriesSelector]) -> bool {
+    selectors.iter().all(|selector| match selector {
+        SeriesSelector::And(filters) => filters.iter().all(filter_plans_cheaply),
+        SeriesSelector::Or(groups) => groups
+            .iter()
+            .all(|filters| filters.iter().all(filter_plans_cheaply)),
+    })
+}
+
+fn filter_plans_cheaply(filter: &LabelFilter) -> bool {
+    match &filter.matcher {
+        PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => match value {
+            PredicateValue::String(value) => !value.is_empty(),
+            PredicateValue::List(values) => {
+                !values.is_empty() && values.iter().all(|value| !value.is_empty())
+            }
+            PredicateValue::Empty => false,
+        },
+        PredicateMatch::MatchAll | PredicateMatch::MatchNone => true,
+        PredicateMatch::RegexEqual(_)
+        | PredicateMatch::RegexNotEqual(_)
+        | PredicateMatch::StartsWith(_)
+        | PredicateMatch::NotStartsWith(_)
+        | PredicateMatch::Contains(_)
+        | PredicateMatch::NotContains(_) => false,
+    }
 }
 
 /// Resolve matching ids to owned key bytes without opening keys or checking per-key ACLs.
@@ -248,24 +321,6 @@ pub enum SeriesSelection<'a> {
     Matching(&'a [SeriesSelector]),
     /// Every series the database indexes.
     All,
-}
-
-/// [`for_each_series`] for a read that leaves out what the caller may not read: a matched
-/// series without `ACCESS` is skipped, not an error, so nothing of it reaches `f`. It can
-/// also read every series ([`SeriesSelection::All`]).
-pub fn for_each_readable_series<S, F>(
-    src: &S,
-    selection: SeriesSelection<'_>,
-    range: Option<MetaDateRangeFilter>,
-    batch_size: NonZeroUsize,
-    f: F,
-) -> ValkeyResult<()>
-where
-    S: GilSource + ?Sized,
-    F: for<'g> FnMut(&'g Context, SeriesGuard<'g>, &ValkeyString) -> ValkeyResult<ControlFlow<()>>,
-{
-    let cursor = SeriesCursor::plan(src.db(), selection, range)?;
-    visit_each_series(src, cursor.skip_unreadable(), batch_size, f)
 }
 
 /// The per-series entry points over a planned `cursor`.
@@ -422,6 +477,7 @@ fn read_another_batch<S: GilSource + ?Sized>(src: &S, cursor: &SeriesCursor) -> 
 /// roaring bitmap of a database's series ids, which are dense, costs a fraction of the
 /// 8 bytes per id a list would. Each batch reads its ids out of it from where the last one
 /// stopped.
+#[derive(Debug, Clone)]
 pub struct SeriesCursor {
     db: i32,
     range: Option<MetaDateRangeFilter>,
@@ -463,6 +519,12 @@ impl SeriesCursor {
             }
         };
         Ok(Self::planned(db, range, ids))
+    }
+
+    /// A plan of exactly `ids`, for tests that need one without a server-wide index.
+    #[cfg(test)]
+    pub(crate) fn from_ids(db: i32, ids: PostingsBitmap) -> Self {
+        Self::planned(db, None, ids)
     }
 
     fn planned(db: i32, range: Option<MetaDateRangeFilter>, ids: PostingsBitmap) -> Self {
@@ -989,5 +1051,40 @@ mod tests {
 
         drop(index);
         clear_timeseries_index(DB);
+    }
+
+    fn selector(text: &str) -> SeriesSelector {
+        SeriesSelector::parse(text).unwrap()
+    }
+
+    fn with_filter(op: crate::labels::filters::MatchOp, value: &str) -> SeriesSelector {
+        SeriesSelector::with_filters(vec![LabelFilter::create(op, "service", value).unwrap()])
+    }
+
+    /// Index lookups plan cheaply; anything that walks a label's values does not.
+    #[test]
+    fn only_lookup_filters_plan_cheaply() {
+        use crate::labels::filters::MatchOp;
+
+        for cheap in [
+            vec![selector("service=api")],
+            vec![selector("service=(api,web)")],
+            vec![selector("service=api"), selector("region!=eu")],
+            vec![selector(r#"cpu{service="api"}"#)],
+            vec![],
+        ] {
+            assert!(selectors_plan_cheaply(&cheap), "{cheap:?}");
+        }
+        for costly in [
+            vec![selector(r#"service=~"a.*""#)],
+            vec![selector("service=api"), selector(r#"region!~"e.*""#)],
+            vec![with_filter(MatchOp::StartsWith, "a")],
+            vec![with_filter(MatchOp::Contains, "a")],
+            // An empty value means "label absent": every value of the label is read.
+            vec![with_filter(MatchOp::Equal, "")],
+            vec![selector("service=api"), with_filter(MatchOp::NotEqual, "")],
+        ] {
+            assert!(!selectors_plan_cheaply(&costly), "{costly:?}");
+        }
     }
 }
