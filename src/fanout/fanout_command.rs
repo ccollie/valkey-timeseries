@@ -521,6 +521,7 @@ where
                 | ErrorKind::Busy
                 | ErrorKind::DatabaseSwapped
                 | ErrorKind::InvalidDb
+                | ErrorKind::QueryLimit
         ) {
             self.abort_error = Some(error);
             self.on_completion();
