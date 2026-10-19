@@ -33,7 +33,7 @@ pub use acl::*;
 pub use cluster_rpc::get_cluster_command_timeout;
 pub use fanout_client_command::*;
 pub use fanout_command::*;
-pub use fanout_context::{FanoutContext, FanoutContextGuard};
+pub use fanout_context::FanoutContext;
 pub use fanout_error::*;
 pub use utils::*;
 pub(crate) use workers::{reply_lane_stats, request_lane_stats};

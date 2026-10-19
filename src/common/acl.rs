@@ -246,6 +246,24 @@ fn user_name_text(name: &[u8]) -> ValkeyResult<Option<String>> {
     }
 }
 
+/// Run `f` with this thread's checks running as `user`, under a module lock the caller
+/// already holds.
+///
+/// The coordinator-side counterpart of `FanoutContext::lock`, for code that already holds
+/// the lock (the main thread, or a query worker on `MODULE_CONTEXT`) and must read or fan
+/// out as the caller: the PromQL selector executor. `None` or an empty name runs `f` as the
+/// context's own user. The scope drops when `f` returns, before the caller releases the lock.
+pub(crate) fn with_acl_user<T, F>(ctx: &Context, user: Option<&str>, f: F) -> ValkeyResult<T>
+where
+    F: FnOnce(&Context) -> ValkeyResult<T>,
+{
+    let _scope = match user.filter(|name| !name.is_empty()) {
+        Some(name) => Some(ThreadAclScope::enter_as(name)?),
+        None => None,
+    };
+    f(ctx)
+}
+
 /// Whether key checks apply to `ctx` at all.
 ///
 /// They do not for replicated (master-link) or AOF-applied commands, whose primary already

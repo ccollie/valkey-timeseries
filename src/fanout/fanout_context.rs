@@ -6,6 +6,7 @@ use crate::error_consts;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
+use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The shard-local side of one fan-out request: the ACL user it executes as,
@@ -29,6 +30,8 @@ pub struct FanoutContext {
     user: Option<String>,
     db: i32,
     ctx: &'static DetachedContext,
+    /// When the request reached this node: what its time budget counts from.
+    received: Instant,
     /// When the requester stops waiting, if it said ([`Self::set_deadline`]).
     deadline: OnceLock<Instant>,
     /// Set by the requester's cancel message, if this request can get one.
@@ -49,6 +52,7 @@ impl FanoutContext {
             user,
             db,
             ctx: &MODULE_CONTEXT,
+            received: Instant::now(),
             deadline: OnceLock::new(),
             cancelled: OnceLock::new(),
             local_share: false,
@@ -66,6 +70,19 @@ impl FanoutContext {
     /// response need not be shaped for the wire.
     pub fn is_local_share(&self) -> bool {
         self.local_share
+    }
+
+    /// The request reached this node at `received`, earlier than it was picked up: a
+    /// peer's request waits in the fan-out lane's queue, and that wait counts against
+    /// its time budget.
+    pub fn received_at(mut self, received: Instant) -> Self {
+        self.received = received;
+        self
+    }
+
+    /// When the request reached this node.
+    pub fn received(&self) -> Instant {
+        self.received
     }
 
     /// Record when the requester stops waiting for this answer. Reads walking the
@@ -152,6 +169,11 @@ impl FanoutContext {
         check_db_access(&guard, self.db)?;
         Ok(guard)
     }
+
+    /// Log a warning without taking the GIL.
+    pub fn log_warning(&self, message: &str) {
+        self.ctx.log(ValkeyLogLevel::Warning, message);
+    }
 }
 
 /// A shard-local fan-out share: each lock re-selects the request's database and re-installs
@@ -171,11 +193,6 @@ impl GilSource for FanoutContext {
 
     fn expired(&self) -> bool {
         FanoutContext::expired(self)
-    }
-
-    /// Log a warning without taking the GIL.
-    pub fn log_warning(&self, message: &str) {
-        self.ctx.log(ValkeyLogLevel::Warning, message);
     }
 }
 
