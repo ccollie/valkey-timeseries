@@ -31,6 +31,7 @@ pub(crate) use cluster_rpc::{
 pub(crate) use cluster_rpc::{inflight_request_count, inflight_requests};
 pub use acl::*;
 pub use cluster_rpc::get_cluster_command_timeout;
+pub(crate) use cluster_rpc::{inflight_request_count, inflight_requests};
 pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;
