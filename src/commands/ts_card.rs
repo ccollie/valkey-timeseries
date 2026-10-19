@@ -3,9 +3,10 @@ use crate::commands::analysis_runner::{
     SeriesReadPlacement, run_read_on_analysis_lane, schedule_series_read,
 };
 use crate::commands::command_parser::parse_metadata_command_args;
+use crate::common::threads::GilSource;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::{
-    GilSource, SeriesCursor, SeriesSelection, count_matched_series, count_series_by_selectors,
+    SeriesCursor, SeriesSelection, count_matched_series, count_series_by_selectors,
     count_series_by_selectors_planned,
 };
 use crate::series::request_types::MatchFilterOptions;

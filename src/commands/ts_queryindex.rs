@@ -4,9 +4,10 @@ use crate::commands::analysis_runner::{
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::commands::ts_queryindex_fanout_command::QueryIndexFanoutCommand;
 use crate::common::replies::{IntoRawCtx, reply_with_array, reply_with_slice};
+use crate::common::threads::GilSource;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::{
-    GilSource, KeyList, SeriesCursor, SeriesSelection, series_keys_by_selectors,
+    KeyList, SeriesCursor, SeriesSelection, series_keys_by_selectors,
     series_keys_by_selectors_planned,
 };
 use crate::series::request_types::MatchFilterOptions;

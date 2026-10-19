@@ -11,13 +11,14 @@ use crate::common::context::{get_current_db, is_blocking_denied};
 use crate::common::replies::{
     reply_with_array, reply_with_bool, reply_with_bulk_string, reply_with_integer, reply_with_map,
 };
+use crate::common::threads::GilSource;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
-    DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, GilSource, LabelNameSearchFilter,
-    LabelQuerier, LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX,
-    SearchHints, SearchResultOrdering, SelectHints, SeriesCursor, SeriesSelection, SortBy,
+    DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
+    LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX, SearchHints,
+    SearchResultOrdering, SelectHints, SeriesCursor, SeriesSelection, SortBy,
     check_label_query_permissions, get_db_index, label_search_exceeds_inline_budget, plan_if_cheap,
 };
 use crate::series::request_types::MatchFilterOptions;

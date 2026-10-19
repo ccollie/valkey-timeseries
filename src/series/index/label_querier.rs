@@ -15,11 +15,12 @@
 //! the main thread already holds it and reads in one batch.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, FuzzyFilter, GilSource, IndexKey, PostingsBitmap, SeriesCursor,
+    DEFAULT_SERIES_BATCH_SIZE, FuzzyFilter, IndexKey, PostingsBitmap, SeriesCursor,
     SeriesSelection, SimilarityFilter, TimeSeriesIndex, for_each_planned_series, get_db_index,
 };
 use crate::common::acl::check_metadata_permissions;
 use crate::common::constants::METRIC_NAME_LABEL;
+use crate::common::threads::GilSource;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::filters::SeriesSelector;
 use crate::series::index::key_buffer::KeyBuffer;

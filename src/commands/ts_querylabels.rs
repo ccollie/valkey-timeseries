@@ -4,10 +4,10 @@ use crate::commands::analysis_runner::{
 use crate::commands::command_parser::{QueryLabelsOptions, parse_query_labels_command_args};
 use crate::commands::ts_querylabels_fanout_command::QueryLabelsFanoutCommand;
 use crate::common::replies::reply_with_string_set;
+use crate::common::threads::GilSource;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::{
-    GilSource, SeriesCursor, query_labels_distinct, query_labels_distinct_planned,
-    query_labels_selection,
+    SeriesCursor, query_labels_distinct, query_labels_distinct_planned, query_labels_selection,
 };
 use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;

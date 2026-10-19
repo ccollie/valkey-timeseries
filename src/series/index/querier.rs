@@ -23,13 +23,14 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, KeyList, SeriesCursor, SeriesSelection,
-    collect_indexed_keys, for_each_planned_series, get_db_index, get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, KeyList, SeriesCursor, SeriesSelection, collect_indexed_keys,
+    for_each_planned_series, get_db_index, get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
 use crate::common::context::{create_key_string, get_current_db};
 use crate::common::hash::IntMap;
+use crate::common::threads::GilSource;
 use crate::common::threads::IterIntoParRayon;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;

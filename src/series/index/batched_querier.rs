@@ -40,10 +40,10 @@
 use super::postings::Postings;
 use super::querier::{StaleIds, matches_date_range};
 use super::{KeyList, PostingsBitmap, get_db_index};
-use crate::common::acl::{AclContextGuard, KeyAccess};
-use crate::common::context::{create_key_string, get_current_db};
+use crate::common::acl::KeyAccess;
+use crate::common::context::create_key_string;
+use crate::common::threads::GilSource;
 use crate::error_consts;
-use crate::fanout::FanoutContext;
 use crate::labels::filters::{LabelFilter, PredicateMatch, PredicateValue, SeriesSelector};
 use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{
@@ -51,7 +51,7 @@ use crate::series::{
 };
 use blart::AsBytes;
 use std::num::NonZeroUsize;
-use std::ops::{ControlFlow, Deref};
+use std::ops::ControlFlow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Series per lock hold when a caller has no reason to pick another size.
@@ -104,69 +104,6 @@ impl<W: Fn(&TimeSeries) -> usize> BatchLimit<W> {
             weight,
             weigh,
         }
-    }
-}
-
-/// Where a multi-step read gets the module lock from, one batch at a time.
-pub trait GilSource {
-    /// The lock for one batch; the series opened under it live no longer than it does.
-    type Guard<'s>: Deref<Target = Context>
-    where
-        Self: 's;
-
-    /// Take the lock for one batch.
-    fn lock(&self) -> ValkeyResult<Self::Guard<'_>>;
-
-    /// The database the read runs against.
-    fn db(&self) -> i32;
-
-    /// Whether the lock can be given back between batches. A caller that already holds it
-    /// (the main thread) cannot, and is read in a single batch.
-    fn can_release(&self) -> bool {
-        true
-    }
-
-    /// Whether whoever asked for the read has stopped waiting for it, so the next batch
-    /// would be read for nobody. Checked before each batch after the first.
-    fn expired(&self) -> bool {
-        false
-    }
-}
-
-/// A shard-local fan-out share: each lock re-selects the request's database and re-installs
-/// its ACL identity. A background thread reads a given database through `MODULE_CONTEXT` the
-/// same way: with the caller's user for a background label search, with none for internal
-/// work.
-impl GilSource for FanoutContext {
-    type Guard<'s> = AclContextGuard;
-
-    fn lock(&self) -> ValkeyResult<AclContextGuard> {
-        FanoutContext::lock(self)
-    }
-
-    fn db(&self) -> i32 {
-        FanoutContext::db(self)
-    }
-
-    fn expired(&self) -> bool {
-        FanoutContext::expired(self)
-    }
-}
-
-/// A caller already holding the lock: the read is one batch, as `series_by_selectors` is.
-impl GilSource for Context {
-    type Guard<'s> = &'s Context;
-
-    fn lock(&self) -> ValkeyResult<&Context> {
-        Ok(self)
-    }
-
-    fn db(&self) -> i32 {
-        get_current_db(self)
-    }
-
-    fn can_release(&self) -> bool {
-        false
     }
 }
 
@@ -809,6 +746,7 @@ fn for_live_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fanout::FanoutContext;
     use crate::labels::{Label, MetricName};
     use crate::series::TimeSeries;
     use crate::series::index::clear_timeseries_index;

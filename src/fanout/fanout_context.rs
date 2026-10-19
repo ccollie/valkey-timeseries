@@ -1,6 +1,6 @@
 use crate::common::acl::AclContextGuard;
 use crate::common::context::set_current_db;
-use crate::common::threads::LockGil;
+use crate::common::threads::{GilSource, LockGil};
 use std::sync::OnceLock;
 use std::time::Instant;
 use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
@@ -95,6 +95,26 @@ impl FanoutContext {
         // Resolved afresh on every lock: a user deleted or disabled mid-request fails the
         // next step rather than finishing with rights it no longer has.
         AclContextGuard::for_user(self.user.as_deref(), ctx)
+    }
+}
+
+/// A shard-local fan-out share: each lock re-selects the request's database and re-installs
+/// its ACL identity. A background thread reads a given database through `MODULE_CONTEXT` the
+/// same way: with the caller's user for a background label search, with none for internal
+/// work.
+impl GilSource for FanoutContext {
+    type Guard<'s> = AclContextGuard;
+
+    fn lock(&self) -> ValkeyResult<AclContextGuard> {
+        FanoutContext::lock(self)
+    }
+
+    fn db(&self) -> i32 {
+        FanoutContext::db(self)
+    }
+
+    fn expired(&self) -> bool {
+        FanoutContext::expired(self)
     }
 }
 
