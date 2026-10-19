@@ -1,8 +1,9 @@
 # Command List
 
 Standalone `TS.LABELNAMES`, `TS.LABELVALUES`, `TS.METRICNAMES` and `TS.QUERYLABELS` run on
-bounded background workers when estimated work is large. Small requests, transactions and
-scripts run inline.
+bounded background workers when estimated work is large. `TS.CARD FILTER_BY_RANGE` shares
+these workers for reads estimated to exceed 512 series. Small requests, transactions and
+scripts run inline, as do standalone `TS.CARD` counts without a range filter.
 
 Ranked label-value and metric-name searches apply `LIMIT` after ranking; equal scores or
 cardinalities are ordered by value ascending.

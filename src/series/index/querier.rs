@@ -247,18 +247,26 @@ pub fn series_keys_by_selectors<S: GilSource + ?Sized>(
 /// Cardinality-only counterpart of [`series_by_selectors`].
 ///
 /// Applies the same posting lookup, ACL (`ACCESS`) checks, and date-range predicate through
-/// the batched reader. A fan-out share gives the module lock back between batches and retains
-/// only the running count; a main-thread caller keeps its existing single lock hold.
+/// the batched reader. A background caller gives the module lock back between batches and
+/// retains only the running count; a main-thread caller keeps its single lock hold.
 pub fn count_series_by_selectors<S: GilSource + ?Sized>(
     src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<usize> {
+    let cursor = SeriesCursor::plan(src.db(), SeriesSelection::Matching(selectors), range)?;
+    count_series_by_selectors_planned(src, cursor)
+}
+
+/// [`count_series_by_selectors`] using the same plan that sized the read for scheduling.
+pub fn count_series_by_selectors_planned<S: GilSource + ?Sized>(
+    src: &S,
+    cursor: SeriesCursor,
+) -> ValkeyResult<usize> {
     let mut count = 0;
-    for_each_series(
+    for_each_planned_series(
         src,
-        selectors,
-        range,
+        cursor,
         DEFAULT_SERIES_BATCH_SIZE,
         |_ctx, _series, _key| {
             count += 1;

@@ -257,9 +257,7 @@ impl LabelQueryResult {
             match merged.get_mut(&item.value) {
                 Some(existing) => {
                     existing.cardinality += item.cardinality;
-                    if item.score > existing.score {
-                        existing.score = item.score;
-                    }
+                    existing.score = existing.score.max(item.score);
                 }
                 None => {
                     let key = item.value.clone();
@@ -421,9 +419,9 @@ fn can_use_unscoped_scan(select_hints: Option<&SelectHints>) -> bool {
 }
 
 /// The most series a read that opens them may cover on the main thread. Applies to a
-/// scoped label search and to `TS.QUERYLABELS`. Equal to one batch of the batched reader
-/// today, but a constant of its own so that retuning the batch size does not silently move
-/// this policy.
+/// scoped label search, `TS.QUERYLABELS`, and range-filtered `TS.CARD`. Equal to one batch of
+/// the batched reader today, but a constant of its own so that retuning the batch size does
+/// not silently move this policy.
 const INLINE_SERIES_READ_LIMIT: usize = 512;
 
 /// Whether a read that opens every series it matches should leave the main thread.

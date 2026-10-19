@@ -432,7 +432,11 @@ pub(super) fn run_label_search(
 
 /// Starting budgets, not a latency guarantee: strings, bitmaps and selector complexity
 /// vary. See `docs/plans/label-search-precheck-benchmark.md` for the measurements.
-const INLINE_LABEL_SEARCH_ENTRIES: usize = 1024;
+///
+/// A name scan or plain value scan costs about 10–20 ns an entry, so this budget holds the
+/// main thread for roughly 75–150 µs at most. Below it, handing the search to the analysis
+/// lane (about 20 µs) would cost the caller more than the scan itself.
+const INLINE_LABEL_SEARCH_ENTRIES: usize = 8192;
 /// The budget for a value scan with `SEARCH`, which scores every entry it reads.
 const INLINE_LABEL_SEARCH_WITH_SEARCH_ENTRIES: usize = 256;
 /// The least a value scan with `SEARCH` may read inline, however many terms it has: terms

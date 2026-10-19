@@ -1,12 +1,13 @@
-use crate::commands::analysis_runner::run_read_on_analysis_lane;
+use crate::commands::analysis_runner::{
+    SeriesReadPlacement, run_read_on_analysis_lane, schedule_series_read,
+};
 use crate::commands::command_parser::{QueryLabelsOptions, parse_query_labels_command_args};
 use crate::commands::ts_querylabels_fanout_command::QueryLabelsFanoutCommand;
-use crate::common::context::{get_current_db, is_blocking_denied};
 use crate::common::replies::reply_with_string_set;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::{
-    GilSource, SeriesCursor, get_db_index, plan_if_cheap, query_labels_distinct,
-    query_labels_distinct_planned, query_labels_selection, series_read_exceeds_inline_budget,
+    GilSource, SeriesCursor, query_labels_distinct, query_labels_distinct_planned,
+    query_labels_selection,
 };
 use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
@@ -45,31 +46,22 @@ pub fn ts_querylabels_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
     // A large read runs on the analysis lane, which gives the module lock back between
     // batches, so the main thread keeps serving other clients. The lane reads through the
-    // caller's ACL user, so unreadable series are omitted per series exactly as inline. A
-    // client that cannot block (`MULTI`, a script, a module call) is read inline.
-    //
-    // Selectors that plan cheaply are planned here, once: the plan sizes the read by its
-    // exact match count, so a narrow FILTER on a large database stays inline, and it is the
-    // read's own plan on whichever thread runs it. Other selectors are planned by the read,
-    // and the database's size stands in for the match count.
-    let db = get_current_db(ctx);
-    let plan = plan_if_cheap(db, query_labels_selection(&options.matchers), None)?;
-    if !is_blocking_denied(ctx)
-        && series_read_exceeds_inline_budget(&get_db_index(db), plan.as_ref())
-    {
-        return run_read_on_analysis_lane(
+    // caller's ACL user, so unreadable series are omitted per series exactly as inline.
+    match schedule_series_read(ctx, query_labels_selection(&options.matchers), None)? {
+        SeriesReadPlacement::Background(plan) => run_read_on_analysis_lane(
             ctx,
             "label query",
             move |src| read_labels(src, plan, &options),
             |reply_ctx, values| {
                 reply_with_string_set(reply_ctx, &values);
             },
-        );
+        ),
+        SeriesReadPlacement::Inline(plan) => {
+            let values = read_labels(ctx, plan, &options)?;
+            reply_with_string_set(ctx, &values);
+            Ok(ValkeyValue::NoReply)
+        }
     }
-
-    let values = read_labels(ctx, plan, &options)?;
-    reply_with_string_set(ctx, &values);
-    Ok(ValkeyValue::NoReply)
 }
 
 /// The read itself: over `plan` when the command planned it, otherwise planned here.
