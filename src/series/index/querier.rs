@@ -23,8 +23,8 @@
 //! discovery), see `label_querier.rs`, which composes this module and `Postings`.
 
 use super::{
-    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_readable_series,
-    for_each_series, get_db_index, get_timeseries_index,
+    DEFAULT_SERIES_BATCH_SIZE, GilSource, SeriesSelection, for_each_indexed_key_batch,
+    for_each_readable_series, for_each_series, get_db_index, get_timeseries_index,
 };
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
@@ -196,24 +196,35 @@ pub fn query_labels_distinct<S: GilSource + ?Sized>(
     Ok(result)
 }
 
-pub fn series_keys_by_selectors(
-    ctx: &Context,
+/// Matching key names, copied into owned bytes so they can outlive each batch's lock.
+/// Without a range this reads only the index and reveals matches regardless of key ACLs;
+/// with a range it opens each series and fails on the first unreadable match.
+/// A fan-out share releases the module lock between batches; a main-thread caller keeps it.
+/// Must not be called while holding the lock through a releasing [`GilSource`].
+pub fn series_keys_by_selectors<S: GilSource + ?Sized>(
+    src: &S,
     selectors: &[SeriesSelector],
     range: Option<MetaDateRangeFilter>,
-) -> ValkeyResult<Vec<ValkeyString>> {
-    if selectors.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut stale = StaleIds::new();
-    let resolved = if range.is_none() {
-        resolve_series_keys(ctx, selectors, &mut stale, |_id, key| key)?
+) -> ValkeyResult<Vec<Vec<u8>>> {
+    let mut keys = Vec::new();
+    if range.is_none() {
+        for_each_indexed_key_batch(src, selectors, DEFAULT_SERIES_BATCH_SIZE, |batch| {
+            keys.extend(batch);
+            Ok(ControlFlow::Continue(()))
+        })?;
     } else {
-        let ids_and_keys = resolve_series_keys(ctx, selectors, &mut stale, |id, key| (id, key))?;
-        collect_series_keys(ctx, ids_and_keys, range, &mut stale)?
-    };
-    mark_stale(ctx, &stale);
-    Ok(resolved)
+        for_each_series(
+            src,
+            selectors,
+            range,
+            DEFAULT_SERIES_BATCH_SIZE,
+            |_ctx, _series, key| {
+                keys.push(key.as_slice().to_vec());
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+    }
+    Ok(keys)
 }
 
 /// Cardinality-only counterpart of [`series_by_selectors`].
@@ -238,26 +249,6 @@ pub fn count_series_by_selectors<S: GilSource + ?Sized>(
         },
     )?;
     Ok(count)
-}
-
-fn collect_series_keys(
-    ctx: &Context,
-    resolved: ResolvedKeys,
-    date_range: Option<MetaDateRangeFilter>,
-    stale: &mut StaleIds,
-) -> ValkeyResult<Vec<ValkeyString>> {
-    if let Some(date_range) = date_range {
-        let series = collect_series_from_postings(ctx, resolved, Some(date_range), stale)?;
-        let keys = series.into_iter().map(|g| g.1).collect();
-        return Ok(keys);
-    }
-
-    // TS.QUERYINDEX is a pure index lookup: it returns every series matching the
-    // filter regardless of the caller's per-key read access. Command-level ACL
-    // (can the user run TS.QUERYINDEX at all) is already enforced by the server,
-    // so we must NOT drop keys the caller lacks read (ACCESS) permission on here.
-    // Ids that resolved to no key were already recorded by `resolve_series_keys`.
-    Ok(resolved.into_iter().map(|(_, key)| key).collect())
 }
 
 fn collect_series_from_postings<'a>(

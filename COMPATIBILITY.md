@@ -42,6 +42,9 @@ Samples within a single series are always returned in timestamp order (ascending
 
 ### Data model
 
+`TS.QUERYINDEX` preserves key names as raw bytes in both standalone and cluster replies,
+including invalid UTF-8 and interior NUL bytes. Distinct byte strings remain distinct keys.
+
 The data model — series identified by a Valkey key, each holding a sequence of (timestamp, value) samples plus a set of label name/value pairs, governed by per-series properties such as retention period, chunk size, chunk encoding (`COMPRESSED` / `UNCOMPRESSED`), duplicate-sample policy, and rounding (`DECIMAL_DIGITS` / significant digits) — is expected to match RedisTimeSeries. Compaction rules created with `TS.CREATERULE` (the aggregation type, bucket duration, and alignment) and the label semantics used to select series in queries are expected to behave the same way. Series and rules configured for RedisTimeSeries should produce equivalent behavior when created against Valkey TimeSeries.
 
 ### A note on stricter input validation
@@ -85,6 +88,11 @@ This section describes areas where Valkey TimeSeries intentionally diverges from
 - Valkey TimeSeries fans out over Valkey's native cluster bus. There is no separate coordinator component, no additional network port, and no module-level shared password — RedisTimeSeries required `OSS_GLOBAL_PASSWORD` on every cluster node prior to its 8.0 release, which replaced it with an internal shared-secret mechanism.
 - Valkey TimeSeries bounds each fan-out with the `ts-fanout-command-timeout` configurable and returns an error when a consistent cluster-wide view cannot be established within it. This is a reply an equivalent RedisTimeSeries deployment need not produce.
 - ACL keyspace restrictions are enforced on the fanned-out result (see _Security Architecture_ under Non-Goals).
+
+Valkey TimeSeries reads each shard's `TS.QUERYINDEX` matches in batches, releasing the module
+lock between batches. This is not a point-in-time snapshot of a shard: later batches can see
+renames and sample writes, deleted series are skipped, and series created after planning are
+not included. Standalone queries retain a single module-lock hold.
 
 Requirements common to both modules are unchanged and are not part of this divergence: a compaction rule is a two-key operation whose source and destination must occupy the same hash slot (`TS.CREATERULE`, `TS.DELETERULE`, and any default compaction policy in a clustered deployment), and `TS.MADD` operates within a single slot. Hash tags remain the mechanism for both.
 

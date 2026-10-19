@@ -210,6 +210,35 @@ class TestTimeSeriesAclCluster(ValkeyTimeSeriesClusterTestCase):
         q = self._get_primary_user_client(0, "q", "pw")
         assert int(q.execute_command("TS.CARD", "FILTER", "name=cpu")) == 3
 
+    def test_queryindex_preserves_acl_policy_across_batches(self):
+        cluster = self.new_cluster_client()
+        pipe = cluster.pipeline(transaction=False)
+        allowed = [f'qi:allowed:{{3}}:{i}'.encode() for i in range(1024)]
+        denied = b'qi:denied:{3}:last'
+        for key in allowed:
+            pipe.execute_command(
+                'TS.ADD', key, 1000, 1, 'LABELS', 'fleet', 'queryindex-acl', 'access', 'allowed',
+            )
+        pipe.execute_command(
+            'TS.ADD', denied, 5000, 1, 'LABELS', 'fleet', 'queryindex-acl', 'access', 'denied',
+        )
+        pipe.execute()
+        self._create_user_on_all_primaries('qi-reader', 'pw', '+ts.queryindex', '~qi:allowed:*')
+
+        for coordinator in range(self.CLUSTER_SIZE):
+            reader = self._get_primary_user_client(coordinator, 'qi-reader', 'pw')
+            assert reader.execute_command('TS.QUERYINDEX', 'fleet=queryindex-acl') == sorted(allowed + [denied])
+            assert reader.execute_command(
+                'TS.QUERYINDEX', 'FILTER_BY_RANGE', 1000, 1000,
+                'fleet=queryindex-acl', 'access=allowed',
+            ) == sorted(allowed)
+            for modifier in [(), ('NOT',)]:
+                with pytest.raises(ResponseError, match='permission'):
+                    reader.execute_command(
+                        'TS.QUERYINDEX', 'FILTER_BY_RANGE', *modifier, 1000, 1000,
+                        'fleet=queryindex-acl',
+                    )
+
     def test_card_date_range_enforces_acl_after_first_batch(self):
         """Range counts check access before the date predicate, including in later batches."""
         cluster = self.new_cluster_client()

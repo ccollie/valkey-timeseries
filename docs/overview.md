@@ -120,7 +120,10 @@ with the rule.
 ### Metadata & Indexing
 
 * `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
-* `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
+* `TS.QUERYINDEX`: Retrieve all series keys matching a label filter, preserving binary key names.
+  Cluster queries read each shard in batches and can observe intervening writes.
+  Index-only queries reveal all matching keys; `FILTER_BY_RANGE` requires read access to every
+  matching series.
 * `TS.QUERYLABELS`: Retrieve all label names, or all values of a given label, for series matching a filter.
 * `TS.CARD`: Get the cardinality of the index for a specific label filter. In cluster mode,
   `FILTER_BY_RANGE` reads each shard in batches, releasing the module lock between batches;

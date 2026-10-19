@@ -269,6 +269,19 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', 'NOT', start_ts, end_ts, 'name=cpu')
         assert result == [b'ts10']
 
+    @pytest.mark.parametrize('range_args', [(), ('FILTER_BY_RANGE', 1000, 1000)])
+    def test_queryindex_preserves_binary_keys_and_selected_database(self, range_args):
+        keys = [b'qi:\x00', b'qi:\xff', b'qi:ascii']
+        self.client.execute_command('TS.ADD', 'qi:db0', 1000, 1, 'LABELS', 'fleet', 'binary')
+        self.client.execute_command('SELECT', 1)
+        try:
+            for key in keys:
+                self.client.execute_command('TS.ADD', key, 1000, 1, 'LABELS', 'fleet', 'binary')
+            assert self.client.execute_command('TS.QUERYINDEX', *range_args, 'fleet=binary') == sorted(keys)
+        finally:
+            self.client.execute_command('SELECT', 0)
+        assert self.client.execute_command('TS.QUERYINDEX', *range_args, 'fleet=binary') == [b'qi:db0']
+
     def test_hashtag_is_accepted_and_ignored_outside_a_cluster(self):
         """HASHTAG only scopes the cluster fanout, so a standalone server still answers in full."""
         self.setup_test_data(self.client)
