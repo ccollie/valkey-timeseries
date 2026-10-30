@@ -31,8 +31,7 @@
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
 use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo,
-    get_cluster_command_timeout, log_fanout_failure,
+    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
@@ -102,31 +101,6 @@ pub(in crate::promql) struct GridFanoutCommand {
     /// response is dropped unread, and [`Self::into_result`] reports this, in
     /// its own words, rather than a fan-out failure.
     stopped: Option<QueryError>,
-}
-
-impl Default for GridFanoutCommand {
-    fn default() -> Self {
-        // An arbitrary but valid request: this instance only ever stands in for
-        // a moved-out command (see `FanoutStateInner`), never accumulates.
-        Self::new(
-            Matchers::empty(),
-            GridRequest {
-                step_ms: 0,
-                query_start: 0,
-                query_end: 0,
-                range_end_ms: 0,
-                lookback_delta_ms: 0,
-                rollup: None,
-                aggregation: None,
-                sample_timestamps: false,
-            },
-            0,
-            0,
-            0,
-            get_cluster_command_timeout(),
-            Deadline::default(),
-        )
-    }
 }
 
 impl GridFanoutCommand {

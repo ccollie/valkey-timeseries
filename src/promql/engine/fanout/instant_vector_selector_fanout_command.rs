@@ -4,7 +4,6 @@ use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo}
 use crate::labels::HasFingerprint;
 use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::{handle_instant_query, shard_read};
-use crate::promql::engine::promql_config;
 use crate::promql::generated::{
     InstantQuery, InstantQueryResponse, SeriesSelector as ProtoSeriesSelector,
 };
@@ -26,24 +25,6 @@ pub struct InstantVectorSelectorFanoutCommand {
     seen: FingerprintHashSet,
 }
 
-impl Default for InstantVectorSelectorFanoutCommand {
-    fn default() -> Self {
-        let matchers = Matchers::empty();
-        let lookback_delta = {
-            let guard = promql_config();
-            guard.lookback_delta.as_millis() as u64
-        };
-        Self {
-            matchers,
-            timestamp: 0,
-            lookback_delta,
-            max_series: 0,
-            results: vec![],
-            timeout: crate::fanout::get_cluster_command_timeout(),
-            seen: FingerprintHashSet::default(),
-        }
-    }
-}
 impl InstantVectorSelectorFanoutCommand {
     pub fn new(
         matchers: Matchers,
