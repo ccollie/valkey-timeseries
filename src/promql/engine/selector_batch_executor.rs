@@ -7,7 +7,9 @@ use crate::common::threads::{
     run_on_pool_cold, set_thread_role,
 };
 use crate::common::time::current_time_millis;
-use crate::fanout::{FanoutCommandResult, FanoutError, exec_command, get_cluster_command_timeout};
+use crate::fanout::{
+    FanoutCommand, FanoutCommandResult, FanoutError, exec_command, get_cluster_command_timeout,
+};
 use crate::fanout::{compute_hash_tag_fanout_target, is_clustered};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
@@ -547,15 +549,7 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
     // The fanout command captures the authenticated user while this scope is
     // active and propagates it to every shard.
     let result = with_acl_user(ctx, caller_user.as_deref(), |ctx| {
-        execute_selector_task_cluster(
-            ctx,
-            SelectorTask {
-                kind,
-                caller_user: None,
-                hash_tags,
-                responder,
-            },
-        );
+        execute_selector_task_cluster(ctx, kind, &hash_tags, responder);
         Ok(())
     });
 
@@ -622,6 +616,31 @@ fn selector_fanout_failure(query_kind: &str, error: FanoutError) -> QueryError {
     error.into()
 }
 
+/// Start the cluster fan-out of `cmd` over the shards `hash_tags` route to.
+/// `answer` turns the command and its result into the selector's output once
+/// every shard has answered; a fan-out that cannot start answers its error at
+/// once. The one shape every `execute_cluster_*` shares.
+fn fan_out<C, F>(
+    ctx: &Context,
+    cmd: C,
+    hash_tags: &[String],
+    timeout: Duration,
+    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    answer: F,
+) where
+    C: FanoutCommand,
+    F: FnOnce(C, FanoutCommandResult) -> QueryResult<SelectorOutput> + Send + 'static,
+{
+    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
+    let on_done = responder.clone();
+    let handler = move |cmd: C, result: FanoutCommandResult| {
+        deliver_task_result(&on_done, answer(cmd, result));
+    };
+    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
+        deliver_task_result(&responder, Err(e.into()));
+    }
+}
+
 fn execute_cluster_vector_selector(
     ctx: &Context,
     iqc: InstantVectorSelectorCommand,
@@ -640,12 +659,14 @@ fn execute_cluster_vector_selector(
     );
 
     let max_series = iqc.options.max_series;
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let responder = Arc::new(responder);
-    let cloned_responder = responder.clone();
 
-    let handler = move |cmd: InstantVectorSelectorFanoutCommand, result: FanoutCommandResult| {
-        let query_result = match result {
+    fan_out(
+        ctx,
+        cmd,
+        hash_tags,
+        timeout,
+        responder,
+        move |cmd: InstantVectorSelectorFanoutCommand, result: FanoutCommandResult| match result {
             Ok(()) => {
                 let samples = cmd.into_samples();
                 validate_max_series(samples.len(), max_series)
@@ -653,14 +674,8 @@ fn execute_cluster_vector_selector(
                     .map(|_| SelectorOutput::Vector(samples))
             }
             Err(e) => Err(selector_fanout_failure("instant", e)),
-        };
-
-        deliver_task_result(&responder, query_result);
-    };
-
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
-        deliver_task_result(&cloned_responder, Err(e.into()));
-    }
+        },
+    );
 }
 
 fn execute_cluster_range_selector(
@@ -682,51 +697,52 @@ fn execute_cluster_range_selector(
     let max_series = rc.options.max_series;
     let max_points_per_series = rc.options.max_points_per_series;
     let max_samples = rc.options.max_samples;
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let responder = Arc::new(responder);
-    let cloned_responder = responder.clone();
 
-    let handler = move |cmd: RangeVectorSelectorFanoutCommand, result: FanoutCommandResult| {
-        let query_result = match result {
-            Ok(()) => {
-                let responses = cmd.get_responses();
-                let series_count = responses.iter().map(|r| r.series.len()).sum();
+    fan_out(
+        ctx,
+        cmd,
+        hash_tags,
+        timeout,
+        responder,
+        move |cmd: RangeVectorSelectorFanoutCommand, result: FanoutCommandResult| {
+            match result {
+                Ok(()) => {
+                    let responses = cmd.get_responses();
+                    let series_count = responses.iter().map(|r| r.series.len()).sum();
 
-                validate_max_series(series_count, max_series)
-                    .map_err(warned)
-                    .and_then(|_| {
-                        // The chunks know their length without being decoded, so
-                        // the limits are checked before any sample is materialized.
-                        let responses = responses
-                            .into_iter()
-                            .map(|resp| {
-                                WireRangeResponse::try_from(resp).map_err(|e| {
-                                    QueryError::Execution(format!(
-                                        "undecodable range series in cluster response: {e}"
-                                    ))
+                    validate_max_series(series_count, max_series)
+                        .map_err(warned)
+                        .and_then(|_| {
+                            // The chunks know their length without being decoded, so
+                            // the limits are checked before any sample is materialized.
+                            let responses = responses
+                                .into_iter()
+                                .map(|resp| {
+                                    WireRangeResponse::try_from(resp).map_err(|e| {
+                                        QueryError::Execution(format!(
+                                            "undecodable range series in cluster response: {e}"
+                                        ))
+                                    })
                                 })
-                            })
-                            .collect::<QueryResult<Vec<_>>>()?;
-                        let series = || responses.iter().flat_map(|r| r.series());
-                        validate_max_samples(series().map(|s| s.chunk.len()).sum(), max_samples)?;
-                        for s in series() {
-                            validate_max_points(s.chunk.len(), max_points_per_series)
-                                .map_err(warned)?;
-                        }
-                        // Still packed: the requester resolves and decodes them
-                        // in parallel.
-                        Ok(SelectorOutput::WireMatrix(responses))
-                    })
+                                .collect::<QueryResult<Vec<_>>>()?;
+                            let series = || responses.iter().flat_map(|r| r.series());
+                            validate_max_samples(
+                                series().map(|s| s.chunk.len()).sum(),
+                                max_samples,
+                            )?;
+                            for s in series() {
+                                validate_max_points(s.chunk.len(), max_points_per_series)
+                                    .map_err(warned)?;
+                            }
+                            // Still packed: the requester resolves and decodes them
+                            // in parallel.
+                            Ok(SelectorOutput::WireMatrix(responses))
+                        })
+                }
+                Err(e) => Err(selector_fanout_failure("range", e)),
             }
-            Err(e) => Err(selector_fanout_failure("range", e)),
-        };
-
-        deliver_task_result(&responder, query_result);
-    };
-
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
-        deliver_task_result(&cloned_responder, Err(e.into()));
-    }
+        },
+    );
 }
 
 /// Push an aggregation to the shards and reduce their answers here.
@@ -751,51 +767,49 @@ fn execute_cluster_aggregation(
     let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, timeout, deadline);
 
     let max_series = ac.options.max_series;
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let responder = Arc::new(responder);
-    let cloned_responder = responder.clone();
 
-    let handler = move |cmd: AggregationFanoutCommand, result: FanoutCommandResult| {
-        let query_result = match result {
-            Ok(()) => cmd
-                .into_result()
-                .map_err(QueryError::from)
-                .and_then(|samples| {
-                    // The aggregated vector, not the input, is what this bounds:
-                    // one sample per group.
-                    validate_max_series(samples.len(), max_series).map_err(warned)?;
-                    let samples = samples
-                        .into_iter()
-                        .map(|s| InstantSample {
-                            labels: s.labels,
-                            timestamp_ms: s.timestamp_ms,
-                            value: s.value,
-                        })
-                        .collect();
-                    Ok(SelectorOutput::Aggregation(AggregationOutcome::Aggregated(
-                        samples,
-                    )))
-                }),
-            Err(e) if cmd.peer_unsupported() => {
-                log_warning(format!(
-                    "promql: aggregation push-down unsupported by a peer, falling back: {e}"
-                ));
-                Ok(SelectorOutput::Aggregation(AggregationOutcome::Unsupported))
+    fan_out(
+        ctx,
+        cmd,
+        hash_tags,
+        timeout,
+        responder,
+        move |cmd: AggregationFanoutCommand, result: FanoutCommandResult| {
+            match result {
+                Ok(()) => cmd
+                    .into_result()
+                    .map_err(QueryError::from)
+                    .and_then(|samples| {
+                        // The aggregated vector, not the input, is what this bounds:
+                        // one sample per group.
+                        validate_max_series(samples.len(), max_series).map_err(warned)?;
+                        let samples = samples
+                            .into_iter()
+                            .map(|s| InstantSample {
+                                labels: s.labels,
+                                timestamp_ms: s.timestamp_ms,
+                                value: s.value,
+                            })
+                            .collect();
+                        Ok(SelectorOutput::Aggregation(AggregationOutcome::Aggregated(
+                            samples,
+                        )))
+                    }),
+                Err(e) if cmd.peer_unsupported() => {
+                    log_warning(format!(
+                        "promql: aggregation push-down unsupported by a peer, falling back: {e}"
+                    ));
+                    Ok(SelectorOutput::Aggregation(AggregationOutcome::Unsupported))
+                }
+                Err(e) => {
+                    log_warning(format!(
+                        "promql: cluster command failed for aggregation query: {e}"
+                    ));
+                    Err(e.into())
+                }
             }
-            Err(e) => {
-                log_warning(format!(
-                    "promql: cluster command failed for aggregation query: {e}"
-                ));
-                Err(e.into())
-            }
-        };
-
-        deliver_task_result(&responder, query_result);
-    };
-
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
-        deliver_task_result(&cloned_responder, Err(e.into()));
-    }
+        },
+    );
 }
 
 /// Push a grid query to the shards and collect their output here.
@@ -824,45 +838,46 @@ fn execute_cluster_grid(
         deadline,
     );
 
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let responder = Arc::new(responder);
-    let cloned_responder = responder.clone();
-
-    let handler = move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
-        let peer_unsupported = cmd.peer_unsupported();
-        let query_result = match result {
-            Ok(()) => cmd.into_result().and_then(|outcome| {
-                // The grid output, not the input, is what these bound: one
-                // entry per series (or group), one point per step that produced
-                // one.
-                let points: Vec<usize> = match &outcome {
-                    GridOutcome::Stepped(series) => series.iter().map(|s| s.points.len()).collect(),
-                    GridOutcome::Rolled(series)
-                    | GridOutcome::Reduced(series)
-                    | GridOutcome::Raw(series) => series.iter().map(|s| s.samples.len()).collect(),
-                    GridOutcome::Unsupported => Vec::new(),
-                };
-                validate_max_series(points.len(), max_series).map_err(warned)?;
-                for count in points {
-                    validate_max_points(count, max_points_per_series).map_err(warned)?;
+    fan_out(
+        ctx,
+        cmd,
+        hash_tags,
+        timeout,
+        responder,
+        move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
+            let peer_unsupported = cmd.peer_unsupported();
+            match result {
+                Ok(()) => cmd.into_result().and_then(|outcome| {
+                    // The grid output, not the input, is what these bound: one
+                    // entry per series (or group), one point per step that produced
+                    // one.
+                    let points: Vec<usize> = match &outcome {
+                        GridOutcome::Stepped(series) => {
+                            series.iter().map(|s| s.points.len()).collect()
+                        }
+                        GridOutcome::Rolled(series)
+                        | GridOutcome::Reduced(series)
+                        | GridOutcome::Raw(series) => {
+                            series.iter().map(|s| s.samples.len()).collect()
+                        }
+                        GridOutcome::Unsupported => Vec::new(),
+                    };
+                    validate_max_series(points.len(), max_series).map_err(warned)?;
+                    for count in points {
+                        validate_max_points(count, max_points_per_series).map_err(warned)?;
+                    }
+                    Ok(SelectorOutput::Grid(outcome))
+                }),
+                Err(e) if peer_unsupported => {
+                    log_warning(format!(
+                        "promql: grid push-down unsupported by a peer, evaluating without it: {e}"
+                    ));
+                    Ok(SelectorOutput::Grid(GridOutcome::Unsupported))
                 }
-                Ok(SelectorOutput::Grid(outcome))
-            }),
-            Err(e) if peer_unsupported => {
-                log_warning(format!(
-                    "promql: grid push-down unsupported by a peer, evaluating without it: {e}"
-                ));
-                Ok(SelectorOutput::Grid(GridOutcome::Unsupported))
+                Err(e) => Err(selector_fanout_failure("grid", e)),
             }
-            Err(e) => Err(selector_fanout_failure("grid", e)),
-        };
-
-        deliver_task_result(&responder, query_result);
-    };
-
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
-        deliver_task_result(&cloned_responder, Err(e.into()));
-    }
+        },
+    );
 }
 
 /// Every shard profiles its own series; the command adds the counts up. The
@@ -882,43 +897,43 @@ fn execute_cluster_label_profile(
         timeout,
     );
 
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let responder = Arc::new(responder);
-    let cloned_responder = responder.clone();
-
-    let handler = move |cmd: LabelProfileFanoutCommand, result: FanoutCommandResult| {
-        let query_result = match result {
+    fan_out(
+        ctx,
+        cmd,
+        hash_tags,
+        timeout,
+        responder,
+        move |cmd: LabelProfileFanoutCommand, result: FanoutCommandResult| match result {
             Ok(()) => Ok(SelectorOutput::Profile(cmd.into_result())),
             Err(e) => Err(selector_fanout_failure("label-profile", e)),
-        };
-        deliver_task_result(&responder, query_result);
-    };
-
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
-        deliver_task_result(&cloned_responder, Err(e.into()));
-    }
+        },
+    );
 }
 
-fn execute_selector_task_cluster(ctx: &Context, task: SelectorTask) {
+fn execute_selector_task_cluster(
+    ctx: &Context,
+    kind: SelectorTaskKind,
+    hash_tags: &[String],
+    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+) {
     // Every path below routes through the same scope, including the push-down
     // ones: a push-down that a peer cannot serve falls back to the ordinary
     // selector read on the same reader, which carries these same tags.
-    let hash_tags = task.hash_tags;
-    match task.kind {
+    match kind {
         SelectorTaskKind::Vector(iqc) => {
-            execute_cluster_vector_selector(ctx, iqc, &hash_tags, task.responder);
+            execute_cluster_vector_selector(ctx, iqc, hash_tags, responder);
         }
         SelectorTaskKind::Range(rc) => {
-            execute_cluster_range_selector(ctx, rc, &hash_tags, task.responder);
+            execute_cluster_range_selector(ctx, rc, hash_tags, responder);
         }
         SelectorTaskKind::Aggregation(ac) => {
-            execute_cluster_aggregation(ctx, ac, &hash_tags, task.responder);
+            execute_cluster_aggregation(ctx, ac, hash_tags, responder);
         }
         SelectorTaskKind::Grid(gc) => {
-            execute_cluster_grid(ctx, gc, &hash_tags, task.responder);
+            execute_cluster_grid(ctx, gc, hash_tags, responder);
         }
         SelectorTaskKind::Profile(pc) => {
-            execute_cluster_label_profile(ctx, pc, &hash_tags, task.responder);
+            execute_cluster_label_profile(ctx, pc, hash_tags, responder);
         }
     }
 }
