@@ -20,6 +20,15 @@ pub(super) enum Keeps {
     Grid,
 }
 
+/// One rollup to preload: its grid key, the rollup, its matrix selector and
+/// the aggregation fused onto it, if any.
+type RollupPreload<'e> = (
+    GridPreloadKey,
+    GridRollup,
+    &'e MatrixSelector,
+    Option<GridAggregation>,
+);
+
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     #[cfg(test)]
     /// Preload VectorSelector data for all steps of a range query.
@@ -221,16 +230,149 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // fanout latency, not two in sequence — while a query with many
         // rollups must not open one fanout per rollup all at once. The
         // fallible collect stops scheduling after the first error.
-        let _: Vec<()> = requests
+        // Rollups over one span — `rate(a[5m]) / increase(a[5m])` — share one
+        // read of it where the source answers raw; see `preload_rollup_group`.
+        let groups = self.group_by_span(requests, |(_, _, matrix, _)| {
+            (
+                PreloadKey::from_selector(&matrix.vs),
+                matrix_range_ms(matrix),
+            )
+        });
+        let _: Vec<()> = groups
             .into_par_rayon()
             .num_threads(MAX_CONCURRENT_PRELOAD_REQUESTS)
-            .map(|(key, rollup, matrix, aggregation)| {
+            .map(|group| {
                 self.check_deadline()?;
-                self.preload_rollup(key, rollup, matrix, aggregation, grid)
+                self.preload_rollup_group(group, grid)
             })
             .into_fallible()
             .collect()?;
 
+        Ok(())
+    }
+
+    /// `requests` grouped by the span `span_of` names, in first-seen order —
+    /// one request per group unless the source answers grid requests raw
+    /// ([`QueryReader::answers_grids_raw`]): only then can requests over one
+    /// span share its read, and grouping a source that pushes down would only
+    /// serialize requests that could run in parallel.
+    fn group_by_span<T, K: Eq + std::hash::Hash>(
+        &self,
+        requests: Vec<T>,
+        span_of: impl Fn(&T) -> K,
+    ) -> Vec<Vec<T>> {
+        if !self.reader.answers_grids_raw() {
+            return requests.into_iter().map(|request| vec![request]).collect();
+        }
+        let mut index: ahash::AHashMap<K, usize> = ahash::AHashMap::new();
+        let mut groups: Vec<Vec<T>> = Vec::new();
+        for request in requests {
+            match index.entry(span_of(&request)) {
+                std::collections::hash_map::Entry::Occupied(at) => groups[*at.get()].push(request),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(groups.len());
+                    groups.push(vec![request]);
+                }
+            }
+        }
+        groups
+    }
+
+    /// Preload a group of rollups over one span. The first is requested; when
+    /// the answer is the raw span, every member runs its own kernels over a
+    /// copy of it — the span read and charged once, each member's expansion
+    /// and grid charged as its own. Any other answer, and the rest are
+    /// requested one by one, as they would have been on their own.
+    fn preload_rollup_group<'e>(
+        &self,
+        group: Vec<RollupPreload<'e>>,
+        grid: &PreloadGrid,
+    ) -> EvalResult<()> {
+        let mut members = group.into_iter();
+        let Some((key, rollup, matrix, aggregation)) = members.next() else {
+            return Ok(());
+        };
+        let Some((request, window_ends)) =
+            self.grid_request(&matrix.vs, grid, Some(rollup), aggregation.clone())
+        else {
+            // Every member has this one's selector and range: none can be
+            // described either, and `preload_matrices` reads their span.
+            return Ok(());
+        };
+        let options = self.options.with_lookback_ms(grid.lookback_delta_ms);
+        // A peer without grid push-down: leave them unpreloaded, and
+        // `preload_matrices` reads their span raw instead.
+        let Some(outcome) = self
+            .reader
+            .query_grid(&matrix.vs, &request, options)?
+            .supported()
+        else {
+            return Ok(());
+        };
+        let GridOutcome::Raw(span) = outcome else {
+            self.finish_rollup(key, &request, &window_ends, outcome, false, grid)?;
+            for (key, rollup, matrix, aggregation) in members {
+                self.check_deadline()?;
+                self.preload_rollup(key, rollup, matrix, aggregation, grid)?;
+            }
+            return Ok(());
+        };
+        let rest: Vec<_> = members.collect();
+        let mut span = Some(span);
+        let first = if rest.is_empty() {
+            span.take().unwrap_or_default()
+        } else {
+            span.clone().unwrap_or_default()
+        };
+        self.finish_rollup(
+            key,
+            &request,
+            &window_ends,
+            GridOutcome::Raw(first),
+            false,
+            grid,
+        )?;
+        let last = rest.len().saturating_sub(1);
+        for (i, (key, rollup, matrix, aggregation)) in rest.into_iter().enumerate() {
+            self.check_deadline()?;
+            let Some((request, window_ends)) =
+                self.grid_request(&matrix.vs, grid, Some(rollup), aggregation)
+            else {
+                continue;
+            };
+            let copy = if i == last {
+                span.take().unwrap_or_default()
+            } else {
+                span.clone().unwrap_or_default()
+            };
+            self.finish_rollup(
+                key,
+                &request,
+                &window_ends,
+                GridOutcome::Raw(copy),
+                true,
+                grid,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Evaluate a rollup request's answer, scatter it onto the grid and cache
+    /// it. `span_charged`: a raw answer whose span another member of its group
+    /// already charged.
+    fn finish_rollup(
+        &self,
+        key: GridPreloadKey,
+        request: &GridRequest,
+        window_ends: &[Timestamp],
+        outcome: GridOutcome,
+        span_charged: bool,
+        grid: &PreloadGrid,
+    ) -> EvalResult<()> {
+        let (rolled, charged) =
+            self.finish_grid_with(request, outcome, Keeps::Grid, span_charged)?;
+        let series = self.scatter_charged(window_ends, rolled, charged)?;
+        self.cache_preloaded_grid(key, grid, series);
         Ok(())
     }
 
@@ -410,10 +552,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         else {
             return Ok(());
         };
-        let (rolled, charged) = self.finish_grid(&request, outcome, Keeps::Grid)?;
-        let series = self.scatter_charged(&window_ends, rolled, charged)?;
-        self.cache_preloaded_grid(key, grid, series);
-        Ok(())
+        self.finish_rollup(key, &request, &window_ends, outcome, false, grid)
     }
 
     /// Scatter each entry's `(window end, value)` points onto the step grid,
@@ -509,6 +648,19 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         outcome: GridOutcome,
         keeps: Keeps,
     ) -> EvalResult<(Vec<RangeSample<EvalLabels>>, usize)> {
+        self.finish_grid_with(request, outcome, keeps, false)
+    }
+
+    /// [`Self::finish_grid`], for a raw answer whose span may already have
+    /// been charged by another request sharing its read (`span_charged`):
+    /// then only what this request expands it to is charged here.
+    fn finish_grid_with(
+        &self,
+        request: &GridRequest,
+        outcome: GridOutcome,
+        keeps: Keeps,
+        span_charged: bool,
+    ) -> EvalResult<(Vec<RangeSample<EvalLabels>>, usize)> {
         // A raw span is charged here, whatever the caller does with it: it was
         // decoded on this node. So is whatever the evaluation expands it to
         // beyond that, chunk by chunk as it is built — one sample in a long
@@ -520,8 +672,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let mut charged = 0;
         let outcome = match outcome {
             GridOutcome::Raw(series) => {
-                charged = series.iter().map(|s| s.samples.len()).sum();
-                self.charge_samples(charged)?;
+                if !span_charged {
+                    charged = series.iter().map(|s| s.samples.len()).sum();
+                    self.charge_samples(charged)?;
+                }
                 request.evaluate(series, &self.deadline, &mut |expanded| {
                     charged += expanded;
                     self.prepared.budget.charge(expanded)
@@ -620,12 +774,22 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             requests.push((key, vs, aggregation));
         }
 
-        let _: Vec<()> = requests
+        // Aggregations over one selector — `sum(a) + avg(a)` — share one read
+        // where the source answers raw: the first answer is then the
+        // selector's own stepped preload, and the others aggregate per step
+        // over it, as they would have over their own copy.
+        let groups = self.group_by_span(requests, |(_, vs, _)| PreloadKey::from_selector(vs));
+        let _: Vec<()> = groups
             .into_par_rayon()
             .num_threads(MAX_CONCURRENT_PRELOAD_REQUESTS)
-            .map(|(key, vs, aggregation)| {
-                self.check_deadline()?;
-                self.preload_stepped_aggregation(key, vs, aggregation, grid)
+            .map(|group| {
+                for (key, vs, aggregation) in group {
+                    self.check_deadline()?;
+                    if self.preload_stepped_aggregation(key, vs, aggregation, grid)? {
+                        break;
+                    }
+                }
+                Ok::<(), EvaluationError>(())
             })
             .into_fallible()
             .collect()?;
@@ -633,16 +797,19 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok(())
     }
 
+    /// Preload one aggregation over a bare selector, returning whether the
+    /// source answered raw — the selector's stepped span is then cached, and
+    /// any other aggregation over it runs per step from that.
     pub(super) fn preload_stepped_aggregation(
         &self,
         key: GridPreloadKey,
         vs: &VectorSelector,
         aggregation: GridAggregation,
         grid: &PreloadGrid,
-    ) -> EvalResult<()> {
+    ) -> EvalResult<bool> {
         let Some((request, window_ends)) = self.grid_request(vs, grid, None, Some(aggregation))
         else {
-            return Ok(());
+            return Ok(false);
         };
 
         let options = self.options.with_lookback_ms(grid.lookback_delta_ms);
@@ -653,15 +820,18 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // loop does — beats folding every point through one map on this
             // thread, so this becomes the selector's own stepped preload and
             // the aggregation runs per step over it, exactly as an unfused one.
-            GridOutcome::Raw(series) => return self.cache_stepped_span(vs, grid, series),
+            GridOutcome::Raw(series) => {
+                self.cache_stepped_span(vs, grid, series)?;
+                return Ok(true);
+            }
             // A peer without grid push-down: not cached, so the selector is
             // preloaded on its own and the aggregation runs per step.
-            GridOutcome::Unsupported => return Ok(()),
+            GridOutcome::Unsupported => return Ok(false),
             outcome => self.finish_grid(&request, outcome, Keeps::Grid)?,
         };
         let series = self.scatter_charged(&window_ends, groups, charged)?;
         self.cache_preloaded_grid(key, grid, series);
-        Ok(())
+        Ok(false)
     }
 
     /// Preload one vector selector over the whole step grid: at every step,

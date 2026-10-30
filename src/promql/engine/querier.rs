@@ -120,6 +120,12 @@ impl QueryReader for ValkeySeriesQuerier {
         )
     }
 
+    /// A single node, or a cluster with grid push-down switched off, answers
+    /// every grid request with the raw span.
+    fn answers_grids_raw(&self) -> bool {
+        !(self.clustered && crate::config::is_fanout_rollup_pushdown_enabled())
+    }
+
     fn label_profile(
         &self,
         selector: &VectorSelector,
@@ -288,6 +294,14 @@ impl QueryReader for ConcreteSeriesQuerier {
             ConcreteSeriesQuerier::Actual(local) => local.query_grid(selector, request, options),
             #[cfg(test)]
             ConcreteSeriesQuerier::Mock(mock) => mock.query_grid(selector, request, options),
+        }
+    }
+
+    fn answers_grids_raw(&self) -> bool {
+        match self {
+            ConcreteSeriesQuerier::Actual(local) => local.answers_grids_raw(),
+            #[cfg(test)]
+            ConcreteSeriesQuerier::Mock(mock) => mock.answers_grids_raw(),
         }
     }
 

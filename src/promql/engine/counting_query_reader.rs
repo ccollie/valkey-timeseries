@@ -138,6 +138,10 @@ impl QueryReader for CountingQueryReader {
         self.inner.query_grid(selector, request, options)
     }
 
+    fn answers_grids_raw(&self) -> bool {
+        self.inner.answers_grids_raw()
+    }
+
     fn label_profile(
         &self,
         selector: &VectorSelector,
@@ -592,6 +596,90 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    /// Answers like `inner` but declines to say its grid answers are raw, so
+    /// the preload issues every grid request on its own: the reference the
+    /// shared reads are checked against.
+    struct UngroupedReader(Arc<dyn QueryReader>);
+
+    impl QueryReader for UngroupedReader {
+        fn query(
+            &self,
+            selector: &VectorSelector,
+            timestamp: i64,
+            options: QueryOptions,
+        ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
+            self.0.query(selector, timestamp, options)
+        }
+        fn query_range(
+            &self,
+            selector: &VectorSelector,
+            start: i64,
+            end: i64,
+            options: QueryOptions,
+        ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
+            self.0.query_range(selector, start, end, options)
+        }
+        fn query_aggregation(
+            &self,
+            selector: &VectorSelector,
+            timestamp: i64,
+            aggregation: &AggregationRequest,
+            options: QueryOptions,
+        ) -> QueryResult<AggregationOutcome> {
+            self.0
+                .query_aggregation(selector, timestamp, aggregation, options)
+        }
+        fn query_grid(
+            &self,
+            selector: &VectorSelector,
+            request: &GridRequest,
+            options: QueryOptions,
+        ) -> QueryResult<GridOutcome> {
+            self.0.query_grid(selector, request, options)
+        }
+        fn answers_grids_raw(&self) -> bool {
+            false
+        }
+    }
+
+    fn range_result(reader: Arc<dyn QueryReader>, query: &str) -> Vec<(Labels, Vec<Sample>)> {
+        let stmt = EvalStmt {
+            expr: promql_parser::parser::parse(query).unwrap(),
+            start: ms(RANGE_START_MS),
+            end: ms(RANGE_END_MS),
+            interval: STEP,
+            lookback_delta: options().lookback_delta,
+        };
+        evaluate_range(reader, stmt, options())
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.labels, s.samples))
+            .collect()
+    }
+
+    /// On a source that answers grid requests raw, every rollup and stepped
+    /// aggregation over one selector's span shares one read of it — and gets
+    /// the answer each would have got from its own.
+    #[test]
+    fn consumers_of_one_selector_share_its_raw_read() {
+        for query in [
+            "sum(a) + avg(a)",
+            "max by (l) (a) - min by (l) (a)",
+            "rate(a[5m]) / increase(a[5m])",
+            "sum(rate(a[5m])) / max(rate(a[5m]))",
+        ] {
+            let (counting, reader) = build_reader();
+            let shared = range_result(reader, query);
+            assert_eq!(
+                counting.counts().query_grid,
+                1,
+                "{query}: one read of a's span"
+            );
+            let alone = range_result(Arc::new(UngroupedReader(build_data())), query);
+            assert_eq!(shared, alone, "{query}: same answer as separate reads");
+        }
     }
 
     #[test]
