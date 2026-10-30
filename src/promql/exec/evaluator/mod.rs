@@ -55,8 +55,7 @@ use promql_parser::parser::{
     VectorSelector,
 };
 use promql_parser::util::{ExprVisitor, walk_expr};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 #[cfg(test)]
 mod evaluator_tests;
@@ -74,40 +73,60 @@ use subquery::SubqueryKey;
 /// and peak memory. Mirrors the batch size of the selector executor.
 const MAX_CONCURRENT_PRELOAD_REQUESTS: usize = 4;
 
-/// Immutable preload data consumed by expression evaluation.
+/// The preloaded data of one step grid, frozen once preparation is done.
 ///
-/// A [`crate::promql::exec::preloader::Preloader`] constructs this before the
-/// range step loop. Evaluation only reads the three maps, keeping source I/O
-/// and planning out of expression semantics.
-///
-/// The maps are behind `Arc` so that one prepared grid can back many
-/// evaluators at once: every outer step of a range query evaluates a subquery
-/// on an evaluator that shares the subquery's union preload (see
-/// [`Evaluator::with_shared`]). Nothing writes to them after preparation.
-#[derive(Default)]
+/// A [`crate::promql::exec::preloader::Preloader`] builds this before the
+/// range step loop; evaluation only reads it, without locks. One prepared grid
+/// backs many evaluators at once — every outer step of a range query evaluates
+/// a subquery on an evaluator over the subquery's union preload — so it is
+/// shared by `Arc`, and a sub-evaluator costs one refcount.
 pub(crate) struct PreparedQuery {
-    preloaded_instant: Arc<RwLock<PreloadMap>>,
-    preloaded_grids: Arc<RwLock<GridPreloadMap>>,
-    preloaded_matrices: Arc<RwLock<MatrixPreloadMap>>,
-    preloaded_subqueries: Arc<RwLock<SubqueryPreloadMap>>,
+    /// Per-step instant vectors for the grid's selectors.
+    instant: PreloadMap,
+    /// Rollups, and aggregations over bare selectors, whose whole step grid
+    /// was evaluated at the source in one request.
+    grids: GridPreloadMap,
+    /// Raw spans for matrix selectors that no rollup grid covers, so the step
+    /// loop slices windows locally instead of re-fetching them per step.
+    matrices: MatrixPreloadMap,
+    /// Each subquery's inner grid, prepared once for every outer step; a
+    /// subquery absent here prepares its own grid when evaluated.
+    subqueries: SubqueryPreloadMap,
+    /// Per-node lookup keys; see [`NodeKeys`].
+    node_keys: NodeKeys,
+    /// Whether any map has an entry: the per-step question
+    /// `has_preloaded_data` answers for every binary operator.
+    any_preloaded: bool,
     /// The query's sample budget, shared by the preload phase, the step loop and
     /// every sub-evaluator, so it counts the whole query.
     budget: Arc<SampleBudget>,
-    /// Set once any preload map gains an entry; see `has_preloaded_data`.
-    any_preloaded: Arc<AtomicBool>,
-    /// Filled at the end of the preload phase; see [`NodeKeys`].
-    node_keys: Arc<OnceLock<NodeKeys>>,
 }
 
 impl PreparedQuery {
-    /// Empty maps that account against an existing budget: what a sub-evaluator
-    /// starts from when its union preload was declined.
+    /// Nothing preloaded, accounting against an existing budget: what a
+    /// sub-evaluator starts from when its union preload was declined.
     pub(crate) fn sharing(budget: Arc<SampleBudget>) -> Self {
         Self {
+            instant: PreloadMap::default(),
+            grids: GridPreloadMap::default(),
+            matrices: MatrixPreloadMap::default(),
+            subqueries: SubqueryPreloadMap::default(),
+            node_keys: NodeKeys::default(),
+            any_preloaded: false,
             budget,
-            ..Default::default()
         }
     }
+}
+
+/// The maps a preload phase fills, behind locks while its requests run in
+/// parallel; [`Evaluator::finish_preparation`] freezes them into a
+/// [`PreparedQuery`]. Empty and unused once evaluation starts.
+#[derive(Default)]
+pub(crate) struct Preloads {
+    instant: RwLock<PreloadMap>,
+    grids: RwLock<GridPreloadMap>,
+    matrices: RwLock<MatrixPreloadMap>,
+    subqueries: RwLock<SubqueryPreloadMap>,
 }
 
 /// One subquery's evaluator, prepared for the union of every outer step's
@@ -163,32 +182,11 @@ fn is_query_ending(err: &EvaluationError) -> bool {
 
 pub(crate) struct Evaluator<'reader, R: QueryReader + ?Sized> {
     reader: &'reader R,
-    /// Preloaded per-step instant vector data for range queries.
-    /// Populated by preload_for_range() before the step loop.
-    preloaded_instant: Arc<RwLock<PreloadMap>>,
-    /// Rollups, and aggregations over bare selectors, whose whole step grid
-    /// was evaluated at the source in one request. Populated by
-    /// preload_rollups() and preload_stepped_aggregations() before the step
-    /// loop.
-    preloaded_grids: Arc<RwLock<GridPreloadMap>>,
-    /// Raw spans for matrix selectors that no rollup grid covers, so the step
-    /// loop slices windows locally instead of re-fetching them per step.
-    /// Populated by preload_matrices() before the step loop.
-    preloaded_matrices: Arc<RwLock<MatrixPreloadMap>>,
-    /// Each subquery's inner grid, preloaded once for every outer step at once
-    /// rather than once per outer step. Populated by preload_subqueries()
-    /// before the step loop; a subquery absent here prepares its own grid when
-    /// evaluated (an instant query, or a preload that hit a reader limit).
-    preloaded_subqueries: Arc<RwLock<SubqueryPreloadMap>>,
-    /// Samples loaded so far on behalf of the whole query; see
-    /// [`crate::promql::engine::sample_budget`].
-    budget: Arc<SampleBudget>,
-    /// Whether any preload map has an entry: one atomic load for the per-step
-    /// question `has_preloaded_data` answers, where reading the four maps took
-    /// four lock round-trips for every binary operator at every step.
-    any_preloaded: Arc<AtomicBool>,
-    /// Per-node lookup keys; see [`NodeKeys`].
-    node_keys: Arc<OnceLock<NodeKeys>>,
+    /// What evaluation reads: the grid's preloaded data and the query's
+    /// budget. Empty until a preload phase finishes.
+    prepared: Arc<PreparedQuery>,
+    /// What a preload phase writes, until [`Self::finish_preparation`].
+    preloads: Preloads,
     options: QueryOptions,
     /// When the evaluation must stop, from `options`: checked between preload
     /// requests and subquery steps, and stamped into every [`EvalContext`] for
@@ -201,126 +199,123 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Self::with_prepared(
             reader,
             options,
-            PreparedQuery::sharing(Arc::new(SampleBudget::counted(
+            Arc::new(PreparedQuery::sharing(Arc::new(SampleBudget::counted(
                 options.max_samples,
                 options.max_samples_in_flight,
-            ))),
+            )))),
         )
     }
 
+    /// An evaluator over a prepared grid, which other evaluators may share —
+    /// the per-outer-step evaluators of one subquery all read its union
+    /// preload. Cheap: one refcount.
     pub(crate) fn with_prepared(
-        reader: &'reader R,
-        options: QueryOptions,
-        prepared: PreparedQuery,
-    ) -> Self {
-        Self {
-            reader,
-            preloaded_instant: prepared.preloaded_instant,
-            preloaded_grids: prepared.preloaded_grids,
-            preloaded_matrices: prepared.preloaded_matrices,
-            preloaded_subqueries: prepared.preloaded_subqueries,
-            budget: prepared.budget,
-            any_preloaded: prepared.any_preloaded,
-            node_keys: prepared.node_keys,
-            options,
-            deadline: Deadline::from_options(&options),
-        }
-    }
-
-    /// An evaluator over a prepared grid that other evaluators use too — the
-    /// per-outer-step evaluators of one subquery, all reading its union
-    /// preload. Cheap: the maps are shared, not copied.
-    pub(crate) fn with_shared(
         reader: &'reader R,
         options: QueryOptions,
         prepared: Arc<PreparedQuery>,
     ) -> Self {
         Self {
             reader,
-            preloaded_instant: Arc::clone(&prepared.preloaded_instant),
-            preloaded_grids: Arc::clone(&prepared.preloaded_grids),
-            preloaded_matrices: Arc::clone(&prepared.preloaded_matrices),
-            preloaded_subqueries: Arc::clone(&prepared.preloaded_subqueries),
-            budget: Arc::clone(&prepared.budget),
-            any_preloaded: Arc::clone(&prepared.any_preloaded),
-            node_keys: Arc::clone(&prepared.node_keys),
+            prepared,
+            preloads: Preloads::default(),
             options,
             deadline: Deadline::from_options(&options),
         }
     }
 
-    pub(crate) fn into_prepared(self) -> PreparedQuery {
-        PreparedQuery {
-            preloaded_instant: self.preloaded_instant,
-            preloaded_grids: self.preloaded_grids,
-            preloaded_matrices: self.preloaded_matrices,
-            preloaded_subqueries: self.preloaded_subqueries,
-            budget: self.budget,
-            any_preloaded: self.any_preloaded,
-            node_keys: self.node_keys,
-        }
+    /// The grid this evaluator prepared, for the step loop to evaluate over.
+    pub(crate) fn prepared(&self) -> Arc<PreparedQuery> {
+        Arc::clone(&self.prepared)
     }
 
-    /// Record that a preload map has an entry.
-    fn note_preloaded(&self) {
-        self.any_preloaded.store(true, Ordering::Release);
-    }
-
-    /// Compute [`NodeKeys`] for every node of `expr` and of its `twins`.
-    /// Called once the preload phase is done; a second call (a second grid on
-    /// one evaluator) keeps the first table, whose misses still compute.
-    fn fill_node_keys(&self, expr: &Expr, twins: &[&Expr]) {
-        self.node_keys.get_or_init(|| {
-            struct Collect<'e, 'r, R: QueryReader + ?Sized> {
-                evaluator: &'e Evaluator<'r, R>,
-                unions: &'e SubqueryPreloadMap,
-                keys: NodeKeys,
-            }
-            impl<R: QueryReader + ?Sized> ExprVisitor for Collect<'_, '_, R> {
-                type Error = std::convert::Infallible;
-                fn pre_visit(&mut self, expr: &Expr) -> Result<bool, Self::Error> {
-                    match expr {
-                        Expr::VectorSelector(vs) => {
-                            self.keys
-                                .selectors
-                                .insert(node_addr(vs), PreloadKey::from_selector(vs));
-                        }
-                        Expr::Call(call) => {
-                            let key = self.evaluator.rollup_key(call);
-                            self.keys.rollups.insert(node_addr(call), key);
-                        }
-                        Expr::Aggregate(aggregate) => {
-                            let addr = node_addr(aggregate);
-                            self.keys
-                                .stepped
-                                .insert(addr, stepped_aggregation_key(aggregate));
-                            let fused = self.evaluator.fused_rollup_key(aggregate);
-                            self.keys.fused.insert(addr, fused);
-                        }
-                        Expr::Subquery(subquery) => {
-                            let key = SubqueryKey::of(subquery);
-                            let key = match self.unions.get_key_value(&key) {
-                                Some((shared, _)) => shared.clone(),
-                                None => key,
-                            };
-                            self.keys.subqueries.insert(node_addr(subquery), key);
-                        }
-                        _ => {}
-                    }
-                    Ok(true)
-                }
-            }
-            let unions = self.preloaded_subqueries.read().unwrap();
-            let mut collect = Collect {
-                evaluator: self,
-                unions: &unions,
-                keys: NodeKeys::default(),
-            };
-            for expr in std::iter::once(expr).chain(twins.iter().copied()) {
-                let Ok(_) = walk_expr(&mut collect, expr);
-            }
-            collect.keys
+    /// Freeze what the preload phase filled into the [`PreparedQuery`] this
+    /// evaluator reads from now on, with [`NodeKeys`] for every node of `expr`
+    /// and of its `twins`.
+    pub(crate) fn finish_preparation(&mut self, expr: &Expr, twins: &[&Expr]) {
+        let Preloads {
+            instant,
+            grids,
+            matrices,
+            subqueries,
+        } = std::mem::take(&mut self.preloads);
+        let (instant, grids, matrices, subqueries) = (
+            instant.into_inner().unwrap(),
+            grids.into_inner().unwrap(),
+            matrices.into_inner().unwrap(),
+            subqueries.into_inner().unwrap(),
+        );
+        let node_keys = self.compute_node_keys(expr, twins, &subqueries);
+        let any_preloaded = !(instant.is_empty()
+            && grids.is_empty()
+            && matrices.is_empty()
+            && subqueries.is_empty());
+        self.prepared = Arc::new(PreparedQuery {
+            instant,
+            grids,
+            matrices,
+            subqueries,
+            node_keys,
+            any_preloaded,
+            budget: Arc::clone(&self.prepared.budget),
         });
+    }
+
+    /// [`NodeKeys`] for every node of `expr` and of its `twins`, subquery keys
+    /// taken from `unions` where it holds them.
+    fn compute_node_keys(
+        &self,
+        expr: &Expr,
+        twins: &[&Expr],
+        unions: &SubqueryPreloadMap,
+    ) -> NodeKeys {
+        struct Collect<'e, 'r, R: QueryReader + ?Sized> {
+            evaluator: &'e Evaluator<'r, R>,
+            unions: &'e SubqueryPreloadMap,
+            keys: NodeKeys,
+        }
+        impl<R: QueryReader + ?Sized> ExprVisitor for Collect<'_, '_, R> {
+            type Error = std::convert::Infallible;
+            fn pre_visit(&mut self, expr: &Expr) -> Result<bool, Self::Error> {
+                match expr {
+                    Expr::VectorSelector(vs) => {
+                        self.keys
+                            .selectors
+                            .insert(node_addr(vs), PreloadKey::from_selector(vs));
+                    }
+                    Expr::Call(call) => {
+                        let key = self.evaluator.rollup_key(call);
+                        self.keys.rollups.insert(node_addr(call), key);
+                    }
+                    Expr::Aggregate(aggregate) => {
+                        let addr = node_addr(aggregate);
+                        self.keys
+                            .stepped
+                            .insert(addr, stepped_aggregation_key(aggregate));
+                        let fused = self.evaluator.fused_rollup_key(aggregate);
+                        self.keys.fused.insert(addr, fused);
+                    }
+                    Expr::Subquery(subquery) => {
+                        let key = SubqueryKey::of(subquery);
+                        let key = match self.unions.get_key_value(&key) {
+                            Some((shared, _)) => shared.clone(),
+                            None => key,
+                        };
+                        self.keys.subqueries.insert(node_addr(subquery), key);
+                    }
+                    _ => {}
+                }
+                Ok(true)
+            }
+        }
+        let mut collect = Collect {
+            evaluator: self,
+            unions,
+            keys: NodeKeys::default(),
+        };
+        for expr in std::iter::once(expr).chain(twins.iter().copied()) {
+            let Ok(_) = walk_expr(&mut collect, expr);
+        }
+        collect.keys
     }
 
     /// The memoized key for `node` in the table `pick` selects: `Some(key)`
@@ -331,15 +326,18 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         node: &T,
         pick: impl FnOnce(&'k NodeKeys) -> &'k ahash::AHashMap<usize, Option<GridPreloadKey>>,
     ) -> Option<Option<&'k GridPreloadKey>> {
-        let keys = self.node_keys.get()?;
-        pick(keys).get(&node_addr(node)).map(Option::as_ref)
+        pick(&self.prepared.node_keys)
+            .get(&node_addr(node))
+            .map(Option::as_ref)
     }
 
     /// The [`PreloadKey`] of `vs`, from [`NodeKeys`] when it has one.
     fn selector_key(&self, vs: &VectorSelector) -> PreloadKey {
-        self.node_keys
-            .get()
-            .and_then(|keys| keys.selectors.get(&node_addr(vs)).cloned())
+        self.prepared
+            .node_keys
+            .selectors
+            .get(&node_addr(vs))
+            .cloned()
             .unwrap_or_else(|| PreloadKey::from_selector(vs))
     }
 
@@ -347,7 +345,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// running total, dropped samples included, passes
     /// `ts-promql-max-samples-per-query`.
     fn charge_samples(&self, samples: usize) -> EvalResult<()> {
-        Ok(self.budget.charge(samples)?)
+        Ok(self.prepared.budget.charge(samples)?)
     }
 
     /// Count a step grid the preloader built — its stored slots, holes
@@ -370,7 +368,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// grids built in parallel, where another series' grid may have crossed it.
     /// At the limit exactly is not past it, so an empty grid is still admitted.
     fn check_budget(&self) -> EvalResult<()> {
-        Ok(self.budget.check_ahead(0)?)
+        Ok(self.prepared.budget.check_ahead(0)?)
     }
 
     fn charge_range_samples(&self, series: &[RangeSample<EvalLabels>]) -> EvalResult<()> {
@@ -389,7 +387,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// Called with a running count as the result grows; each call charges only
     /// the new excess, since earlier calls' charges are part of the total.
     pub(crate) fn charge_result_points(&self, points: usize) -> EvalResult<()> {
-        self.charge_samples(points.saturating_sub(self.budget.loaded()))
+        self.charge_samples(points.saturating_sub(self.prepared.budget.loaded()))
     }
 
     /// Charge what a live (non-preloaded) selector read materialized.
@@ -519,8 +517,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // would be silently wrong rather than slow.
         if preload_eligible {
             let key = MatrixPreloadKey::new(vector_selector, range_ms);
-            let guard = self.preloaded_matrices.read().unwrap();
-            if let Some(preloaded) = guard.get(&key) {
+            if let Some(preloaded) = self.prepared.matrices.get(&key) {
                 let series = preloaded
                     .series
                     .iter()
@@ -559,8 +556,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // being stepped over.
         if preload_eligible {
             let preload_key = self.selector_key(vector_selector);
-            let guard = self.preloaded_instant.read().unwrap();
-            if let Some(preloaded) = guard.get(&preload_key) {
+            if let Some(preloaded) = self.prepared.instant.get(&preload_key) {
                 let evaluation_ts = ctx.evaluation_ts;
                 // Step index from raw evaluation_ts (before modifiers) — matches outer step loop
                 let step_idx =
@@ -720,7 +716,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// rewritten matchers change, so a pushed-down copy of a subquery would
     /// miss its prepared union.
     fn has_preloaded_data(&self) -> bool {
-        self.any_preloaded.load(Ordering::Acquire)
+        self.prepared.any_preloaded
     }
 
     fn evaluate_binary_expr(

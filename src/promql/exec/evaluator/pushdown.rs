@@ -100,8 +100,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         ctx: &EvalContext,
         drop_name: bool,
     ) -> Option<ExprResult> {
-        let guard = self.preloaded_grids.read().unwrap();
-        let preloaded = guard.get(key)?;
+        let preloaded = self.prepared.grids.get(key)?;
         let step_idx = step_index(
             ctx.evaluation_ts,
             preloaded.eval_start_ms,
@@ -223,7 +222,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// [`Self::preload_for_range`].
     pub(super) fn is_preloaded(&self, selector: &VectorSelector) -> bool {
         let key = self.selector_key(selector);
-        self.preloaded_instant.read().unwrap().contains_key(&key)
+        self.prepared.instant.contains_key(&key)
     }
 
     /// Try to have the data source evaluate a rollup *and* the aggregation over

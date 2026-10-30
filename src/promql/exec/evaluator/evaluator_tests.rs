@@ -5059,7 +5059,7 @@ mod tests {
         answer: GridAnswer,
     ) -> (Vec<(i64, Vec<EvalSample>)>, Vec<OfferedGrid>) {
         let reader = GridPushdownReader::new(inner, answer);
-        let evaluator = Evaluator::new(&reader, rollup_test_options());
+        let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = parse_registered(query).unwrap();
         let base = crate::promql::EvalContext {
             query_start: start_ms,
@@ -5576,7 +5576,7 @@ mod tests {
         let twin = "max_over_time(sum_over_time(metric[1m])[2m:1m])[4m:2m]";
         let query = format!("max_over_time({twin}) - min_over_time({twin})");
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);
-        let evaluator = Evaluator::new(&reader, rollup_test_options());
+        let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = promql_parser::parser::parse(&query).unwrap();
         let ctx = crate::promql::EvalContext {
             query_start: 120_000,
@@ -5594,12 +5594,12 @@ mod tests {
             evaluator: &Evaluator<'_, R>,
             node: &promql_parser::parser::SubqueryExpr,
         ) -> Arc<PreparedQuery> {
-            let keys = evaluator.node_keys.get().expect("node keys filled");
+            let keys = &evaluator.prepared.node_keys;
             let memo = keys
                 .subqueries
                 .get(&node_addr(node))
                 .expect("subquery node memoized");
-            let unions = evaluator.preloaded_subqueries.read().unwrap();
+            let unions = &evaluator.prepared.subqueries;
             let (shared, union) = unions.get_key_value(memo).expect("a prepared union");
             assert!(
                 memo.same_copy(shared),
@@ -5614,7 +5614,7 @@ mod tests {
         let union = memoized_union(&evaluator, twins[0]);
         assert!(Arc::ptr_eq(&union, &memoized_union(&evaluator, twins[1])));
 
-        let over_union = Evaluator::with_shared(&reader, rollup_test_options(), union);
+        let over_union = Evaluator::with_prepared(&reader, rollup_test_options(), union);
         let nested: Vec<_> = twins
             .iter()
             .map(|twin| {
@@ -5630,7 +5630,7 @@ mod tests {
     /// Samples the preload phase charges to the query's budget for `query`.
     fn preload_charge(query: &str) -> usize {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);
-        let evaluator = Evaluator::new(&reader, rollup_test_options());
+        let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = promql_parser::parser::parse(query).unwrap();
         let ctx = crate::promql::EvalContext {
             query_start: 120_000,
@@ -5643,7 +5643,7 @@ mod tests {
         evaluator
             .preload_for_range(&expr, &ctx)
             .unwrap_or_else(|e| panic!("{query}: preload failed: {e}"));
-        evaluator.budget.loaded()
+        evaluator.prepared.budget.loaded()
     }
 
     /// A twin subquery adds nothing to `ts-promql-max-samples-per-query`: its
@@ -6674,7 +6674,7 @@ mod tests {
         for query in ["metric", "sum(metric)"] {
             for answer in [GridAnswer::Evaluated, GridAnswer::Raw, GridAnswer::Local] {
                 let reader = GridPushdownReader::new(gappy_rollup_reader(), answer);
-                let evaluator = Evaluator::new(
+                let mut evaluator = Evaluator::new(
                     &reader,
                     QueryOptions {
                         timeout: None,

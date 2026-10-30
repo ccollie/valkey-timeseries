@@ -21,15 +21,18 @@ impl<'reader, R: QueryReader + ?Sized> Preloader<'reader, R> {
         }
     }
 
-    pub(crate) fn prepare(self, plan: PlannedQuery<'_>) -> EvalResult<PreparedQuery> {
-        let evaluator = match self.budget {
-            Some(budget) => {
-                Evaluator::with_prepared(self.reader, self.options, PreparedQuery::sharing(budget))
-            }
+    pub(crate) fn prepare(self, plan: PlannedQuery<'_>) -> EvalResult<Arc<PreparedQuery>> {
+        let mut evaluator = match self.budget {
+            Some(budget) => Evaluator::with_prepared(
+                self.reader,
+                self.options,
+                Arc::new(PreparedQuery::sharing(budget)),
+            ),
             None => Evaluator::new(self.reader, self.options),
         };
         evaluator.preload_grid(plan.expr, &plan.twins, &plan.grid)?;
-        Ok(evaluator.into_prepared())
+        evaluator.finish_preparation(plan.expr, &plan.twins);
+        Ok(evaluator.prepared())
     }
 
     /// A preloader whose reads count against `budget` — a subquery's grid is
