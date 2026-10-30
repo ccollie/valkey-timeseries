@@ -2,6 +2,7 @@
 //! lookup rather than a read. Covers selectors, matrices, subquery unions, and the rollups and
 //! stepped aggregations a source answers over the whole grid.
 
+use super::grid_plan::{GridPlan, RollupPreload};
 use super::subquery::SubqueryKey;
 use super::*;
 use crate::promql::utils::subquery_step_ms;
@@ -20,15 +21,6 @@ pub(super) enum Keeps {
     Grid,
 }
 
-/// One rollup to preload: its grid key, the rollup, its matrix selector and
-/// the aggregation fused onto it, if any.
-type RollupPreload<'e> = (
-    GridPreloadKey,
-    GridRollup,
-    &'e MatrixSelector,
-    Option<GridAggregation>,
-);
-
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     #[cfg(test)]
     /// Preload VectorSelector data for all steps of a range query.
@@ -39,28 +31,31 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         expr: &Expr,
         ctx: &EvalContext,
     ) -> EvalResult<()> {
-        self.preload_grid(expr, &[], &PreloadGrid::for_range(ctx))?;
-        self.finish_preparation(expr, &[]);
+        let node_keys = self.preload_grid(expr, &[], &PreloadGrid::for_range(ctx))?;
+        self.finish_preparation(node_keys);
         Ok(())
     }
 
-    /// Fill every preload map for one step grid.
+    /// Fill every preload map for one step grid, returning the node keys the
+    /// step loop looks them up by.
     ///
     /// Shared by the outer range query and by subquery sub-evaluators — the
     /// grid, not the enclosing [`EvalContext`], says which steps to cover.
     /// `twins` are nodes with `expr`'s content that will be evaluated here too
-    /// (see [`PlannedQuery::twins`]): reading for `expr` covers them.
+    /// (see [`PlannedQuery::twins`]): reading for `expr` covers them. One walk
+    /// plans every pass ([`GridPlan`]).
     pub(in crate::promql) fn preload_grid(
         &self,
         expr: &Expr,
         twins: &[&Expr],
         grid: &PreloadGrid,
-    ) -> EvalResult<()> {
+    ) -> EvalResult<NodeKeys> {
+        let plan = self.plan_grid(expr, twins);
         // A stepped selection ships each pick's own timestamp only when
         // something can observe it: `timestamp()` is the one function that
         // reports a sample's time rather than its step's.
         let grid = &PreloadGrid {
-            sample_timestamps: calls_function(expr, "timestamp"),
+            sample_timestamps: plan.sample_timestamps,
             ..*grid
         };
 
@@ -68,11 +63,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // fused request, and a selector it covers must not also be preloaded
         // on its own — that would ship the same series twice, once stepped
         // and once folded.
-        self.preload_stepped_aggregations(expr, grid)?;
+        self.preload_stepped_aggregations(&plan, grid)?;
 
         // Deduplicate by PreloadKey, then parallelize the loading. A selector
         // the fused pass already cached stepped (a source that answered raw)
-        // is not loaded again.
+        // is not loaded again, nor one whose stepped grid covers it.
         let mut seen: AHashSet<PreloadKey> = self
             .preloads
             .instant
@@ -81,14 +76,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .keys()
             .cloned()
             .collect();
-        let unique_selectors: Vec<_> = {
+        let unique_selectors: Vec<&VectorSelector> = {
             let grids = self.preloads.grids.read().unwrap();
-            collect_vector_selectors(expr, &|aggregate| {
-                stepped_aggregation_key(aggregate).is_some_and(|key| grids.contains_key(&key))
-            })
-            .into_iter()
-            .filter(|&vs| seen.insert(PreloadKey::from_selector(vs)))
-            .collect()
+            plan.selectors
+                .iter()
+                .filter(|(_, covered)| !covered.as_ref().is_some_and(|key| grids.contains_key(key)))
+                .map(|&(vs, _)| vs)
+                .filter(|&vs| seen.insert(PreloadKey::from_selector(vs)))
+                .collect()
         };
 
         let _: Vec<()> = unique_selectors
@@ -97,9 +92,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .into_fallible()
             .collect()?;
 
-        self.preload_rollups(expr, grid)?;
-        self.preload_matrices(expr, grid)?;
-        self.preload_subqueries(expr, twins, grid)
+        self.preload_rollups(&plan, grid)?;
+        self.preload_matrices(&plan, grid)?;
+        self.preload_subqueries(&plan, grid)?;
+        Ok(plan.node_keys)
     }
 
     /// Prepare each subquery once for the whole outer grid.
@@ -123,8 +119,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// [`NodeKeys`] covers their nodes too, nested subqueries included.
     pub(super) fn preload_subqueries(
         &self,
-        expr: &Expr,
-        twins: &[&Expr],
+        plan: &GridPlan<'_>,
         grid: &PreloadGrid,
     ) -> EvalResult<()> {
         if grid.step_ms <= 0 {
@@ -132,19 +127,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
         let mut groups: Vec<(SubqueryKey, &SubqueryExpr, Vec<&Expr>)> = Vec::new();
         let mut group_of: ahash::AHashMap<SubqueryKey, usize> = ahash::AHashMap::new();
-        for subquery in std::iter::once(expr)
-            .chain(twins.iter().copied())
-            .flat_map(collect_subqueries)
-        {
+        for (key, subquery) in &plan.subqueries {
             if subquery_step_ms(subquery) <= 0 {
                 continue;
             }
-            let key = SubqueryKey::of(subquery);
-            match group_of.get(&key) {
+            match group_of.get(key) {
                 Some(&group) => groups[group].2.push(&subquery.expr),
                 None => {
                     group_of.insert(key.clone(), groups.len());
-                    groups.push((key, subquery, Vec::new()));
+                    groups.push((key.clone(), subquery, Vec::new()));
                 }
             }
         }
@@ -197,39 +188,25 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     ///
     /// A rollup that cannot be pushed down is simply not cached, and the step
     /// loop evaluates it locally as before.
-    pub(super) fn preload_rollups(&self, expr: &Expr, grid: &PreloadGrid) -> EvalResult<()> {
+    pub(super) fn preload_rollups(
+        &self,
+        plan: &GridPlan<'_>,
+        grid: &PreloadGrid,
+    ) -> EvalResult<()> {
         if grid.step_ms <= 0 {
             return Ok(());
         }
 
+        // An aggregation that cannot be fused leaves the rollup to be pushed
+        // down on its own; the aggregation then runs here, per step.
         let mut seen = AHashSet::new();
-        let mut requests = Vec::new();
-        for candidate in collect_rollup_candidates(expr) {
-            let Some((matrix, rollup)) = self.pushable_rollup(candidate.call()) else {
-                continue;
-            };
-            // An aggregation that cannot be fused leaves the rollup to be pushed
-            // down on its own; the aggregation then runs here, per step.
-            let aggregation = match candidate {
-                RollupCandidate::Fused(aggregate, _) => fusable_aggregation(aggregate),
-                RollupCandidate::Rollup(_) => None,
-            };
-            let key = GridPreloadKey::rollup(
-                &matrix.vs,
-                &rollup,
-                aggregation.as_ref().map(AggregationKey::of),
-            );
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            requests.push((key, rollup, matrix, aggregation));
-        }
+        let requests: Vec<RollupPreload<'_>> = plan
+            .rollups
+            .iter()
+            .filter_map(|planned| planned.pushed.clone())
+            .filter(|(key, ..)| seen.insert(key.clone()))
+            .collect();
 
-        // One request per distinct rollup, in parallel but capped: each is a
-        // blocking round trip, so `rate(a[5m]) / rate(b[5m])` should pay one
-        // fanout latency, not two in sequence — while a query with many
-        // rollups must not open one fanout per rollup all at once. The
-        // fallible collect stops scheduling after the first error.
         // Rollups over one span — `rate(a[5m]) / increase(a[5m])` — share one
         // read of it where the source answers raw; see `preload_rollup_group`.
         let groups = self.group_by_span(requests, |(_, _, matrix, _)| {
@@ -395,7 +372,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// `max_series` / `max_points_per_series` validation, and a failed read
     /// leaves the map unpopulated so the step loop falls back to exactly the
     /// per-step path that ran before this optimization — a query that succeeds per-step keeps succeeding.
-    pub(super) fn preload_matrices(&self, expr: &Expr, grid: &PreloadGrid) -> EvalResult<()> {
+    pub(super) fn preload_matrices(
+        &self,
+        plan: &GridPlan<'_>,
+        grid: &PreloadGrid,
+    ) -> EvalResult<()> {
         if grid.step_ms <= 0 {
             return Ok(());
         }
@@ -403,29 +384,19 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let grids = self.preloads.grids.read().unwrap();
         let mut seen = AHashSet::new();
         let mut targets: Vec<(MatrixPreloadKey, &MatrixSelector)> = Vec::new();
-        for candidate in collect_rollup_candidates(expr) {
-            let call = candidate.call();
+        for planned in &plan.rollups {
+            let call = planned.call;
             // A call the step loop will reject anyway must not trigger a
             // fetch for its arguments.
             if call.func.experimental && !self.options.enable_experimental_functions {
                 continue;
             }
-            // Mirror the key the step loop will look up: covered calls short-
-            // circuit in evaluate_call / evaluate_fused_rollup before their
-            // arguments are evaluated.
-            if let Some((matrix, rollup)) = self.pushable_rollup(call) {
-                let aggregation = match candidate {
-                    RollupCandidate::Fused(aggregate, _) => fusable_aggregation(aggregate),
-                    RollupCandidate::Rollup(_) => None,
-                };
-                let key = GridPreloadKey::rollup(
-                    &matrix.vs,
-                    &rollup,
-                    aggregation.as_ref().map(AggregationKey::of),
-                );
-                if grids.contains_key(&key) {
-                    continue;
-                }
+            // Covered calls short-circuit in evaluate_call / evaluate_fused_rollup
+            // before their arguments are evaluated.
+            if let Some((key, ..)) = &planned.pushed
+                && grids.contains_key(key)
+            {
+                continue;
             }
             for arg in call.args.args.iter().map(|arg| strip_parens(arg)) {
                 if let Expr::MatrixSelector(ms) = arg {
@@ -748,7 +719,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// [`Self::preload_grid`]).
     pub(super) fn preload_stepped_aggregations(
         &self,
-        expr: &Expr,
+        plan: &GridPlan<'_>,
         grid: &PreloadGrid,
     ) -> EvalResult<()> {
         if grid.step_ms <= 0 {
@@ -756,23 +727,18 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
 
         let mut seen = AHashSet::new();
-        let mut requests = Vec::new();
-        for (aggregate, vs) in collect_stepped_aggregation_candidates(expr) {
-            let Some(aggregation) = fusable_aggregation(aggregate) else {
-                continue;
-            };
+        let requests: Vec<_> = plan
+            .stepped
+            .iter()
             // A selecting operator's output keeps its picks' own timestamps,
             // which the fused form stamps with the step; only `timestamp()`
             // can tell, and when it is in the query the selection runs here.
-            if grid.sample_timestamps && aggregation.strategy() == PushdownStrategy::Select {
-                continue;
-            }
-            let key = GridPreloadKey::stepped(vs, AggregationKey::of(&aggregation));
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            requests.push((key, vs, aggregation));
-        }
+            .filter(|(_, _, aggregation)| {
+                !(grid.sample_timestamps && aggregation.strategy() == PushdownStrategy::Select)
+            })
+            .filter(|(key, ..)| seen.insert(key.clone()))
+            .map(|(key, vs, aggregation)| (key.clone(), *vs, aggregation.clone()))
+            .collect();
 
         // Aggregations over one selector — `sum(a) + avg(a)` — share one read
         // where the source answers raw: the first answer is then the

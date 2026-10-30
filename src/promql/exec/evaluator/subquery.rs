@@ -84,7 +84,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // only by selector would answer the wrong grid. Scoping them to an
         // evaluator that drops with the subquery makes that structurally
         // impossible, and nests naturally for a subquery inside a subquery.
-        // `collect_vector_selectors` / `collect_rollup_candidates` both stop at
+        // The grid plan (`GridPlan`) stops collecting reads at
         // `Expr::Subquery`, so this walk covers exactly the nodes evaluated at
         // this grid.
         //
