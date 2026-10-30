@@ -16,8 +16,7 @@
 //! coordinator leaves the selector as written, which is always safe.
 
 use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo,
-    get_cluster_command_timeout, log_fanout_failure,
+    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::local_label_profile;
@@ -42,12 +41,6 @@ pub struct LabelProfileFanoutCommand {
     /// A shard declined (more series than `max_series`): the merged profile
     /// is unavailable whatever the others said.
     unavailable: bool,
-}
-
-impl Default for LabelProfileFanoutCommand {
-    fn default() -> Self {
-        Self::new(Matchers::empty(), None, 0, get_cluster_command_timeout())
-    }
 }
 
 impl LabelProfileFanoutCommand {

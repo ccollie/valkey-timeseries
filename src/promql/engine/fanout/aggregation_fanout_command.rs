@@ -21,8 +21,7 @@
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
 use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo,
-    get_cluster_command_timeout, log_fanout_failure,
+    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
 };
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
@@ -31,7 +30,6 @@ use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
     decode_pushdown_kind, wrong_payload,
 };
-use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::{AggregationParam, AggregationRequest};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply_aggregation};
 use crate::promql::exec::partial_aggregation::{PartialGroups, merge_count_values};
@@ -53,21 +51,6 @@ pub(in crate::promql) struct InstantVectorParams {
     pub timestamp: Timestamp,
     pub lookback_delta: u64,
     pub max_series: u64,
-}
-
-impl Default for InstantVectorParams {
-    fn default() -> Self {
-        let lookback_delta = {
-            let guard = promql_config();
-            guard.lookback_delta.as_millis() as u64
-        };
-        Self {
-            matchers: Matchers::empty(),
-            timestamp: 0,
-            lookback_delta,
-            max_series: 0,
-        }
-    }
 }
 
 /// What the shards' output accumulates into, decided by the operator's
@@ -122,30 +105,6 @@ pub(in crate::promql) struct AggregationFanoutCommand {
     /// response is dropped unread, and [`Self::into_result`] reports this, in
     /// its own words, rather than a fan-out failure.
     stopped: Option<QueryError>,
-}
-
-impl Default for AggregationFanoutCommand {
-    fn default() -> Self {
-        // Sum is an arbitrary but valid reduction: this instance only ever
-        // stands in for a moved-out command (see `FanoutStateInner`), never
-        // accumulates.
-        let aggregation = AggregationRequest {
-            kind: AggregationKind::Sum,
-            modifier: None,
-            param: None,
-            eval_timestamp: 0,
-        };
-        Self {
-            vector: InstantVectorParams::default(),
-            sink: AggregationSink::for_kind(aggregation.kind),
-            aggregation,
-            timeout: get_cluster_command_timeout(),
-            raw: Vec::new(),
-            unsupported_peer: false,
-            deadline: Deadline::default(),
-            stopped: None,
-        }
-    }
 }
 
 impl AggregationFanoutCommand {
@@ -511,8 +470,10 @@ mod tests {
         deadline: Deadline,
     ) -> AggregationFanoutCommand {
         let vector = InstantVectorParams {
+            matchers: Matchers::empty(),
             timestamp: EVAL_TS,
-            ..Default::default()
+            lookback_delta: 300_000,
+            max_series: 0,
         };
         AggregationFanoutCommand::new(vector, aggregation, Duration::from_secs(1), deadline)
     }
@@ -730,7 +691,7 @@ mod tests {
             timestamp: EVAL_TS,
             lookback_delta: 300_000,
             max_series: 1_000,
-            ..Default::default()
+            matchers: Matchers::empty(),
         };
         let aggregation = AggregationRequest {
             kind: AggregationKind::Topk,

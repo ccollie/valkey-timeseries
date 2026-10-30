@@ -43,7 +43,7 @@ pub fn log_fanout_failure(operation: &str, target: &NodeInfo, error: &FanoutErro
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
-pub trait FanoutCommand: Default + Send + 'static {
+pub trait FanoutCommand: Sized + Send + 'static {
     /// The request type.
     type Request: Serializable + Send + 'static;
     /// The response type.
@@ -413,7 +413,9 @@ where
     OP: FanoutCommand + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
-    operation: OP,
+    /// The command, until completion hands it to the callback; every later
+    /// callback is ignored (`lifecycle`), so it is never read once taken.
+    operation: Option<OP>,
     /// Explicit lifecycle for drop/completion handling.
     lifecycle: FanoutLifecycleState,
     outstanding: usize,
@@ -444,6 +446,13 @@ where
     OP: FanoutCommand + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
+    /// The command, while the fan-out is running.
+    fn op(&mut self) -> &mut OP {
+        self.operation
+            .as_mut()
+            .expect("BUG: a fan-out's operation is read only before it completes")
+    }
+
     fn activate(&mut self) {
         if self.lifecycle == FanoutLifecycleState::Pending {
             self.lifecycle = FanoutLifecycleState::Active;
@@ -458,10 +467,8 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
-        // Once the fanout has completed, `self.operation` has been moved out via
-        // `mem::take` and replaced with `OP::default()`, which may not be a
-        // valid accumulator. Ignore any late-arriving callbacks so we never
-        // invoke the operation on that placeholder.
+        // Once the fanout has completed, `self.operation` has been handed to the
+        // callback. Ignore any late-arriving callbacks.
         if self.lifecycle == FanoutLifecycleState::Completed {
             // A deadline arriving after the result is not a shard's answer.
             if error.kind != ErrorKind::Timeout {
@@ -528,8 +535,8 @@ where
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
-        // See `on_error`: after completion `self.operation` is a `mem::take`
-        // placeholder, so drop late responses instead of accumulating into it.
+        // See `on_error`: after completion the operation is gone, so drop late
+        // responses.
         if self.lifecycle == FanoutLifecycleState::Completed {
             metrics::FANOUT_IGNORED_AFTER_COMPLETION.incr();
             return;
@@ -658,7 +665,7 @@ where
     fn new(operation: OP, outstanding: usize, f: F, started: Instant) -> Self {
         Self {
             inner: Mutex::new(FanoutStateInner {
-                operation,
+                operation: Some(operation),
                 outstanding,
                 lifecycle: FanoutLifecycleState::Pending,
                 error_count: 0,

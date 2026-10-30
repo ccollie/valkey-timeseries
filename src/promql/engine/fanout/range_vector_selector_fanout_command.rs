@@ -1,7 +1,5 @@
 use crate::common::Timestamp;
-use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo, get_cluster_command_timeout,
-};
+use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::{handle_range_query, shard_read};
 use crate::promql::generated::{
@@ -24,20 +22,6 @@ pub struct RangeVectorSelectorFanoutCommand {
     responses: Vec<RangeQueryResponse>,
 }
 
-impl Default for RangeVectorSelectorFanoutCommand {
-    fn default() -> Self {
-        let matchers = Matchers::empty();
-        Self {
-            matchers,
-            start_time: 0,
-            end_time: 0,
-            max_series: 0,
-            max_points_per_series: 0,
-            timeout: get_cluster_command_timeout(),
-            responses: Vec::new(),
-        }
-    }
-}
 impl RangeVectorSelectorFanoutCommand {
     pub fn new(
         matchers: Matchers,
