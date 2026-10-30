@@ -34,6 +34,7 @@ use crate::promql::model::RangeSample;
 use crate::promql::{EvalResult, EvalSample};
 use promql_parser::parser::LabelModifier;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Mergeable accumulator for one aggregation group.
 ///
@@ -328,24 +329,45 @@ impl PartialGroups {
 ///
 /// One [`PartialGroups`] per step. The merge algebra is per group and identical
 /// at every step — steps never interact — so keying by step on the outside
-/// reuses it whole rather than restating it. A `BTreeMap` keeps the steps
-/// ordered, which is what makes [`finalize`] emit each group's points
-/// chronologically without a sort.
+/// reuses it whole rather than restating it. The steps are the request's
+/// window ends, held in order: step `i`'s states sit at `steps[i]`, so a point
+/// finds its step by position rather than through a tree, and [`finalize`]
+/// emits each group's points chronologically without a sort.
 ///
 /// [`finalize`]: SteppedPartialGroups::finalize
 pub(in crate::promql) struct SteppedPartialGroups {
     kind: AggregationKind,
-    steps: BTreeMap<Timestamp, PartialGroups>,
+    /// The request's window ends, ascending.
+    window_ends: Arc<[Timestamp]>,
+    /// Boxed and filled on first use: a grid is often sparse, and a group map
+    /// carries a few KiB of inline storage.
+    steps: Vec<Option<Box<PartialGroups>>>,
 }
 
 impl SteppedPartialGroups {
     /// # Panics
     /// If `kind` is not a reduction; see [`PartialGroups::new`].
-    pub fn new(kind: AggregationKind) -> Self {
+    pub fn new(kind: AggregationKind, window_ends: Arc<[Timestamp]>) -> Self {
+        let steps = (0..window_ends.len()).map(|_| None).collect();
         Self {
             kind,
-            steps: BTreeMap::new(),
+            window_ends,
+            steps,
         }
+    }
+
+    /// The index of window end `step_ts` at or after `from`, or `None` when it
+    /// is not a window end of this grid.
+    fn step_index(&self, step_ts: Timestamp, from: usize) -> Option<usize> {
+        let ends = self.window_ends.get(from..)?;
+        let i = from + ends.partition_point(|&end| end < step_ts);
+        (self.window_ends.get(i) == Some(&step_ts)).then_some(i)
+    }
+
+    /// Step `i`'s states, created on first use.
+    fn step_mut(&mut self, i: usize) -> &mut PartialGroups {
+        let kind = self.kind;
+        self.steps[i].get_or_insert_with(|| Box::new(PartialGroups::new(kind)))
     }
 
     /// Fold per-series rollup output into the per-`(group, step)` states,
@@ -415,11 +437,15 @@ impl SteppedPartialGroups {
         // seen the group yet.
         let key = series_labels.compute_grouping_key(modifier);
         let mut labels: Option<EvalLabels> = None;
+        // A series' points ascend, so each step is searched for from the last.
+        let mut cursor = 0;
         for (step_ts, value) in points {
-            let groups = self
-                .steps
-                .entry(step_ts)
-                .or_insert_with(|| PartialGroups::new(kind));
+            let Some(i) = self.step_index(step_ts, cursor) else {
+                debug_assert!(false, "point {step_ts} is not a window end of its grid");
+                continue;
+            };
+            cursor = i;
+            let groups = self.step_mut(i);
             let before = groups.groups.len();
             groups
                 .entry_with(key, || {
@@ -434,18 +460,19 @@ impl SteppedPartialGroups {
     }
 
     /// Merge one shard's state for a `(group, step)` pair, returning how many
-    /// states that added: 1 for a pair not seen before, else 0.
+    /// states that added: 1 for a pair not seen before, else 0. A state at a
+    /// time that is not one of the grid's window ends is dropped: the grid has
+    /// no step for it, so it could never reach the answer.
     pub fn merge(
         &mut self,
         step_ts: Timestamp,
         labels: EvalLabels,
         state: AggregationPartial,
     ) -> usize {
-        let kind = self.kind;
-        let groups = self
-            .steps
-            .entry(step_ts)
-            .or_insert_with(|| PartialGroups::new(kind));
+        let Some(i) = self.step_index(step_ts, 0) else {
+            return 0;
+        };
+        let groups = self.step_mut(i);
         let before = groups.groups.len();
         groups.merge(labels, state);
         groups.groups.len() - before
@@ -455,11 +482,17 @@ impl SteppedPartialGroups {
     pub fn into_partials(
         self,
     ) -> impl Iterator<Item = (Timestamp, EvalLabels, AggregationPartial)> {
-        self.steps.into_iter().flat_map(|(step_ts, groups)| {
-            groups
-                .into_partials()
-                .map(move |(labels, state)| (step_ts, labels, state))
-        })
+        let window_ends = self.window_ends;
+        self.steps
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, groups)| groups.map(|groups| (i, groups)))
+            .flat_map(move |(i, groups)| {
+                let step_ts = window_ends[i];
+                groups
+                    .into_partials()
+                    .map(move |(labels, state)| (step_ts, labels, state))
+            })
     }
 
     /// Finalize into one entry per group, each holding its sparse `(step,
@@ -470,7 +503,11 @@ impl SteppedPartialGroups {
         let mut by_group: FingerprintHashMap<(EvalLabels, Vec<Sample>)> =
             FingerprintHashMap::default();
 
-        for (step_ts, groups) in self.steps {
+        for (i, groups) in self.steps.into_iter().enumerate() {
+            let Some(groups) = groups else {
+                continue;
+            };
+            let step_ts = self.window_ends[i];
             deadline.checkpoint(SERIES_WORK + groups.groups.len())?;
             for (key, labels, state) in groups.into_keyed() {
                 by_group
@@ -962,7 +999,7 @@ mod tests {
             labels: EvalLabels::from_pairs(&[("i", i), ("job", "a")]),
             samples: points.iter().map(|&(t, v)| Sample::new(t, v)).collect(),
         };
-        let mut groups = SteppedPartialGroups::new(AggregationKind::Sum);
+        let mut groups = SteppedPartialGroups::new(AggregationKind::Sum, Arc::from([10, 20, 30]));
         let added = groups
             .accumulate(
                 Some(&by(&["job"])),
@@ -1017,6 +1054,26 @@ mod tests {
             .collect()
     }
 
+    /// The window ends [`one_point_per_step`]'s points sit on.
+    fn one_point_per_step_ends() -> Arc<[Timestamp]> {
+        (0..5_000).map(|i| i * 1_000).collect()
+    }
+
+    /// A shard's state at a time that is not one of the grid's window ends has
+    /// no step to land on: it is dropped, and counts as nothing added.
+    #[test]
+    fn stepped_merge_drops_a_state_off_the_grid() {
+        let mut groups = SteppedPartialGroups::new(AggregationKind::Sum, Arc::from([10, 20]));
+        let mut state = AggregationPartial::empty(AggregationKind::Sum);
+        state.update(AggregationKind::Sum, 4.0);
+        let labels = EvalLabels::from_pairs(&[("job", "a")]);
+        assert_eq!(groups.merge(15, labels.clone(), state), 0);
+        assert_eq!(groups.merge(20, labels, state), 1);
+        let out = groups.finalize(&Deadline::default()).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].samples, vec![Sample::new(20, 4.0)]);
+    }
+
     fn passed() -> Deadline {
         Deadline::until(Some(std::time::Instant::now()))
     }
@@ -1033,14 +1090,16 @@ mod tests {
     #[test]
     fn stepped_partials_stop_at_a_passed_deadline() {
         let none = Deadline::default();
-        let mut partials = SteppedPartialGroups::new(AggregationKind::Sum);
+        let mut partials =
+            SteppedPartialGroups::new(AggregationKind::Sum, one_point_per_step_ends());
         assert!(is_timeout(partials.accumulate(
             None,
             one_point_per_step(),
             &passed()
         )));
 
-        let mut partials = SteppedPartialGroups::new(AggregationKind::Sum);
+        let mut partials =
+            SteppedPartialGroups::new(AggregationKind::Sum, one_point_per_step_ends());
         assert_eq!(
             partials
                 .accumulate(None, one_point_per_step(), &none)
