@@ -731,6 +731,15 @@ pub trait QueryReader: Send + Sync {
         raw_grid_read(self, selector, request, options)
     }
 
+    /// Whether this source answers every grid request [`GridOutcome::Raw`] —
+    /// it has nothing to push down to — so that several requests over one
+    /// selector's span can share one read of it, each running its own kernels
+    /// over the copy. Only a hint for grouping requests: a source that answers
+    /// otherwise anyway gets every request on its own, just not in parallel.
+    fn answers_grids_raw(&self) -> bool {
+        true
+    }
+
     /// The labels of the series `selector` matches, from the index rather
     /// than from a read — see [`LabelProfile`]. With a `window`, only the
     /// series with a retained sample in it count ([`ProfileWindow::admits`]).
@@ -786,6 +795,10 @@ impl QueryReader for Arc<dyn QueryReader> {
         options: QueryOptions,
     ) -> QueryResult<GridOutcome> {
         self.as_ref().query_grid(selector, request, options)
+    }
+
+    fn answers_grids_raw(&self) -> bool {
+        self.as_ref().answers_grids_raw()
     }
 
     fn label_profile(
