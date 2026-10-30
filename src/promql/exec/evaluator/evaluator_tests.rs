@@ -5646,6 +5646,29 @@ mod tests {
         evaluator.prepared.budget.loaded()
     }
 
+    /// Consumers of one selector's span share its read, so the span is charged
+    /// once: a second rollup over it adds only its own grid, and a second
+    /// aggregation over the selector adds nothing — it aggregates per step over
+    /// the stepped span the first answer cached.
+    #[test]
+    fn consumers_of_one_span_charge_it_once() {
+        let one = preload_charge("rate(metric[1m])");
+        let pair = preload_charge("rate(metric[1m]) / increase(metric[1m])");
+        assert!(pair > one, "the second rollup's grid charged nothing");
+        assert!(
+            pair - one < one,
+            "the second rollup was charged the span again: {one} alone, {pair} together"
+        );
+
+        let one = preload_charge("sum(metric)");
+        assert!(one > 0, "the stepped span charged nothing");
+        assert_eq!(
+            preload_charge("sum(metric) + avg(metric)"),
+            one,
+            "the second aggregation was charged the span again"
+        );
+    }
+
     /// A twin subquery adds nothing to `ts-promql-max-samples-per-query`: its
     /// union was read, and charged, for the first.
     #[test]
