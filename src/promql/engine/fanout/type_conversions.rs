@@ -130,9 +130,19 @@ pub(in crate::promql) fn range_sample_from_proto(
     proto: ProtoRangeSample,
     resolver: &mut EvalLabelResolver<'_>,
 ) -> ValkeyResult<RangeSample<EvalLabels>> {
+    Ok(decode_range_series(packed_range_series(proto, resolver)?))
+}
+
+/// A series off the wire with its labels resolved and its samples still in
+/// their chunk: [`TimeSeriesChunk::len`] answers how many there are without
+/// decoding them, so a budget can refuse the series first.
+pub(in crate::promql) fn packed_range_series(
+    proto: ProtoRangeSample,
+    resolver: &mut EvalLabelResolver<'_>,
+) -> ValkeyResult<(EvalLabels, TimeSeriesChunk)> {
     let mut wire = WireRangeSeries::try_from(proto)?;
     let labels = resolver.resolve(&mut wire.labels)?;
-    Ok(decode_range_series((labels, wire.chunk)))
+    Ok((labels, wire.chunk))
 }
 
 /// A series that carries its labels inline, as no shard sends them any more
