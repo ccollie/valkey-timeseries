@@ -93,7 +93,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // an instant query, or a union preload that was declined — prepare this
         // one step's grid here.
         let sub = match union {
-            Some(prepared) => Evaluator::with_shared(self.reader, self.options, prepared),
+            Some(prepared) => Evaluator::with_prepared(self.reader, self.options, prepared),
             None => {
                 let grid =
                     PreloadGrid::for_subquery(aligned_start_ms, subquery_end_ms, step_ms, ctx);
@@ -101,7 +101,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 let prepared = match Preloader::sharing(
                     self.reader,
                     self.options,
-                    Arc::clone(&self.budget),
+                    Arc::clone(&self.prepared.budget),
                 )
                 .prepare(sub_plan)
                 {
@@ -119,7 +119,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                         log_debug(format!(
                             "subquery preload failed; falling back to per-step evaluation: {err}"
                         ));
-                        PreparedQuery::sharing(Arc::clone(&self.budget))
+                        Arc::new(PreparedQuery::sharing(Arc::clone(&self.prepared.budget)))
                     }
                 };
                 Evaluator::with_prepared(self.reader, self.options, prepared)
@@ -256,17 +256,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// key [`NodeKeys`] memoized for the node, else by one built here — for a
     /// node built during evaluation.
     fn prepared_union(&self, subquery: &SubqueryExpr) -> Option<Arc<PreparedQuery>> {
-        let unions = self.preloaded_subqueries.read().unwrap();
+        let unions = &self.prepared.subqueries;
         // An instant query, or a range query without subquery unions: not worth
         // formatting a key to miss.
         if unions.is_empty() {
             return None;
         }
-        let memo = self
-            .node_keys
-            .get()
-            .and_then(|keys| keys.subqueries.get(&node_addr(subquery)));
-        match memo {
+        match self.prepared.node_keys.subqueries.get(&node_addr(subquery)) {
             Some(key) => unions.get(key).cloned(),
             None => unions.get(&SubqueryKey::of(subquery)).cloned(),
         }

@@ -26,11 +26,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// Must be called before the step loop. Walks the AST, deduplicates selectors,
     /// and builds dense per-step sample arrays for O(1) per-step lookup.
     pub(in crate::promql) fn preload_for_range(
-        &self,
+        &mut self,
         expr: &Expr,
         ctx: &EvalContext,
     ) -> EvalResult<()> {
-        self.preload_grid(expr, &[], &PreloadGrid::for_range(ctx))
+        self.preload_grid(expr, &[], &PreloadGrid::for_range(ctx))?;
+        self.finish_preparation(expr, &[]);
+        Ok(())
     }
 
     /// Fill every preload map for one step grid.
@@ -63,14 +65,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // the fused pass already cached stepped (a source that answered raw)
         // is not loaded again.
         let mut seen: AHashSet<PreloadKey> = self
-            .preloaded_instant
+            .preloads
+            .instant
             .read()
             .unwrap()
             .keys()
             .cloned()
             .collect();
         let unique_selectors: Vec<_> = {
-            let grids = self.preloaded_grids.read().unwrap();
+            let grids = self.preloads.grids.read().unwrap();
             collect_vector_selectors(expr, &|aggregate| {
                 stepped_aggregation_key(aggregate).is_some_and(|key| grids.contains_key(&key))
             })
@@ -87,10 +90,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         self.preload_rollups(expr, grid)?;
         self.preload_matrices(expr, grid)?;
-        self.preload_subqueries(expr, twins, grid)?;
-
-        self.fill_node_keys(expr, twins);
-        Ok(())
+        self.preload_subqueries(expr, twins, grid)
     }
 
     /// Prepare each subquery once for the whole outer grid.
@@ -142,7 +142,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         for (key, subquery, subquery_twins) in groups {
             self.check_deadline()?;
             let step_ms = subquery_step_ms(subquery);
-            if self.preloaded_subqueries.read().unwrap().contains_key(&key) {
+            if self.preloads.subqueries.read().unwrap().contains_key(&key) {
                 continue;
             }
             let Some(union) = grid.subquery_union(subquery, step_ms) else {
@@ -155,15 +155,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 continue;
             }
             let plan = PlannedQuery::for_grid(&subquery.expr, union).with_twins(subquery_twins);
-            match Preloader::sharing(self.reader, self.options, Arc::clone(&self.budget))
+            match Preloader::sharing(self.reader, self.options, Arc::clone(&self.prepared.budget))
                 .prepare(plan)
             {
                 Ok(prepared) => {
-                    self.preloaded_subqueries
+                    self.preloads
+                        .subqueries
                         .write()
                         .unwrap()
-                        .insert(key, Arc::new(prepared));
-                    self.note_preloaded();
+                        .insert(key, prepared);
                 }
                 Err(err) if is_query_ending(&err) => return Err(err),
                 Err(err) => {
@@ -258,7 +258,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             return Ok(());
         }
 
-        let grids = self.preloaded_grids.read().unwrap();
+        let grids = self.preloads.grids.read().unwrap();
         let mut seen = AHashSet::new();
         let mut targets: Vec<(MatrixPreloadKey, &MatrixSelector)> = Vec::new();
         for candidate in collect_rollup_candidates(expr) {
@@ -350,11 +350,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                         samples: Arc::from(s.samples),
                     })
                     .collect();
-                self.preloaded_matrices
+                self.preloads
+                    .matrices
                     .write()
                     .unwrap()
                     .insert(key, PreloadedMatrixData { series });
-                self.note_preloaded();
             }
             Err(err) if err.ends_query() => return Err(err.into()),
             Err(err) => {
@@ -524,7 +524,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 self.charge_samples(charged)?;
                 request.evaluate(series, &self.deadline, &mut |expanded| {
                     charged += expanded;
-                    self.budget.charge(expanded)
+                    self.prepared.budget.charge(expanded)
                 })?
             }
             GridOutcome::Rolled(series) => {
@@ -574,7 +574,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         grid: &PreloadGrid,
         series: Vec<PreloadedGridSeries>,
     ) {
-        self.preloaded_grids.write().unwrap().insert(
+        self.preloads.grids.write().unwrap().insert(
             key,
             PreloadedGridData {
                 eval_start_ms: grid.start_ms,
@@ -582,7 +582,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 series,
             },
         );
-        self.note_preloaded();
     }
 
     /// Ask the source to fold each aggregation that sits directly over a bare
@@ -820,10 +819,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             step_ms,
             series: preloaded_series,
         };
-        let mut cache = self.preloaded_instant.write().unwrap();
+        let mut cache = self.preloads.instant.write().unwrap();
         cache.insert(key, data);
         drop(cache);
-        self.note_preloaded();
     }
 }
 
