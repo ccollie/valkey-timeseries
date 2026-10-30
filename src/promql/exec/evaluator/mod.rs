@@ -26,11 +26,7 @@ use crate::promql::exec::types::{
     PreloadedMatrixData, PreloadedMatrixSeries, SampleWindow, StepGrid, StepGridBuilder,
     SubquerySeriesMap,
 };
-use crate::promql::exec::utils::{
-    RollupCandidate, calls_function, collect_rollup_candidates,
-    collect_stepped_aggregation_candidates, collect_subqueries, collect_vector_selectors,
-    merge_step_into_subquery_map, strip_parens,
-};
+use crate::promql::exec::utils::{merge_step_into_subquery_map, strip_parens};
 use crate::promql::functions::RollupKind;
 use crate::promql::functions::{
     FunctionCallContext, PromQLArg, PromQLFunction, resolve_function, window_range,
@@ -54,16 +50,16 @@ use promql_parser::parser::{
     AggregateExpr, BinaryExpr, Call, EvalStmt, Expr, MatrixSelector, SubqueryExpr, UnaryExpr,
     VectorSelector,
 };
-use promql_parser::util::{ExprVisitor, walk_expr};
 use std::sync::{Arc, RwLock};
 
 #[cfg(test)]
 mod evaluator_tests;
+mod grid_plan;
 mod preload;
 mod pushdown;
 mod subquery;
 
-use pushdown::{fusable_aggregation, stepped_aggregation_key};
+use pushdown::fusable_aggregation;
 use subquery::SubqueryKey;
 
 /// How many preload requests may be in flight at once.
@@ -229,9 +225,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     }
 
     /// Freeze what the preload phase filled into the [`PreparedQuery`] this
-    /// evaluator reads from now on, with [`NodeKeys`] for every node of `expr`
-    /// and of its `twins`.
-    pub(crate) fn finish_preparation(&mut self, expr: &Expr, twins: &[&Expr]) {
+    /// evaluator reads from now on, with the `node_keys` the phase planned —
+    /// each subquery key swapped for the union map's own copy, so a step's
+    /// lookup compares by identity.
+    pub(crate) fn finish_preparation(&mut self, mut node_keys: NodeKeys) {
         let Preloads {
             instant,
             grids,
@@ -244,7 +241,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             matrices.into_inner().unwrap(),
             subqueries.into_inner().unwrap(),
         );
-        let node_keys = self.compute_node_keys(expr, twins, &subqueries);
+        for key in node_keys.subqueries.values_mut() {
+            if let Some((shared, _)) = subqueries.get_key_value(key) {
+                *key = shared.clone();
+            }
+        }
         let any_preloaded = !(instant.is_empty()
             && grids.is_empty()
             && matrices.is_empty()
@@ -258,64 +259,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             any_preloaded,
             budget: Arc::clone(&self.prepared.budget),
         });
-    }
-
-    /// [`NodeKeys`] for every node of `expr` and of its `twins`, subquery keys
-    /// taken from `unions` where it holds them.
-    fn compute_node_keys(
-        &self,
-        expr: &Expr,
-        twins: &[&Expr],
-        unions: &SubqueryPreloadMap,
-    ) -> NodeKeys {
-        struct Collect<'e, 'r, R: QueryReader + ?Sized> {
-            evaluator: &'e Evaluator<'r, R>,
-            unions: &'e SubqueryPreloadMap,
-            keys: NodeKeys,
-        }
-        impl<R: QueryReader + ?Sized> ExprVisitor for Collect<'_, '_, R> {
-            type Error = std::convert::Infallible;
-            fn pre_visit(&mut self, expr: &Expr) -> Result<bool, Self::Error> {
-                match expr {
-                    Expr::VectorSelector(vs) => {
-                        self.keys
-                            .selectors
-                            .insert(node_addr(vs), PreloadKey::from_selector(vs));
-                    }
-                    Expr::Call(call) => {
-                        let key = self.evaluator.rollup_key(call);
-                        self.keys.rollups.insert(node_addr(call), key);
-                    }
-                    Expr::Aggregate(aggregate) => {
-                        let addr = node_addr(aggregate);
-                        self.keys
-                            .stepped
-                            .insert(addr, stepped_aggregation_key(aggregate));
-                        let fused = self.evaluator.fused_rollup_key(aggregate);
-                        self.keys.fused.insert(addr, fused);
-                    }
-                    Expr::Subquery(subquery) => {
-                        let key = SubqueryKey::of(subquery);
-                        let key = match self.unions.get_key_value(&key) {
-                            Some((shared, _)) => shared.clone(),
-                            None => key,
-                        };
-                        self.keys.subqueries.insert(node_addr(subquery), key);
-                    }
-                    _ => {}
-                }
-                Ok(true)
-            }
-        }
-        let mut collect = Collect {
-            evaluator: self,
-            unions,
-            keys: NodeKeys::default(),
-        };
-        for expr in std::iter::once(expr).chain(twins.iter().copied()) {
-            let Ok(_) = walk_expr(&mut collect, expr);
-        }
-        collect.keys
     }
 
     /// The memoized key for `node` in the table `pick` selects: `Some(key)`
