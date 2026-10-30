@@ -59,7 +59,7 @@ mod preload;
 mod pushdown;
 mod subquery;
 
-use pushdown::fusable_aggregation;
+use pushdown::{fusable_aggregation, stepped_aggregation_key};
 use subquery::SubqueryKey;
 
 /// How many preload requests may be in flight at once.
