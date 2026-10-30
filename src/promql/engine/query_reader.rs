@@ -458,9 +458,10 @@ impl GridSink {
         match request.aggregation.as_ref() {
             None => GridSink::Series(request.empty_output()),
             Some(aggregation) => match aggregation.strategy() {
-                PushdownStrategy::Reduce => {
-                    GridSink::Partials(SteppedPartialGroups::new(aggregation.kind))
-                }
+                PushdownStrategy::Reduce => GridSink::Partials(SteppedPartialGroups::new(
+                    aggregation.kind,
+                    request.window_ends().into(),
+                )),
                 PushdownStrategy::Select | PushdownStrategy::CountValues => {
                     GridSink::Selection(SteppedSelection::new(aggregation.clone()))
                 }
@@ -1231,7 +1232,8 @@ mod evaluate_chunk_tests {
                 .into_step_values();
             let want = match aggregation.strategy() {
                 PushdownStrategy::Reduce => {
-                    let mut partials = SteppedPartialGroups::new(kind);
+                    let mut partials =
+                        SteppedPartialGroups::new(kind, request.window_ends().into());
                     partials
                         .accumulate(None, whole, &Deadline::default())
                         .unwrap();
