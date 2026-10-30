@@ -170,12 +170,9 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
         let fusable = fusable_aggregation(aggregate);
         let operand = strip_parens(&aggregate.expr);
 
-        let stepped_key = match (operand, &fusable) {
-            (Expr::VectorSelector(vs), Some(aggregation)) => {
-                Some(GridPreloadKey::stepped(vs, AggregationKey::of(aggregation)))
-            }
-            _ => None,
-        };
+        // The step loop's own rule, so the key preloaded under is the key
+        // looked up by.
+        let stepped_key = stepped_aggregation_key(aggregate);
         self.plan
             .node_keys
             .stepped
@@ -252,10 +249,25 @@ mod tests {
     use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 
     fn plan_names(query: &str) -> (Vec<String>, Vec<String>, Vec<String>, bool) {
+        plan_with_twins(query, &[])
+    }
+
+    /// The plan of `query` with twin inner expressions `twins`, by name: its
+    /// rollup candidates, its selectors (`*` when covered), its subqueries'
+    /// inner expressions, and whether `timestamp()` was seen.
+    fn plan_with_twins(
+        query: &str,
+        twins: &[&str],
+    ) -> (Vec<String>, Vec<String>, Vec<String>, bool) {
         let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let expr = promql_parser::parser::parse(query).unwrap();
-        let plan = evaluator.plan_grid(&expr, &[]);
+        let twins: Vec<Expr> = twins
+            .iter()
+            .map(|twin| promql_parser::parser::parse(twin).unwrap())
+            .collect();
+        let twin_refs: Vec<&Expr> = twins.iter().collect();
+        let plan = evaluator.plan_grid(&expr, &twin_refs);
         let rollups = plan
             .rollups
             .iter()
@@ -309,6 +321,82 @@ mod tests {
         assert_eq!(rollups("(rate(m[5m]))[1h:1m]"), Vec::<String>::new());
         // `quantile` cannot fuse: the rollup is offered on its own.
         assert_eq!(rollups("quantile(0.5, rate(m[5m]))"), vec!["rate"]);
+        assert_eq!(
+            rollups("sum_over_time(rate(m[5m])[1h:1m])"),
+            vec!["sum_over_time"]
+        );
+    }
+
+    /// The call under an aggregation is offered once, as the pair, however
+    /// deep the parentheses or the nesting, and never consumes a later call's
+    /// turn: calls in the aggregation's parameter are offered on their own.
+    #[test]
+    fn a_fused_call_is_offered_once() {
+        let rollups = |q: &str| plan_names(q).0;
+        assert_eq!(rollups("sum((rate(m[5m])))"), vec!["fused/rate"]);
+        assert_eq!(rollups("sum(((rate(m[5m]))))"), vec!["fused/rate"]);
+        assert_eq!(
+            rollups("sum(abs(sum(rate(m[5m]))))"),
+            vec!["abs", "fused/rate"]
+        );
+        assert_eq!(
+            rollups("quantile(scalar(rate(k[5m])), rate(m[5m]))"),
+            vec!["rate", "scalar", "rate"],
+            "the operand's rollup, then the parameter's calls, each once"
+        );
+        assert_eq!(
+            rollups("sum(rate(m[5m])) + rate(n[5m])"),
+            vec!["fused/rate", "rate"]
+        );
+    }
+
+    /// A twin adds its own top-level subqueries and nothing else: its reads
+    /// are the first twin's, and a `timestamp()` in it is the first twin's too.
+    #[test]
+    fn a_twin_adds_only_its_subqueries() {
+        let (rollups, selectors, subqueries, timestamps) = plan_with_twins(
+            "a",
+            &["sum(b) + rate(c[5m]) + timestamp(d) + max_over_time(e[1m:10s])"],
+        );
+        assert!(rollups.is_empty(), "{rollups:?}");
+        assert_eq!(selectors, vec!["a"]);
+        assert_eq!(subqueries, vec!["e"]);
+        assert!(!timestamps, "a twin's timestamp() is not the expression's");
+    }
+
+    /// Node keys follow the step loop's rules: a stepped key only for a
+    /// fusable aggregation over a bare selector, a fused key only for a
+    /// fusable aggregation over a pushable rollup.
+    #[test]
+    fn node_keys_follow_the_lookup_rules() {
+        let reader = MemorySeriesQuerier::new();
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
+        for (query, stepped, fused) in [
+            ("sum(m)", true, false),
+            ("sum((m))", true, false),
+            ("sum(rate(m[5m]))", false, true),
+            ("quantile(0.5, m)", false, false),
+            ("quantile(0.5, rate(m[5m]))", false, false),
+            ("sum(abs(m))", false, false),
+            ("sum(-m)", false, false),
+        ] {
+            let expr = promql_parser::parser::parse(query).unwrap();
+            let Expr::Aggregate(aggregate) = &expr else {
+                panic!("{query} is not an aggregation");
+            };
+            let plan = evaluator.plan_grid(&expr, &[]);
+            let addr = node_addr(aggregate);
+            assert_eq!(
+                plan.node_keys.stepped.get(&addr).map(Option::is_some),
+                Some(stepped),
+                "{query}: stepped key"
+            );
+            assert_eq!(
+                plan.node_keys.fused.get(&addr).map(Option::is_some),
+                Some(fused),
+                "{query}: fused key"
+            );
+        }
     }
 
     /// Selectors outside subqueries, marked (`*`) when a stepped aggregation
@@ -321,6 +409,9 @@ mod tests {
         assert_eq!(selectors("quantile(0.5, a)"), vec!["a"]);
         assert_eq!(selectors("topk(scalar(k), a)"), vec!["a", "k"]);
         assert_eq!(selectors("max_over_time(a[5m:1m]) + b"), vec!["b"]);
+        // Only a bare operand is covered.
+        assert_eq!(selectors("sum(-a)"), vec!["a"]);
+        assert_eq!(selectors("sum(a + b)"), vec!["a", "b"]);
     }
 
     /// Subqueries at this grid, outermost first; `timestamp()` anywhere counts.

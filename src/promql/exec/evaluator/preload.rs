@@ -207,6 +207,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .filter(|(key, ..)| seen.insert(key.clone()))
             .collect();
 
+        // One request per distinct rollup, in parallel but capped: each is a
+        // blocking round trip, so `rate(a[5m]) / rate(b[5m])` should pay one
+        // fanout latency, not two in sequence — while a query with many
+        // rollups must not open one fanout per rollup all at once. The
+        // fallible collect stops scheduling after the first error.
+        //
         // Rollups over one span — `rate(a[5m]) / increase(a[5m])` — share one
         // read of it where the source answers raw; see `preload_rollup_group`.
         let groups = self.group_by_span(requests, |(_, _, matrix, _)| {
