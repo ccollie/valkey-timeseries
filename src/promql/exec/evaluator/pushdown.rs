@@ -77,21 +77,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Some(GridPreloadKey::rollup(&matrix.vs, &rollup, None))
     }
 
-    /// The grid key a rollup fused with `aggregate` is preloaded under, when
-    /// `aggregate` is a fusable aggregation directly over a pushable rollup.
-    pub(super) fn fused_rollup_key(&self, aggregate: &AggregateExpr) -> Option<GridPreloadKey> {
-        let Expr::Call(call) = strip_parens(&aggregate.expr) else {
-            return None;
-        };
-        let aggregation = fusable_aggregation(aggregate)?;
-        let (matrix, rollup) = self.pushable_rollup(call)?;
-        Some(GridPreloadKey::rollup(
-            &matrix.vs,
-            &rollup,
-            Some(AggregationKey::of(&aggregation)),
-        ))
-    }
-
     /// This step's slice of a preloaded grid, keyed explicitly so the fused
     /// forms — whose entries are groups rather than series — can share it.
     pub(super) fn preloaded_grid_by_key(

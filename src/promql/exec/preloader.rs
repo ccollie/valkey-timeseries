@@ -30,8 +30,8 @@ impl<'reader, R: QueryReader + ?Sized> Preloader<'reader, R> {
             ),
             None => Evaluator::new(self.reader, self.options),
         };
-        evaluator.preload_grid(plan.expr, &plan.twins, &plan.grid)?;
-        evaluator.finish_preparation(plan.expr, &plan.twins);
+        let node_keys = evaluator.preload_grid(plan.expr, &plan.twins, &plan.grid)?;
+        evaluator.finish_preparation(node_keys);
         Ok(evaluator.prepared())
     }
 
