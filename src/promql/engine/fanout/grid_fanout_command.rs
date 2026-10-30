@@ -39,7 +39,8 @@ use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read}
 use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
     aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
-    decode_pushdown_kind, range_sample_from_proto, range_sample_to_proto, wrong_payload,
+    decode_pushdown_kind, decode_range_series, packed_range_series, range_sample_to_proto,
+    wrong_payload,
 };
 use crate::promql::engine::query_reader::{
     GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
@@ -56,6 +57,7 @@ use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::model::RangeSample;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count};
 use crate::promql::{EvalLabels, QueryError, QueryResult};
+use crate::series::chunks::ChunkOps;
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
 use std::time::Duration;
@@ -345,18 +347,19 @@ impl FanoutCommand for GridFanoutCommand {
             }
         };
 
-        let mut raw_samples = 0;
-        let raw = resp
+        // Still packed: each chunk knows how many samples it holds, so the
+        // budget is charged before any of them is decoded, as the range path
+        // does — a response over it is refused without decoding it.
+        let packed = resp
             .raw
             .into_iter()
             .map(|raw| {
-                let series = range_sample_from_proto(raw, &mut resolver).map_err(|why| {
+                packed_range_series(raw, &mut resolver).map_err(|why| {
                     super::peer_error(target, "returned an undecodable raw series", why)
-                })?;
-                raw_samples += series.samples.len();
-                Ok(series)
+                })
             })
             .collect::<Result<Vec<_>, FanoutError>>()?;
+        let raw_samples: usize = packed.iter().map(|(_, chunk)| chunk.len()).sum();
 
         // Charged as each response arrives rather than once every shard has
         // answered: past the limit, the rest are dropped unread.
@@ -364,7 +367,7 @@ impl FanoutCommand for GridFanoutCommand {
             self.stopped = Some(err);
             return Ok(());
         }
-        self.raw.extend(raw);
+        self.raw.extend(packed.into_iter().map(decode_range_series));
         Ok(())
     }
 
