@@ -262,7 +262,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let any_preloaded = !(instant.is_empty()
             && grids.is_empty()
             && matrices.is_empty()
-            && subqueries.is_empty());
+            && subqueries.is_empty()
+            && evaluated.is_empty());
         self.prepared = Arc::new(PreparedQuery {
             instant,
             grids,
