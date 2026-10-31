@@ -4,13 +4,13 @@
 //! the slicing has to get right.
 use crate::common::Sample;
 use crate::labels::Labels;
-use crate::promql::QueryOptions;
 use crate::promql::engine::admission::Admission;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_range};
 use crate::promql::exec::{
     grid_points_evaluated_by, subquery_grid_counts, subquery_grids_built_by, without_subquery_grids,
 };
+use crate::promql::{QueryError, QueryOptions};
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -128,14 +128,7 @@ fn only_gap_free_windows_build_a_grid() {
 }
 
 fn succeeds(query: &str, opts: QueryOptions) -> bool {
-    let stmt = EvalStmt {
-        expr: parse(query).unwrap(),
-        start: UNIX_EPOCH + Duration::from_secs(1_500),
-        end: UNIX_EPOCH + Duration::from_secs(3_000),
-        interval: Duration::from_secs(60),
-        lookback_delta: Duration::from_secs(300),
-    };
-    evaluate_range(reader(), stmt, opts).is_ok()
+    outcome(query, opts).is_ok()
 }
 
 /// The smallest limit (by bisection; success is monotone in it) at which
@@ -154,11 +147,23 @@ fn least_per_step_limit(query: &str, opts: impl Fn(usize) -> QueryOptions) -> us
     passes
 }
 
-/// A grid is optional work: it must never make a query fail that per-step
-/// evaluation answers, at the tightest sample limit or process-wide in-flight
-/// limit that per-step evaluation fits in.
+/// The query `query` from 1500 s to 3000 s at a 60 s step, under `opts`.
+fn outcome(query: &str, opts: QueryOptions) -> Result<(), QueryError> {
+    let stmt = EvalStmt {
+        expr: parse(query).unwrap(),
+        start: UNIX_EPOCH + Duration::from_secs(1_500),
+        end: UNIX_EPOCH + Duration::from_secs(3_000),
+        interval: Duration::from_secs(60),
+        lookback_delta: Duration::from_secs(300),
+    };
+    evaluate_range(reader(), stmt, opts).map(|_| ())
+}
+
+/// A grid is optional work: it must never move a limit's boundary. At the
+/// tightest value of each limit that per-step evaluation fits in, the query
+/// succeeds with grids too; one below it, both fail the same way.
 #[test]
-fn a_grid_never_fails_a_query_per_step_evaluation_answers() {
+fn a_grid_never_moves_a_limit_boundary() {
     let query = "max_over_time(vector(1)[5m:1m]) + max_over_time(sum(m)[5m:1m])";
     let by_samples = |limit| QueryOptions {
         max_samples: limit,
@@ -172,16 +177,44 @@ fn a_grid_never_fails_a_query_per_step_evaluation_answers() {
         admission: Some(&IN_FLIGHT),
         ..options()
     };
-    let limit = least_per_step_limit(query, by_samples);
-    assert!(
-        succeeds(query, by_samples(limit)),
-        "max_samples {limit}: per-step evaluation succeeds, the grid fails it"
-    );
-    let limit = least_per_step_limit(query, by_in_flight);
-    assert!(
-        succeeds(query, by_in_flight(limit)),
-        "in-flight limit {limit}: per-step evaluation succeeds, the grid fails it"
-    );
+    let by_points = |limit| QueryOptions {
+        max_points_per_series: Some(limit),
+        ..options()
+    };
+    type Limit<'a> = (&'a str, &'a str, &'a dyn Fn(usize) -> QueryOptions);
+    let limits: [Limit; 4] = [
+        ("max_samples", query, &by_samples),
+        ("max_samples_in_flight", query, &by_in_flight),
+        // Each window holds 300 points, far more than the query charges: the
+        // per-evaluation cap on a window's points binds. A union holds every
+        // window, so its grid is declined before any window could pass it.
+        (
+            "max_samples, per evaluation",
+            "max_over_time(vector(1)[5m:1s])",
+            &by_samples,
+        ),
+        // Checked against the outer grid before anything is evaluated; the
+        // grid adds no check of its own.
+        ("max_points_per_series", query, &by_points),
+    ];
+    for (name, query, opts) in limits {
+        let limit = least_per_step_limit(query, opts);
+        assert!(
+            outcome(query, opts(limit)).is_ok(),
+            "{name} {limit}: per-step evaluation succeeds, the grid fails it"
+        );
+        let below = limit - 1;
+        let per_step = without_subquery_grids(|| outcome(query, opts(below)));
+        let cached = outcome(query, opts(below));
+        match (&per_step, &cached) {
+            (Err(a), Err(b)) => assert_eq!(
+                std::mem::discriminant(a),
+                std::mem::discriminant(b),
+                "{name} {below}: per step {a}, with grids {b}"
+            ),
+            _ => panic!("{name} {below}: per step {per_step:?}, with grids {cached:?}"),
+        }
+    }
 }
 
 /// A grid over a long union under a small sample limit is abandoned as soon as
