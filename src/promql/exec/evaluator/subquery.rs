@@ -12,6 +12,19 @@ const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
 /// Fewer inner steps than this are evaluated on the calling thread: handing
 /// them to the pool costs more than it saves.
 const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
+/// The fewest outer windows that must read each union step for a grid to be
+/// built. With one, the grid evaluates what per-step evaluation would and pays
+/// for holding and slicing it on top: about 10 % slower measured, and up to
+/// 4× slower when labels change at every step.
+const MIN_WINDOWS_PER_UNION_STEP: i64 = 2;
+/// The same, when the union's first batch holds about a series per point
+/// (labels that change at every step): each point then costs a series of its
+/// own, and the grid broke even at about ten windows per step (measured: 2.7×
+/// slower at two, 1.4× at five, 0.9× at ten, 0.5× at thirty).
+const MIN_WINDOWS_PER_UNION_STEP_UNDER_CHURN: i64 = 8;
+/// Union steps evaluated before deciding whether the grid churns, when it may:
+/// what is evaluated twice if it does.
+const CHURN_PROBE_STEPS: usize = 8;
 
 static GRIDS_BUILT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GRIDS_DECLINED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -362,16 +375,19 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok((current_time_ms, samples))
     }
 
-    /// Whether the outer steps' windows of `subquery` over `grid` cover its
-    /// union without gaps ([`PreloadGrid::windows_cover_union`]), so the union
-    /// may be evaluated up front: it holds only steps per-step evaluation visits
-    /// anyway. Tests can switch grids off here.
-    pub(super) fn windows_cover_union(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
+    /// Whether to evaluate `subquery`'s union over `grid` up front: the outer
+    /// steps' windows cover it without gaps
+    /// ([`PreloadGrid::windows_cover_union`]), so it holds only steps per-step
+    /// evaluation visits anyway, and enough of them read each step
+    /// ([`MIN_WINDOWS_PER_UNION_STEP`]) for the grid to save work. Tests can
+    /// switch grids off here.
+    pub(super) fn grid_worth_building(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
         #[cfg(test)]
         if self.options.disable_subquery_grids {
             return false;
         }
         grid.windows_cover_union(subquery)
+            && grid.windows_per_union_step(subquery) >= MIN_WINDOWS_PER_UNION_STEP
     }
 
     /// Evaluate `subquery`'s inner expression at every step of its `union`
@@ -418,12 +434,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // The grid is kept until the query ends: its points are reserved in
         // flight as they are added, and given back when it is dropped.
         let mut retained = Retained::new(&self.prepared.budget);
+        let windows_per_step = grid.windows_per_union_step(subquery);
+        let mut first_batch = true;
         let mut steps = union.steps();
         loop {
             // `steps` cannot say how many are left, so a plain `collect` would
             // grow the batch from empty, reallocating on the way to 64.
-            let mut batch: Vec<Timestamp> = Vec::with_capacity(SUBQUERY_STEP_BATCH_SIZE);
-            batch.extend(steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE));
+            // Where churn would abandon the grid, the first batch is a short
+            // probe, so little is evaluated twice when it does.
+            let size = if first_batch && windows_per_step < MIN_WINDOWS_PER_UNION_STEP_UNDER_CHURN {
+                CHURN_PROBE_STEPS
+            } else {
+                SUBQUERY_STEP_BATCH_SIZE
+            };
+            let mut batch: Vec<Timestamp> = Vec::with_capacity(size);
+            batch.extend(steps.by_ref().take(size));
             if batch.is_empty() {
                 break;
             }
@@ -461,6 +486,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 log_debug(format!(
                     "subquery union grid declined: over {cap} points after {points}; \
                      each outer step will evaluate its own window"
+                ));
+                return Ok(None);
+            }
+            // Labels that change at every step make a series of every point:
+            // past the first batch, a grid like that is worth finishing only
+            // when many windows share each step.
+            if std::mem::take(&mut first_batch)
+                && windows_per_step < MIN_WINDOWS_PER_UNION_STEP_UNDER_CHURN
+                && points > 0
+                && series.len() * 2 >= points
+            {
+                log_debug(format!(
+                    "subquery union grid declined: {} series for {points} points, read by \
+                     {windows_per_step} windows per step; each outer step will evaluate its own window",
+                    series.len()
                 ));
                 return Ok(None);
             }

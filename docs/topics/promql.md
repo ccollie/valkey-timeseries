@@ -590,13 +590,18 @@ succeed without it. A subquery is evaluated per step instead, with the same answ
 work, when:
 
 - its outer step is wider than its range, so the windows leave gaps (never attempted);
+- fewer than two outer windows read each step of the grid, so it would save no work (never
+  attempted);
+- its first few steps hold about a new series per point, as when labels change at every step,
+  and fewer than eight windows read each step: each point then costs a series of its own, more
+  than sharing it saves;
 - its grid would hold more points than `ts-promql-max-samples-per-query`, or than the
   built-in ceiling of 10,000,000 points, whichever is lower;
 - `ts-promql-max-samples-in-flight` has no room for the grid's points; or
 - evaluating the grid fails with an error that would not end the query.
 
 The two limits are checked while the grid is built, so a grid over either is abandoned after
-at most one batch of 64 inner steps past it. A grid's points are not charged to `ts-promql-max-samples-per-query`; they are
+at most one batch of 64 inner steps past it; the churn check runs after a first batch of 8. A grid's points are not charged to `ts-promql-max-samples-per-query`; they are
 reserved against `ts-promql-max-samples-in-flight` while the grid is held, and given back when
 it is dropped, at the latest when the query ends. Other queries see that reservation in full;
 the query holding it does not, so its own reads are never refused for it.
