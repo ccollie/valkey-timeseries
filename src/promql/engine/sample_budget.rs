@@ -197,17 +197,19 @@ impl Retained {
         }
     }
 
-    /// Reserve `samples` more, or return false, reserving nothing, when the process-wide
-    /// count has no room for them. Always room under a budget not counted in flight.
+    /// Reserve `samples` more, or return false, reserving nothing, when the query's
+    /// reservations would pass their share of the process-wide room
+    /// ([`Admission::try_reserve`]). Always room under a budget not counted in flight.
     pub(crate) fn reserve(&mut self, samples: usize) -> bool {
         let budget = &self.budget;
         if budget.in_flight_limit == 0 || samples == 0 {
             return true;
         }
-        if !budget
-            .admission
-            .try_reserve(samples, budget.in_flight_limit)
-        {
+        if !budget.admission.try_reserve(
+            samples,
+            budget.in_flight_limit,
+            budget.retained.load(Ordering::Relaxed),
+        ) {
             return false;
         }
         budget.retained.fetch_add(samples, Ordering::Relaxed);
@@ -362,10 +364,10 @@ mod tests {
         static COUNTS: Admission = Admission::new();
         let budget = Arc::new(SampleBudget::counted_in(&COUNTS, 0, 100));
         let mut held = Retained::new(&budget);
-        assert!(held.reserve(60), "room for 60");
-        assert_eq!(COUNTS.samples_in_flight(), 60);
-        assert!(!held.reserve(50), "no room for 50 more");
-        assert_eq!(COUNTS.samples_in_flight(), 60, "a refusal adds nothing");
+        assert!(held.reserve(50), "room for 50");
+        assert_eq!(COUNTS.samples_in_flight(), 50);
+        assert!(!held.reserve(1), "no room for 1 more");
+        assert_eq!(COUNTS.samples_in_flight(), 50, "a refusal adds nothing");
         assert_eq!(budget.loaded(), 0, "retained samples are not charged");
 
         budget
@@ -382,6 +384,40 @@ mod tests {
             "released with the reservation"
         );
         drop(budget);
+        assert_eq!(COUNTS.samples_in_flight(), 0);
+    }
+
+    /// A query's reservations together may take at most half the room that
+    /// everything else leaves under the limit — other queries and its own
+    /// charges — so its optional grids leave the rest for work that must run.
+    #[test]
+    fn retained_samples_take_at_most_half_the_room() {
+        static COUNTS: Admission = Admission::new();
+        let limit = 100;
+        let query = Arc::new(SampleBudget::counted_in(&COUNTS, 0, limit));
+        let mut grids = Retained::new(&query);
+        assert!(!grids.reserve(51), "more than half of 100");
+        assert!(grids.reserve(30));
+        assert!(grids.reserve(20), "50 in all: exactly half");
+        assert!(!grids.reserve(1), "past half, a batch at a time");
+        drop(grids);
+
+        // 40 charged elsewhere leaves 60: room for 30.
+        let other = SampleBudget::counted_in(&COUNTS, 0, limit);
+        other.charge(40).unwrap();
+        let mut grids = Retained::new(&query);
+        assert!(!grids.reserve(31));
+        assert!(grids.reserve(30));
+        drop(grids);
+
+        // The query's own charges count as everything else too.
+        query.charge(20).unwrap();
+        let mut grids = Retained::new(&query);
+        assert!(!grids.reserve(21), "100 - 40 - 20 leaves 40: room for 20");
+        assert!(grids.reserve(20));
+        drop(grids);
+        drop(other);
+        drop(query);
         assert_eq!(COUNTS.samples_in_flight(), 0);
     }
 }
