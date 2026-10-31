@@ -85,6 +85,10 @@ const QUERIES: &[&str] = &[
     "last_over_time((n or abs(n offset 10m))[10m:1m])",
     "last_over_time(n[10m:30s])",
     "sum by (job) (count_over_time(n[10m:1m]))",
+    // Labels that change from step to step: a union series per value, each
+    // window holding a few of them.
+    "count_over_time(count_values(\"v\", m)[5m:1m])",
+    "sum(last_over_time(count_values(\"v\", vector(time()))[1m:1m]))",
 ];
 
 /// Every query answers what per-step evaluation answers, at an outer step that
