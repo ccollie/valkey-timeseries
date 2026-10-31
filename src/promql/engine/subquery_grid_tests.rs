@@ -370,3 +370,53 @@ fn a_union_past_the_step_ceiling_evaluates_per_step() {
     assert_eq!(result.len(), 1);
     assert!(result[0].samples.iter().all(|s| s.value == 10_000.0));
 }
+
+/// How many grids `query` builds as a range query at `step` seconds.
+fn grids_built(query: &str, step: u64) -> usize {
+    subquery_grids_built_by(|| run(query, Duration::from_secs(step))).1
+}
+
+/// A grid pays for itself only when windows share its steps: with one window
+/// per union step it evaluates what per-step evaluation would, and costs more
+/// on top, so it is not built.
+#[test]
+fn a_grid_needs_windows_to_share_its_steps() {
+    assert_eq!(
+        grids_built("max_over_time(m[1m:1m])", 60),
+        0,
+        "one window per step"
+    );
+    assert_eq!(
+        grids_built("max_over_time(m[2m:1m])", 60),
+        1,
+        "two windows per step"
+    );
+    assert_eq!(
+        grids_built("max_over_time(m[30s:15s])", 30),
+        0,
+        "one window per step"
+    );
+    assert_eq!(
+        grids_built("max_over_time(m[1m:30s] @ 2000)", 60),
+        1,
+        "every window is one"
+    );
+}
+
+/// Labels that change at every step make a grid hold a series per point,
+/// which costs more than it saves unless many windows share each step: such
+/// a grid is abandoned after its first batch, and counted as declined.
+#[test]
+fn a_grid_of_new_series_at_every_step_needs_wide_sharing() {
+    let churn = |range: &str| {
+        format!(r#"sum(count_over_time(count_values("v", vector(time()))[{range}:1m]))"#)
+    };
+    let before = subquery_grid_counts();
+    assert_eq!(grids_built(&churn("5m"), 60), 0, "five windows per step");
+    assert!(subquery_grid_counts().declined > before.declined);
+    assert_eq!(grids_built(&churn("10m"), 60), 1, "ten windows per step");
+    assert_eq!(grids_built("max_over_time(m[5m:1m])", 60), 1, "no churn");
+    for range in ["5m", "10m"] {
+        assert!(same_as_per_step(&churn(range), Duration::from_secs(60)));
+    }
+}
