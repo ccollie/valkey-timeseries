@@ -128,6 +128,8 @@ pub fn evaluate_instant(
     query_time: SystemTime,
     opts: QueryOptions,
 ) -> Result<QueryValue, QueryError> {
+    #[cfg(test)]
+    let opts = crate::promql::exec::with_test_grid_switch(opts);
     optimize_statement(&mut stmt, &opts, true)?;
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = Deadline::from_options(&opts);
@@ -184,6 +186,8 @@ pub fn evaluate_range(
     mut stmt: EvalStmt,
     opts: QueryOptions,
 ) -> QueryResult<Vec<RangeSample>> {
+    #[cfg(test)]
+    let opts = crate::promql::exec::with_test_grid_switch(opts);
     optimize_statement(&mut stmt, &opts, !opts.derived_filter_pushdown)?;
     let start = stmt.start;
     let end = stmt.end;

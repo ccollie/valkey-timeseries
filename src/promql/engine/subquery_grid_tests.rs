@@ -7,10 +7,9 @@ use crate::labels::Labels;
 use crate::promql::QueryOptions;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_range};
-use crate::promql::exec::{SUBQUERY_GRID_USES, without_subquery_grids};
+use crate::promql::exec::{subquery_grids_built_by, without_subquery_grids};
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, UNIX_EPOCH};
 
 /// `m` on two series every 10 s; `n` on one series with a gap; both over the
@@ -102,11 +101,74 @@ fn evaluated_subquery_grids_answer_as_per_step_evaluation() {
 }
 
 /// A subquery whose windows overlap is evaluated from its union grid; one
-/// whose outer step is wider than its range is not.
+/// whose outer step is wider than its range is not — and neither is a
+/// subquery nested in it, whose union would span the gaps between the outer
+/// windows that per-step evaluation never visits.
 #[test]
-fn only_overlapping_windows_use_the_grid() {
-    let uses = || SUBQUERY_GRID_USES.load(Ordering::Relaxed);
-    let before = uses();
-    run("max_over_time(m[5m:1m])", Duration::from_secs(60));
-    assert!(uses() > before, "an overlapping subquery used no grid");
+fn only_gap_free_windows_build_a_grid() {
+    let nested = "max_over_time(max_over_time(m[2m:30s])[5m:1m])";
+    let built = |query: &str, step: u64| {
+        subquery_grids_built_by(|| run(query, Duration::from_secs(step))).1
+    };
+    assert_eq!(built("max_over_time(m[5m:1m])", 60), 1);
+    assert_eq!(built("max_over_time(m[5m:1m])", 900), 0);
+    assert_eq!(built(nested, 60), 2, "both levels overlap");
+    assert_eq!(
+        built(nested, 900),
+        0,
+        "the nested union spans the outer gaps"
+    );
+}
+
+fn succeeds(query: &str, opts: QueryOptions) -> bool {
+    let stmt = EvalStmt {
+        expr: parse(query).unwrap(),
+        start: UNIX_EPOCH + Duration::from_secs(1_500),
+        end: UNIX_EPOCH + Duration::from_secs(3_000),
+        interval: Duration::from_secs(60),
+        lookback_delta: Duration::from_secs(300),
+    };
+    evaluate_range(reader(), stmt, opts).is_ok()
+}
+
+/// The smallest limit (by bisection; success is monotone in it) at which
+/// `query` succeeds per step under the limit `opts` sets.
+fn least_per_step_limit(query: &str, opts: impl Fn(usize) -> QueryOptions) -> usize {
+    let (mut fails, mut passes) = (1usize, 1usize << 20);
+    assert!(without_subquery_grids(|| succeeds(query, opts(passes))));
+    while passes - fails > 1 {
+        let mid = (fails + passes) / 2;
+        if without_subquery_grids(|| succeeds(query, opts(mid))) {
+            passes = mid;
+        } else {
+            fails = mid;
+        }
+    }
+    passes
+}
+
+/// A grid is optional work: it must never make a query fail that per-step
+/// evaluation answers, at the tightest sample limit or process-wide in-flight
+/// limit that per-step evaluation fits in.
+#[test]
+fn a_grid_never_fails_a_query_per_step_evaluation_answers() {
+    let query = "max_over_time(vector(1)[5m:1m]) + max_over_time(sum(m)[5m:1m])";
+    let by_samples = |limit| QueryOptions {
+        max_samples: limit,
+        ..options()
+    };
+    let by_in_flight = |limit| QueryOptions {
+        max_samples_in_flight: limit,
+        ..options()
+    };
+    let limit = least_per_step_limit(query, by_samples);
+    assert!(
+        succeeds(query, by_samples(limit)),
+        "max_samples {limit}: per-step evaluation succeeds, the grid fails it"
+    );
+    let limit = least_per_step_limit(query, by_in_flight);
+    assert!(
+        succeeds(query, by_in_flight(limit)),
+        "in-flight limit {limit}: per-step evaluation succeeds, the grid fails it"
+    );
 }
