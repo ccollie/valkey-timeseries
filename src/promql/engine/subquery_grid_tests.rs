@@ -7,7 +7,9 @@ use crate::labels::Labels;
 use crate::promql::QueryOptions;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_range};
-use crate::promql::exec::{subquery_grids_built_by, without_subquery_grids};
+use crate::promql::exec::{
+    grid_points_evaluated_by, subquery_grids_built_by, without_subquery_grids,
+};
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -170,5 +172,23 @@ fn a_grid_never_fails_a_query_per_step_evaluation_answers() {
     assert!(
         succeeds(query, by_in_flight(limit)),
         "in-flight limit {limit}: per-step evaluation succeeds, the grid fails it"
+    );
+}
+
+/// A grid over a long union under a small sample limit is abandoned as soon as
+/// it crosses the limit — within a batch of steps, where the per-step path
+/// stops too — rather than built whole and discarded.
+#[test]
+fn a_grid_over_the_limit_is_abandoned_while_it_is_built() {
+    // A one-day subquery at a one-second step: about 88,000 union steps.
+    let query = "max_over_time(vector(1)[1d:1s])";
+    let opts = QueryOptions {
+        max_samples: 100,
+        ..options()
+    };
+    let (_, evaluated) = grid_points_evaluated_by(|| succeeds(query, opts));
+    assert!(
+        evaluated <= 2 * 64,
+        "built {evaluated} points of a grid capped at 100 before abandoning it"
     );
 }

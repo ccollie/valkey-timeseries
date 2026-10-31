@@ -60,7 +60,10 @@ mod subquery;
 use pushdown::{fusable_aggregation, stepped_aggregation_key};
 use subquery::{EvaluatedSubquery, SubqueryKey};
 #[cfg(test)]
-pub(crate) use subquery::{subquery_grids_built_by, with_test_grid_switch, without_subquery_grids};
+pub(crate) use subquery::{
+    grid_points_evaluated_by, subquery_grids_built_by, with_test_grid_switch,
+    without_subquery_grids,
+};
 
 /// How many preload requests may be in flight at once.
 ///

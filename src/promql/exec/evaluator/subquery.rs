@@ -20,6 +20,20 @@ thread_local! {
     /// Union grids built on this thread — the one a range query prepares on,
     /// nested unions included.
     static GRIDS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Points evaluated on this thread while building union grids, kept or
+    /// abandoned.
+    static GRID_POINTS_EVALUATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many points `f` evaluated on this thread while building union grids.
+#[cfg(test)]
+pub(crate) fn grid_points_evaluated_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = GRID_POINTS_EVALUATED.with(std::cell::Cell::get);
+    let out = f();
+    (
+        out,
+        GRID_POINTS_EVALUATED.with(std::cell::Cell::get) - before,
+    )
 }
 
 /// How many union grids `f` built on this thread.
@@ -371,6 +385,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 .collect()?;
             // Steps come back in order, so each series' points ascend.
             for (ts, samples) in results {
+                #[cfg(test)]
+                GRID_POINTS_EVALUATED.with(|n| n.set(n.get() + samples.len()));
                 for sample in samples {
                     points += 1;
                     // Labels are cloned only when a series is first seen.
