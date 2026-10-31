@@ -5,6 +5,7 @@
 use crate::common::Sample;
 use crate::labels::Labels;
 use crate::promql::QueryOptions;
+use crate::promql::engine::admission::Admission;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_range};
 use crate::promql::exec::{
@@ -163,8 +164,12 @@ fn a_grid_never_fails_a_query_per_step_evaluation_answers() {
         max_samples: limit,
         ..options()
     };
+    // Its own count: on the process-wide one, other tests' queries running
+    // alongside move the tightest limit between the probe and the check.
+    static IN_FLIGHT: Admission = Admission::new();
     let by_in_flight = |limit| QueryOptions {
         max_samples_in_flight: limit,
+        admission: Some(&IN_FLIGHT),
         ..options()
     };
     let limit = least_per_step_limit(query, by_samples);
