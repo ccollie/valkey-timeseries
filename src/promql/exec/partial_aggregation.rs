@@ -380,6 +380,24 @@ impl SteppedPartialGroups {
         }
     }
 
+    /// How many off-grid points or states this sink dropped in all, when more
+    /// than the one [`Self::drop_off_grid`] logged.
+    fn off_grid_summary(&self) -> Option<String> {
+        (self.off_grid > 1).then(|| {
+            format!(
+                "PromQL grid: dropped {} points or shard states in all that were not window ends",
+                self.off_grid
+            )
+        })
+    }
+
+    /// Log [`Self::off_grid_summary`], as the sink is consumed.
+    fn log_off_grid_total(&self) {
+        if let Some(summary) = self.off_grid_summary() {
+            log_debug(summary);
+        }
+    }
+
     /// The index of window end `step_ts` at or after `from`, or `None` when it
     /// is not a window end of this grid.
     fn step_index(&self, step_ts: Timestamp, from: usize) -> Option<usize> {
@@ -508,6 +526,7 @@ impl SteppedPartialGroups {
     pub fn into_partials(
         self,
     ) -> impl Iterator<Item = (Timestamp, EvalLabels, AggregationPartial)> {
+        self.log_off_grid_total();
         let window_ends = self.window_ends;
         self.steps
             .into_iter()
@@ -525,6 +544,7 @@ impl SteppedPartialGroups {
     /// value)` points in ascending step order. `deadline` is checked between
     /// steps: this walks every `(group, step)` state the query accumulated.
     pub fn finalize(self, deadline: &Deadline) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
+        self.log_off_grid_total();
         let kind = self.kind;
         let mut by_group: FingerprintHashMap<(EvalLabels, Vec<Sample>)> =
             FingerprintHashMap::default();
@@ -1096,8 +1116,11 @@ mod tests {
         state.update(AggregationKind::Sum, 4.0);
         let labels = EvalLabels::from_pairs(&[("job", "a")]);
         assert_eq!(groups.merge(15, labels.clone(), state), 0);
+        assert_eq!(groups.off_grid_summary(), None, "only one dropped yet");
         assert_eq!(groups.merge(25, labels.clone(), state), 0);
         assert_eq!(groups.off_grid, 2);
+        let summary = groups.off_grid_summary().expect("two dropped");
+        assert!(summary.contains("dropped 2 "), "{summary}");
         assert_eq!(groups.merge(20, labels, state), 1);
         assert_eq!(groups.off_grid, 2);
         let out = groups.finalize(&Deadline::default()).unwrap();
