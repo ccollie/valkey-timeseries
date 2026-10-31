@@ -601,11 +601,11 @@ reserved against `ts-promql-max-samples-in-flight` while the grid is held, and g
 it is dropped, at the latest when the query ends. Other queries see that reservation in full;
 the query holding it does not, so its own reads are never refused for it.
 
-Memory: a grid point takes about 17 bytes (a timestamp, a value and a flag), plus, per series,
-its labels and a few dozen bytes of index. A grid at the 10,000,000-point ceiling is therefore
-about 170 MB, and a query holds one grid per distinct subquery, nested ones included, for as
+Memory: a grid point takes 16 bytes (a timestamp and a value), plus, per series, its labels
+and a few dozen bytes of index. A grid at the 10,000,000-point ceiling is therefore about
+160 MB, and a query holds one grid per distinct subquery, nested ones included, for as
 long as it runs. Each counts toward `ts-promql-max-samples-in-flight`, which is what bounds
-their sum across queries: at its default of 200,000,000, grids alone could hold about 3.4 GB,
+their sum across queries: at its default of 200,000,000, grids alone could hold about 3.2 GB,
 less whatever the running queries' reads have charged. Lower it, or
 `ts-promql-max-samples-per-query`, to bound grid memory more tightly.
 
