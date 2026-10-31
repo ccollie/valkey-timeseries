@@ -45,6 +45,8 @@ pub(super) fn count_subquery_grid(built: bool) {
 
 /// The most points an evaluated union grid may hold, whatever the query's
 /// sample limit: past it the subquery evaluates per step, as it would without.
+/// Documented for operators, with what it costs in memory, under "Subquery
+/// grids" in `docs/topics/promql.md`: keep the two in step.
 const MAX_SUBQUERY_GRID_POINTS: usize = 10_000_000;
 
 #[cfg(test)]
