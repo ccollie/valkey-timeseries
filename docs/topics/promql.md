@@ -574,9 +574,12 @@ and `ts_promql_query_cache_bytes` (and `_bytes_human`), with the counters
 
 In a range query, a subquery whose windows overlap from one outer step to the next has its
 inner expression evaluated once over all of them, and each step reads its window from that.
-If doing so would hold more points than `ts-promql-max-samples-per-query` allows (and never
-more than ten million), or fails, the subquery evaluates each step's window on its own instead:
-same answer, more work.
+The points it holds are not charged to `ts-promql-max-samples-per-query`, but count toward
+`ts-promql-max-samples-in-flight` until the query ends, so other queries see the memory it keeps;
+they never make its own query fail. If doing so would hold more points than
+`ts-promql-max-samples-per-query` allows (and never more than ten million), more than
+`ts-promql-max-samples-in-flight` has room for, or fails, the subquery evaluates each step's
+window on its own instead: same answer, more work.
 `INFO ts_promql` counts both outcomes as `ts_promql_subquery_grids_built_total` and
 `ts_promql_subquery_grids_declined_total`.
 
