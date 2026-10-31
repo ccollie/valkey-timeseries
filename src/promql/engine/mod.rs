@@ -95,6 +95,11 @@ pub struct QueryOptions {
     /// test probing `max_samples_in_flight` sees only its own.
     #[cfg(test)]
     pub(crate) admission: Option<&'static admission::Admission>,
+    /// Tests only: disconnect the query's client (`cancel`) as soon as a
+    /// subquery grid starts building, so a test can stop a build at a known
+    /// point rather than race a deadline against it.
+    #[cfg(test)]
+    pub(crate) disconnect_at_grid_build: bool,
 }
 
 impl QueryOptions {
@@ -126,6 +131,8 @@ impl QueryOptions {
             disable_subquery_grids: false,
             #[cfg(test)]
             admission: None,
+            #[cfg(test)]
+            disconnect_at_grid_build: false,
         }
     }
 

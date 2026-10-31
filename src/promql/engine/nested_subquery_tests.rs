@@ -3,13 +3,14 @@
 //! subquery step loop checks it, and that a tree too large to be worth starting is rejected
 //! before any work.
 use crate::common::Sample;
+use crate::common::replies::TestClient;
 use crate::common::time::current_time_millis;
 use crate::labels::Labels;
 use crate::promql::QueryOptions;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_instant, evaluate_range};
 use crate::promql::error::QueryError;
-use crate::promql::exec::without_subquery_grids;
+use crate::promql::exec::{grid_points_evaluated_by, without_subquery_grids};
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -106,20 +107,41 @@ fn nested_subqueries_stop_at_the_deadline() {
     }
 }
 
-/// Evaluated up front, the same nine levels take milliseconds; a deadline that
-/// passes while the grids are built still stops them there.
+/// Evaluated up front, the same nine levels take milliseconds, too fast to
+/// race a deadline against. So the client disconnects the moment the first
+/// grid starts building (`disconnect_at_grid_build`): the query must stop
+/// inside that build, at an inner step's check, before keeping any point.
 #[test]
-fn nested_subquery_grids_stop_at_the_deadline() {
+fn nested_subquery_grids_stop_when_the_client_goes() {
     for leaf in ["vector(1)", "m", "rate(m[1m])"] {
         let query = nested(leaf, DEEP);
-        // Well inside the 10-40 ms the grids take to build in a debug build.
-        let passed = || QueryOptions {
-            max_subquery_steps: 0,
-            ..options(Some(2))
-        };
-        assert_times_out(&format!("instant {leaf}"), || instant(&query, passed()));
-        assert_times_out(&format!("range {leaf}"), || range(&query, passed()));
+        for (kind, run) in [
+            ("instant", instant as fn(&str, QueryOptions) -> _),
+            ("range", range),
+        ] {
+            let client = TestClient::new();
+            let opts = QueryOptions {
+                max_subquery_steps: 0,
+                cancel: client.token(),
+                disconnect_at_grid_build: true,
+                ..options(None)
+            };
+            let (result, kept) = grid_points_evaluated_by(|| run(&query, opts));
+            assert!(
+                matches!(result, Err(QueryError::Cancelled)),
+                "{kind} {leaf}: expected the grid build to stop, got {result:?}"
+            );
+            assert_eq!(kept, 0, "{kind} {leaf}: points kept after the disconnect");
+        }
     }
+    // Without grids the flag has nothing to fire on, and the query answers.
+    let client = TestClient::new();
+    let opts = QueryOptions {
+        cancel: client.token(),
+        disconnect_at_grid_build: true,
+        ..options(None)
+    };
+    without_subquery_grids(|| range(&nested("m", 3), opts)).expect("no grid, no disconnect");
 }
 
 #[test]

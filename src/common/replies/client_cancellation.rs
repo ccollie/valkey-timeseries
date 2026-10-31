@@ -98,6 +98,15 @@ impl TestClient {
 }
 
 #[cfg(test)]
+impl CancelToken {
+    /// Disconnect the [`TestClient`] this token was issued for, from wherever
+    /// the token travelled; a token with no live registration is left alone.
+    pub(crate) fn disconnect_for_test(self) {
+        mark_disconnected(self.0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
