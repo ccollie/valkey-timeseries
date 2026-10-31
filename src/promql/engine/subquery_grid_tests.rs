@@ -6,7 +6,7 @@ use crate::common::Sample;
 use crate::labels::Labels;
 use crate::promql::engine::admission::Admission;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
-use crate::promql::engine::{QueryReader, evaluate_range};
+use crate::promql::engine::{QueryReader, evaluate_instant, evaluate_range};
 use crate::promql::exec::{
     grid_points_evaluated_by, subquery_grid_counts, subquery_grids_built_by, without_subquery_grids,
 };
@@ -47,10 +47,27 @@ fn options() -> QueryOptions {
 /// The range query `query` from 1500 s to 3000 s at `step`, as sorted
 /// `(labels, samples)`.
 fn run(query: &str, step: Duration) -> Vec<(Labels, Vec<Sample>)> {
+    run_between(query, (1_500, 3_000), step)
+}
+
+/// [`run`] from `start` to `end`, in seconds from the epoch, either side of it.
+fn run_between(
+    query: &str,
+    (start, end): (i64, i64),
+    step: Duration,
+) -> Vec<(Labels, Vec<Sample>)> {
+    let at = |secs: i64| {
+        let offset = Duration::from_secs(secs.unsigned_abs());
+        if secs < 0 {
+            UNIX_EPOCH - offset
+        } else {
+            UNIX_EPOCH + offset
+        }
+    };
     let stmt = EvalStmt {
         expr: parse(query).unwrap_or_else(|e| panic!("{query}: {e}")),
-        start: UNIX_EPOCH + Duration::from_secs(1_500),
-        end: UNIX_EPOCH + Duration::from_secs(3_000),
+        start: at(start),
+        end: at(end),
         interval: step,
         lookback_delta: Duration::from_secs(300),
     };
@@ -90,6 +107,12 @@ const QUERIES: &[&str] = &[
     // window holding a few of them.
     "count_over_time(count_values(\"v\", m)[5m:1m])",
     "sum(last_over_time(count_values(\"v\", vector(time()))[1m:1m]))",
+    // `@ start()` resolves against the outer query, then `offset` shifts it.
+    "max_over_time(m[5m:1m] @ start() offset 2m)",
+    // An inner step that divides neither outer step: windows start mid-step.
+    "max_over_time(m[5m:45s])",
+    // No inner step: the subquery takes the default.
+    "max_over_time(m[5m:])",
 ];
 
 /// Every query answers what per-step evaluation answers, at an outer step that
@@ -281,4 +304,69 @@ fn a_grid_reserves_its_points_in_flight() {
         0,
         "given back when the query ends"
     );
+}
+
+/// Windows and the union grid that straddle the epoch: step alignment for a
+/// negative time rounds toward minus infinity on both paths.
+#[test]
+fn grids_answer_as_per_step_evaluation_before_the_epoch() {
+    for query in [
+        "max_over_time(m[5m:1m])",
+        "max_over_time(vector(time())[5m:1m])",
+        "count_over_time(vector(time())[5m:45s])",
+        "last_over_time(m[10m:30s] offset 1m)",
+    ] {
+        let step = Duration::from_secs(60);
+        let (cached, built) = subquery_grids_built_by(|| run_between(query, (-900, 900), step));
+        let per_step = without_subquery_grids(|| run_between(query, (-900, 900), step));
+        assert_eq!(cached, per_step, "{query}");
+        assert!(!cached.is_empty(), "{query}: no result to compare");
+        assert_eq!(built, 1, "{query}: the grid is used");
+    }
+}
+
+/// An instant query has no grid of its own, but a subquery nested in another
+/// is stepped over the outer one's union: three levels deep, the inner two
+/// are evaluated from grids, with the answer per-step evaluation gives.
+#[test]
+fn nested_subqueries_of_an_instant_query_answer_as_per_step() {
+    let query = "max_over_time(max_over_time(max_over_time(m[2m:30s])[5m:1m])[10m:2m])";
+    let at = UNIX_EPOCH + Duration::from_secs(2_500);
+    let instant = || {
+        let stmt = EvalStmt {
+            expr: parse(query).unwrap(),
+            start: at,
+            end: at,
+            interval: Duration::ZERO,
+            lookback_delta: Duration::from_secs(300),
+        };
+        format!(
+            "{:?}",
+            evaluate_instant(reader(), stmt, at, options()).unwrap()
+        )
+    };
+    let (cached, built) = subquery_grids_built_by(instant);
+    let per_step = without_subquery_grids(instant);
+    assert_eq!(cached, per_step);
+    assert!(built >= 2, "{built} grids: the two inner levels");
+}
+
+/// A union of more than `MAX_GRID_STEPS` inner steps is never prepared, so
+/// no grid is attempted: the subquery evaluates per step, and answers.
+#[test]
+fn a_union_past_the_step_ceiling_evaluates_per_step() {
+    // About 1.1 million union steps at 1 ms; each window holds 10,000.
+    let query = "count_over_time(vector(1)[10s:1ms])";
+    let stmt = EvalStmt {
+        expr: parse(query).unwrap(),
+        start: UNIX_EPOCH,
+        end: UNIX_EPOCH + Duration::from_secs(1_100),
+        interval: Duration::from_secs(10),
+        lookback_delta: Duration::from_secs(300),
+    };
+    let (result, built) = subquery_grids_built_by(|| evaluate_range(reader(), stmt, options()));
+    let result = result.expect("per-step evaluation answers");
+    assert_eq!(built, 0, "no union, so no grid");
+    assert_eq!(result.len(), 1);
+    assert!(result[0].samples.iter().all(|s| s.value == 10_000.0));
 }
