@@ -7,6 +7,9 @@ use crate::common::Sample;
 /// How many inner steps of a subquery are evaluated, in parallel, before their
 /// samples are merged: a long subquery must not hold one vector per step.
 const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
+/// Fewer inner steps than this are evaluated on the calling thread: handing
+/// them to the pool costs more than it saves.
+const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
 
 /// The most points an evaluated union grid may hold, whatever the query's
 /// sample limit: past it the subquery evaluates per step, as it would without.
@@ -139,7 +142,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
 
         let mut steps = step_times(aligned_start_ms, subquery_end_ms, step_ms);
-        const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
 
         // Preload the subquery's *own* grid, in a sub-evaluator that owns the
         // maps.
@@ -382,11 +384,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             if batch.is_empty() {
                 break;
             }
-            let results: Vec<(Timestamp, Vec<EvalSample>)> = batch
-                .into_par_rayon()
-                .map(|ts| sub.eval_subquery_step(subquery, &ctx, ts))
-                .into_fallible()
-                .collect()?;
+            let step = |ts| sub.eval_subquery_step(subquery, &ctx, ts);
+            // A short union, or the short tail batch of a long one, runs on
+            // this thread, as the per-step path does.
+            let results: Vec<(Timestamp, Vec<EvalSample>)> =
+                if batch.len() < PARALLEL_SUBQUERY_STEP_THRESHOLD {
+                    batch.into_iter().map(step).collect::<EvalResult<_>>()?
+                } else {
+                    batch.into_par_rayon().map(step).into_fallible().collect()?
+                };
             // Steps come back in order, so each series' points ascend.
             for (ts, samples) in results {
                 #[cfg(test)]
