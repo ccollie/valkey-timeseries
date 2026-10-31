@@ -433,7 +433,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             limit => limit.min(MAX_SUBQUERY_GRID_POINTS),
         };
         let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
-        let mut series: Vec<(EvalLabels, Vec<Sample>, DropFlagsBuilder)> = Vec::new();
+        // Per series: its labels, points, each point's position in its step's
+        // output, and drop flags.
+        let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<u32>, DropFlagsBuilder)> = Vec::new();
         let mut points = 0usize;
         // The grid is kept until the query ends: its points are reserved in
         // flight as they are added, and given back when it is dropped.
@@ -470,20 +472,26 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             for (ts, samples) in results {
                 #[cfg(test)]
                 GRID_POINTS_EVALUATED.with(|n| n.set(n.get() + samples.len()));
-                for sample in samples {
+                for (position, sample) in samples.into_iter().enumerate() {
                     points += 1;
                     // Labels are cloned only when a series is first seen.
                     let at = match index.get(&sample.labels) {
                         Some(&at) => at,
                         None => {
                             index.insert(sample.labels.clone(), series.len());
-                            series.push((sample.labels, Vec::new(), DropFlagsBuilder::default()));
+                            series.push((
+                                sample.labels,
+                                Vec::new(),
+                                Vec::new(),
+                                DropFlagsBuilder::default(),
+                            ));
                             series.len() - 1
                         }
                     };
-                    let (_, samples, drops) = &mut series[at];
+                    let (_, samples, positions, drops) = &mut series[at];
                     drops.push(sample.drop_name, samples.len());
                     samples.push(Sample::new(ts, sample.value));
+                    positions.push(u32::try_from(position).unwrap_or(u32::MAX));
                 }
             }
             if points > cap {
@@ -524,7 +532,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             ..EvaluatedSubquery::new(
                 series
                     .into_iter()
-                    .map(|(labels, samples, drops)| (labels, samples, drops.finish()))
+                    .map(|(labels, samples, positions, drops)| {
+                        (labels, samples, positions, drops.finish())
+                    })
                     .collect(),
             )
         }))
@@ -700,6 +710,9 @@ struct EvaluatedSeries {
     labels: EvalLabels,
     /// Ascending by step.
     samples: Arc<[Sample]>,
+    /// Each sample's position in its step's output: what orders the series of
+    /// a window as per-step evaluation does ([`EvaluatedSubquery::window`]).
+    positions: Box<[u32]>,
     /// Whether each sample carried a pending `__name__` drop.
     drops: DropFlags,
 }
@@ -759,12 +772,13 @@ impl DropFlagsBuilder {
 impl EvaluatedSubquery {
     /// From each series' labels, points and drop flags, in the order the
     /// series were first seen: by their first step.
-    fn new(series: Vec<(EvalLabels, Vec<Sample>, DropFlags)>) -> Self {
+    fn new(series: Vec<(EvalLabels, Vec<Sample>, Vec<u32>, DropFlags)>) -> Self {
         let series: Vec<EvaluatedSeries> = series
             .into_iter()
-            .map(|(labels, samples, drops)| EvaluatedSeries {
+            .map(|(labels, samples, positions, drops)| EvaluatedSeries {
                 labels,
                 samples: Arc::from(samples),
+                positions: positions.into_boxed_slice(),
                 drops,
             })
             .collect();
@@ -782,6 +796,11 @@ impl EvaluatedSubquery {
     /// point in it, each its points in it (shared, not copied), dropping the
     /// name if any of those points did — capped per evaluation at
     /// `max_samples`, as the per-step path caps what it builds.
+    ///
+    /// In per-step order too: a series where it is first seen in the window,
+    /// by its first step there and its position in that step's output. Union
+    /// order can differ (a series seen earlier in the union can come later in
+    /// a window), and selection operators keep the first of equal values.
     fn window(
         &self,
         start: Timestamp,
@@ -796,6 +815,7 @@ impl EvaluatedSubquery {
             );
         }
         let mut out = Vec::new();
+        let mut first_seen: Vec<(Timestamp, u32)> = Vec::new();
         let mut points = 0;
         self.spans.overlapping(start, end, |at| {
             #[cfg(test)]
@@ -808,6 +828,7 @@ impl EvaluatedSubquery {
                 return;
             }
             points += j - i;
+            first_seen.push((series.samples[i].timestamp, series.positions[i]));
             out.push(EvalSamples {
                 values: SampleWindow::shared(&series.samples, i..j),
                 labels: series.labels.clone(),
@@ -817,6 +838,12 @@ impl EvaluatedSubquery {
             });
         });
         SampleBudget::new(max_samples).charge(points)?;
+        if !first_seen.is_sorted() {
+            // Each key is distinct: one series per position in a step.
+            let mut keyed: Vec<_> = first_seen.into_iter().zip(out).collect();
+            keyed.sort_unstable_by_key(|(key, _)| *key);
+            out = keyed.into_iter().map(|(_, samples)| samples).collect();
+        }
         Ok(ExprResult::RangeVector(out))
     }
 }
@@ -836,6 +863,7 @@ mod tests {
                     (
                         labels.into(),
                         vec![Sample::new(i * 1_000, 1.0)],
+                        vec![0],
                         DropFlags::Uniform(false),
                     )
                 })
@@ -873,6 +901,7 @@ mod tests {
         let union = EvaluatedSubquery::new(vec![(
             Labels::from_pairs(&[("job", "a")]).into(),
             (0..10).map(|t| Sample::new(t, 1.0)).collect(),
+            vec![0; 10],
             DropFlags::Uniform(false),
         )]);
         assert!(union.window(0, 4, 5, 5).is_ok(), "exactly the cap");
