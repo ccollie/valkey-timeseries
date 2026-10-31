@@ -35,6 +35,7 @@
 
 use crate::promql::engine::admission::{ADMISSION, Admission};
 use crate::promql::{QueryError, QueryResult};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
@@ -48,6 +49,9 @@ pub struct SampleBudget {
     in_flight_limit: usize,
     /// What this budget added to the process-wide count, given back when it is dropped.
     in_flight: AtomicUsize,
+    /// What [`Retained`] reservations made through this budget hold in the process-wide
+    /// count now: not charged, and not counted against this budget's own charges.
+    retained: AtomicUsize,
     /// Where the process-wide count is kept: this node's [`ADMISSION`], or a test's own.
     admission: &'static Admission,
 }
@@ -94,6 +98,7 @@ impl SampleBudget {
             loaded: AtomicUsize::new(0),
             in_flight_limit,
             in_flight: AtomicUsize::new(0),
+            retained: AtomicUsize::new(0),
             admission,
         }
     }
@@ -128,8 +133,11 @@ impl SampleBudget {
         if self.in_flight_limit > 0 {
             // Recorded before the check, so `Drop` gives back exactly what was added.
             self.in_flight.fetch_add(samples, Ordering::Relaxed);
-            self.admission
-                .charge_in_flight(samples, self.in_flight_limit)?;
+            self.admission.charge_in_flight(
+                samples,
+                self.in_flight_limit,
+                self.retained.load(Ordering::Relaxed),
+            )?;
         }
         Ok(())
     }
@@ -166,6 +174,55 @@ impl Drop for SampleBudget {
         let held = *self.in_flight.get_mut();
         if held > 0 {
             self.admission.release_in_flight(held);
+        }
+    }
+}
+
+/// Samples a query keeps for optional work, such as an evaluated subquery grid, reserved
+/// in the process-wide in-flight count through the query's budget for as long as this
+/// lives: memory held outside the samples the query charges. Unlike a charge, a reservation
+/// with no room is refused, adding nothing, so the caller can do without the data instead;
+/// and the query's own charges are checked without it, so what it chose to keep never
+/// refuses work it needs. Other queries see it in full.
+pub(crate) struct Retained {
+    budget: Arc<SampleBudget>,
+    samples: usize,
+}
+
+impl Retained {
+    pub(crate) fn new(budget: &Arc<SampleBudget>) -> Self {
+        Self {
+            budget: Arc::clone(budget),
+            samples: 0,
+        }
+    }
+
+    /// Reserve `samples` more, or return false, reserving nothing, when the process-wide
+    /// count has no room for them. Always room under a budget not counted in flight.
+    pub(crate) fn reserve(&mut self, samples: usize) -> bool {
+        let budget = &self.budget;
+        if budget.in_flight_limit == 0 || samples == 0 {
+            return true;
+        }
+        if !budget
+            .admission
+            .try_reserve(samples, budget.in_flight_limit)
+        {
+            return false;
+        }
+        budget.retained.fetch_add(samples, Ordering::Relaxed);
+        self.samples += samples;
+        true
+    }
+}
+
+impl Drop for Retained {
+    fn drop(&mut self) {
+        if self.samples > 0 {
+            self.budget
+                .retained
+                .fetch_sub(self.samples, Ordering::Relaxed);
+            self.budget.admission.release_in_flight(self.samples);
         }
     }
 }
@@ -295,5 +352,36 @@ mod tests {
         assert!(validate_max_samples(10, 10).is_ok());
         assert!(validate_max_samples(11, 10).is_err());
         assert!(validate_max_samples(11, 0).is_ok());
+    }
+
+    /// Retained samples count toward the process-wide limit for other budgets
+    /// but not for their own budget's charges, are refused without changing the
+    /// count when there is no room, and are given back when released.
+    #[test]
+    fn retained_samples_are_reserved_apart_from_charges() {
+        static COUNTS: Admission = Admission::new();
+        let budget = Arc::new(SampleBudget::counted_in(&COUNTS, 0, 100));
+        let mut held = Retained::new(&budget);
+        assert!(held.reserve(60), "room for 60");
+        assert_eq!(COUNTS.samples_in_flight(), 60);
+        assert!(!held.reserve(50), "no room for 50 more");
+        assert_eq!(COUNTS.samples_in_flight(), 60, "a refusal adds nothing");
+        assert_eq!(budget.loaded(), 0, "retained samples are not charged");
+
+        budget
+            .charge(90)
+            .expect("its own retained samples don't refuse it");
+        let other = SampleBudget::counted_in(&COUNTS, 0, 100);
+        assert!(other.charge(1).is_err(), "another budget sees them");
+        drop(other);
+
+        drop(held);
+        assert_eq!(
+            COUNTS.samples_in_flight(),
+            90,
+            "released with the reservation"
+        );
+        drop(budget);
+        assert_eq!(COUNTS.samples_in_flight(), 0);
     }
 }

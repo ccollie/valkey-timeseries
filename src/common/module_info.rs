@@ -166,7 +166,8 @@ fn info_value(value: &MetricValue) -> Option<InfoValue> {
 /// The counters `promql_subquery_grids_built_total` and
 /// `promql_subquery_grids_declined_total` count the range-query subqueries whose inner
 /// expression was evaluated once over all their outer steps, and those that tried and went
-/// back to evaluating each outer step's window on its own: over the sample limit, or an error.
+/// back to evaluating each outer step's window on its own: over the sample limit, without room
+/// under the in-flight limit, or an error.
 /// A climbing declined count is subqueries running slower than they could.
 fn promql_fields() -> Vec<(String, InfoValue)> {
     let pool = query_workers::stats();

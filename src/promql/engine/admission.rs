@@ -58,13 +58,21 @@ impl Admission {
         self.in_flight.load(Ordering::Relaxed)
     }
 
-    /// Add `samples` to the process-wide count; fail once it passes `limit` (0: no limit).
+    /// Add `samples` to the process-wide count; fail once it passes `limit` (0: no limit),
+    /// not counting `own_retained`: what the charging query itself holds in reservations
+    /// ([`Self::try_reserve`]), which never refuses its own required work.
     /// The samples are added either way: the caller releases what it added when it is done.
-    pub(super) fn charge_in_flight(&self, samples: usize, limit: usize) -> QueryResult<()> {
+    pub(super) fn charge_in_flight(
+        &self,
+        samples: usize,
+        limit: usize,
+        own_retained: usize,
+    ) -> QueryResult<()> {
         let total = self
             .in_flight
             .fetch_add(samples, Ordering::Relaxed)
-            .saturating_add(samples);
+            .saturating_add(samples)
+            .saturating_sub(own_retained);
         if limit > 0 && total > limit {
             return Err(QueryError::Overloaded(format!(
                 "{}: running PromQL queries would have charged {total} > {limit} samples \
@@ -75,7 +83,22 @@ impl Admission {
         Ok(())
     }
 
-    /// Give back samples an earlier [`Self::charge_in_flight`] added.
+    /// Add `samples` to the process-wide count if that keeps it within `limit`; otherwise
+    /// add nothing and return false. For optional data a query keeps, which is declined
+    /// rather than allowed to refuse the query.
+    pub(super) fn try_reserve(&self, samples: usize, limit: usize) -> bool {
+        let total = self
+            .in_flight
+            .fetch_add(samples, Ordering::Relaxed)
+            .saturating_add(samples);
+        if limit > 0 && total > limit {
+            self.in_flight.fetch_sub(samples, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Give back samples an earlier [`Self::charge_in_flight`] or [`Self::try_reserve`] added.
     pub(super) fn release_in_flight(&self, samples: usize) {
         self.in_flight.fetch_sub(samples, Ordering::Relaxed);
     }

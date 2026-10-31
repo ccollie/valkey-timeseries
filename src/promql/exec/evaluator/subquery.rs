@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::common::Sample;
+use crate::promql::engine::sample_budget::Retained;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many inner steps of a subquery are evaluated, in parallel, before their
@@ -16,9 +17,9 @@ static GRIDS_BUILT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GRIDS_DECLINED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Subquery union grids since the module loaded: the ones built, and the ones
-/// abandoned for the sample limit or an error, whose subqueries then evaluated
-/// per step. A union whose windows leave gaps is never attempted, and counts
-/// as neither. Reported by `INFO ts_promql`.
+/// abandoned for the sample limit, the in-flight limit or an error, whose
+/// subqueries then evaluated per step. A union whose windows leave gaps is
+/// never attempted, and counts as neither. Reported by `INFO ts_promql`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SubqueryGridCounts {
     pub built: u64,
@@ -412,6 +413,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
         let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)> = Vec::new();
         let mut points = 0usize;
+        // The grid is kept until the query ends: its points are reserved in
+        // flight as they are added, and given back when it is dropped.
+        let mut retained = Retained::new(&self.prepared.budget);
         let mut steps = union.steps();
         loop {
             let batch: Vec<Timestamp> = steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE).collect();
@@ -427,6 +431,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 } else {
                     batch.into_par_rayon().map(step).into_fallible().collect()?
                 };
+            let before = points;
             // Steps come back in order, so each series' points ascend.
             for (ts, samples) in results {
                 #[cfg(test)]
@@ -453,10 +458,20 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 ));
                 return Ok(None);
             }
+            if !retained.reserve(points - before) {
+                log_debug(format!(
+                    "subquery union grid declined: no room for {points} points under \
+                     ts-promql-max-samples-in-flight; each outer step will evaluate its own window"
+                ));
+                return Ok(None);
+            }
         }
         #[cfg(test)]
         GRIDS_BUILT.with(|built| built.set(built.get() + 1));
-        Ok(Some(EvaluatedSubquery::new(series)))
+        Ok(Some(EvaluatedSubquery {
+            _retained: Some(retained),
+            ..EvaluatedSubquery::new(series)
+        }))
     }
 
     /// The grid `preload_subqueries` evaluated for `subquery`, if any; keyed
@@ -552,6 +567,9 @@ impl std::hash::Hash for SubqueryKey {
 pub(crate) struct EvaluatedSubquery {
     series: Vec<EvaluatedSeries>,
     spans: SeriesSpans,
+    /// Its points' reservation in the process-wide in-flight count, held as
+    /// long as the grid is and given back when it drops.
+    _retained: Option<Retained>,
 }
 
 /// Which series of a union can have points in a window, found without
@@ -642,7 +660,11 @@ impl EvaluatedSubquery {
             })
             .collect();
         let spans = SeriesSpans::new(&series);
-        EvaluatedSubquery { series, spans }
+        EvaluatedSubquery {
+            series,
+            spans,
+            _retained: None,
+        }
     }
 
     /// The subquery's result for the window of inner steps `[start, end]`:

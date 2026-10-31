@@ -222,3 +222,30 @@ fn built_and_declined_grids_are_counted() {
         "a grid over the limit"
     );
 }
+
+/// A grid is held for the whole query, so the points it keeps count toward the
+/// process-wide in-flight limit while it lives. Without room for them the
+/// grid is declined and the subquery evaluates per step; once the query ends
+/// they are given back.
+#[test]
+fn a_grid_reserves_its_points_in_flight() {
+    static COUNTS: Admission = Admission::new();
+    // Per step it fits an in-flight limit of 26; its grid holds 1,800 points.
+    let query = "max_over_time(vector(1)[5m:1s])";
+    let by_in_flight = |limit| QueryOptions {
+        max_samples_in_flight: limit,
+        admission: Some(&COUNTS),
+        ..options()
+    };
+    let (ok, built) = subquery_grids_built_by(|| succeeds(query, by_in_flight(100)));
+    assert!(ok, "per-step evaluation fits");
+    assert_eq!(built, 0, "no room for the grid's points");
+    let (ok, built) = subquery_grids_built_by(|| succeeds(query, by_in_flight(10_000)));
+    assert!(ok);
+    assert_eq!(built, 1, "room for the grid's points");
+    assert_eq!(
+        COUNTS.samples_in_flight(),
+        0,
+        "given back when the query ends"
+    );
+}
