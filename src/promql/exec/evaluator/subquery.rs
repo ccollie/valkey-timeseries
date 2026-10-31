@@ -747,4 +747,24 @@ mod tests {
             "{examined} series looked up for {n} windows of at most 2"
         );
     }
+
+    /// A window holding more points than the per-evaluation cap fails as the
+    /// per-step path's materialization does. Unreachable from a query while a
+    /// grid's own cap is the same limit (a union holds every window), so pinned
+    /// here.
+    #[test]
+    fn a_window_over_the_per_evaluation_cap_fails() {
+        let union = EvaluatedSubquery::new(vec![(
+            Labels::from_pairs(&[("job", "a")]).into(),
+            (0..10).map(|t| Sample::new(t, 1.0)).collect(),
+            vec![false; 10],
+        )]);
+        assert!(union.window(0, 4, 5, 5).is_ok(), "exactly the cap");
+        let Err(err) = union.window(0, 5, 6, 5) else {
+            panic!("one past the cap");
+        };
+        let err = err.to_string();
+        assert!(err.contains("6 > 5"), "{err}");
+        assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
+    }
 }
