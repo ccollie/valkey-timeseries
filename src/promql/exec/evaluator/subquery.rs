@@ -357,6 +357,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         grid: &PreloadGrid,
     ) -> EvalResult<Option<EvaluatedSubquery>> {
         let sub = Evaluator::with_prepared(self.reader, self.options, Arc::clone(prepared));
+        // Only the bounds that `@ start()`/`@ end()` resolve to, the lookback
+        // and the deadline are read from this context: `eval_subquery_step`
+        // sets each inner step's own `evaluation_ts` and `step_ms`, so the
+        // values given here for those two are placeholders.
         let ctx = EvalContext {
             query_start: grid.at_start_ms,
             query_end: grid.at_end_ms,
