@@ -815,7 +815,10 @@ impl EvaluatedSubquery {
             );
         }
         let mut out = Vec::new();
-        let mut first_seen: Vec<(Timestamp, u32)> = Vec::new();
+        // Whether the series came out in per-step order, checked as they come:
+        // almost always, so no keys are kept unless they did not.
+        let mut previous: Option<(Timestamp, u32)> = None;
+        let mut in_order = true;
         let mut points = 0;
         self.spans.overlapping(start, end, |at| {
             #[cfg(test)]
@@ -828,7 +831,9 @@ impl EvaluatedSubquery {
                 return;
             }
             points += j - i;
-            first_seen.push((series.samples[i].timestamp, series.positions[i]));
+            let first_seen = (series.samples[i].timestamp, series.positions[i]);
+            in_order &= previous.is_none_or(|previous| previous < first_seen);
+            previous = Some(first_seen);
             out.push(EvalSamples {
                 values: SampleWindow::shared(&series.samples, i..j),
                 labels: series.labels.clone(),
@@ -838,9 +843,18 @@ impl EvaluatedSubquery {
             });
         });
         SampleBudget::new(max_samples).charge(points)?;
-        if !first_seen.is_sorted() {
-            // Each key is distinct: one series per position in a step.
-            let mut keyed: Vec<_> = first_seen.into_iter().zip(out).collect();
+        if !in_order {
+            // A second pass over the same series, in the same order, for their
+            // keys: each is distinct, one series per position in a step.
+            let mut keys = Vec::with_capacity(out.len());
+            self.spans.overlapping(start, end, |at| {
+                let series = &self.series[at];
+                let i = series.samples.partition_point(|p| p.timestamp < start);
+                if series.samples.get(i).is_some_and(|p| p.timestamp <= end) {
+                    keys.push((series.samples[i].timestamp, series.positions[i]));
+                }
+            });
+            let mut keyed: Vec<_> = keys.into_iter().zip(out).collect();
             keyed.sort_unstable_by_key(|(key, _)| *key);
             out = keyed.into_iter().map(|(_, samples)| samples).collect();
         }
