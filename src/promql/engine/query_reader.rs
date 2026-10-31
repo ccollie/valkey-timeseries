@@ -369,7 +369,7 @@ impl GridRequest {
         charge: &mut dyn FnMut(usize) -> QueryResult<()>,
     ) -> QueryResult<GridOutcome> {
         let window_ends = self.window_ends();
-        let mut sink = GridSink::for_request(self);
+        let mut sink = GridSink::for_request(self, &window_ends);
         self.per_series_chunked(&window_ends, series, deadline, |output, read| {
             let added = sink.take(self, output, deadline)?;
             charge(added.saturating_sub(read))
@@ -453,13 +453,13 @@ pub(in crate::promql) enum GridSink {
 
 impl GridSink {
     /// The sink `request`'s output belongs in.
-    pub(in crate::promql) fn for_request(request: &GridRequest) -> Self {
+    pub(in crate::promql) fn for_request(request: &GridRequest, window_ends: &[Timestamp]) -> Self {
         match request.aggregation.as_ref() {
             None => GridSink::Series(request.empty_output()),
             Some(aggregation) => match aggregation.strategy() {
                 PushdownStrategy::Reduce => GridSink::Partials(SteppedPartialGroups::new(
                     aggregation.kind,
-                    request.window_ends().into(),
+                    window_ends.into(),
                 )),
                 PushdownStrategy::Select | PushdownStrategy::CountValues => {
                     GridSink::Selection(SteppedSelection::new(aggregation.clone()))

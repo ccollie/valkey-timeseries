@@ -112,7 +112,7 @@ impl GridFanoutCommand {
         deadline: Deadline,
     ) -> Self {
         let window_ends = request.window_ends();
-        let sink = GridSink::for_request(&request);
+        let sink = GridSink::for_request(&request, &window_ends);
         Self {
             matchers,
             request,
@@ -500,7 +500,7 @@ impl<'a> ShardGrid<'a> {
             request,
             window_ends,
             raw: Vec::new(),
-            staged: GridSink::for_request(request),
+            staged: GridSink::for_request(request, window_ends),
             staged_groups: FingerprintHashSet::default(),
             budget,
             deadline,
