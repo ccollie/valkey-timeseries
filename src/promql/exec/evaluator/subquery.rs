@@ -357,10 +357,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok((current_time_ms, samples))
     }
 
-    /// Whether `subquery`'s union over `grid` may be evaluated up front: its
-    /// windows leave no gap ([`PreloadGrid::windows_cover_union`]), so the
-    /// union holds only steps per-step evaluation visits anyway.
-    pub(super) fn union_is_all_windows(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
+    /// Whether the outer steps' windows of `subquery` over `grid` cover its
+    /// union without gaps ([`PreloadGrid::windows_cover_union`]), so the union
+    /// may be evaluated up front: it holds only steps per-step evaluation visits
+    /// anyway. Tests can switch grids off here.
+    pub(super) fn windows_cover_union(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
         #[cfg(test)]
         if self.options.disable_subquery_grids {
             return false;
