@@ -413,7 +413,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             limit => limit.min(MAX_SUBQUERY_GRID_POINTS),
         };
         let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
-        let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)> = Vec::new();
+        let mut series: Vec<(EvalLabels, Vec<Sample>, DropFlagsBuilder)> = Vec::new();
         let mut points = 0usize;
         // The grid is kept until the query ends: its points are reserved in
         // flight as they are added, and given back when it is dropped.
@@ -445,12 +445,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                         Some(&at) => at,
                         None => {
                             index.insert(sample.labels.clone(), series.len());
-                            series.push((sample.labels, Vec::new(), Vec::new()));
+                            series.push((sample.labels, Vec::new(), DropFlagsBuilder::default()));
                             series.len() - 1
                         }
                     };
-                    series[at].1.push(Sample::new(ts, sample.value));
-                    series[at].2.push(sample.drop_name);
+                    let (_, samples, drops) = &mut series[at];
+                    drops.push(sample.drop_name, samples.len());
+                    samples.push(Sample::new(ts, sample.value));
                 }
             }
             if points > cap {
@@ -472,7 +473,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         GRIDS_BUILT.with(|built| built.set(built.get() + 1));
         Ok(Some(EvaluatedSubquery {
             _retained: Some(retained),
-            ..EvaluatedSubquery::new(series)
+            ..EvaluatedSubquery::new(
+                series
+                    .into_iter()
+                    .map(|(labels, samples, drops)| (labels, samples, drops.finish()))
+                    .collect(),
+            )
         }))
     }
 
@@ -645,20 +651,72 @@ struct EvaluatedSeries {
     labels: EvalLabels,
     /// Ascending by step.
     samples: Arc<[Sample]>,
-    /// Whether the sample at the same position carried a pending drop.
-    drops: Arc<[bool]>,
+    /// Whether each sample carried a pending `__name__` drop.
+    drops: DropFlags,
+}
+
+/// Which of a series' points carry a pending `__name__` drop. Almost always all
+/// or none: the expression that made a series decides it, and a label set takes
+/// different paths at different steps only through operators such as `or`.
+#[derive(Debug)]
+enum DropFlags {
+    /// Every point has this flag.
+    Uniform(bool),
+    /// Each point's flag, by position.
+    Mixed(Box<[bool]>),
+}
+
+impl DropFlags {
+    /// Whether any point in `points` carries a drop.
+    fn any(&self, points: std::ops::Range<usize>) -> bool {
+        match self {
+            DropFlags::Uniform(drop) => *drop,
+            DropFlags::Mixed(each) => each[points].iter().any(|&drop| drop),
+        }
+    }
+}
+
+/// Collects a series' [`DropFlags`] point by point, keeping one value until a
+/// point differs.
+#[derive(Debug, Default, Clone)]
+struct DropFlagsBuilder {
+    uniform: bool,
+    mixed: Option<Vec<bool>>,
+}
+
+impl DropFlagsBuilder {
+    /// Add the flag of the point at position `at`, the series' point count so far.
+    fn push(&mut self, drop: bool, at: usize) {
+        match &mut self.mixed {
+            Some(each) => each.push(drop),
+            None if at == 0 => self.uniform = drop,
+            None if drop != self.uniform => {
+                let mut each = vec![self.uniform; at];
+                each.push(drop);
+                self.mixed = Some(each);
+            }
+            None => {}
+        }
+    }
+
+    fn finish(self) -> DropFlags {
+        match self.mixed {
+            Some(each) => DropFlags::Mixed(each.into_boxed_slice()),
+            None => DropFlags::Uniform(self.uniform),
+        }
+    }
 }
 
 impl EvaluatedSubquery {
     /// From each series' labels, points and drop flags, in the order the
     /// series were first seen: by their first step.
-    fn new(series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)>) -> Self {
+    fn new(series: Vec<(EvalLabels, Vec<Sample>, DropFlags)>) -> Self {
         let series: Vec<EvaluatedSeries> = series
             .into_iter()
             .map(|(labels, samples, drops)| EvaluatedSeries {
                 labels,
                 samples: Arc::from(samples),
-                drops: Arc::from(drops),
+                drops,
             })
             .collect();
         let spans = SeriesSpans::new(&series);
@@ -699,7 +757,7 @@ impl EvaluatedSubquery {
                 labels: series.labels.clone(),
                 range_ms,
                 range_end_ms: end,
-                drop_name: series.drops[i..j].iter().any(|&drop| drop),
+                drop_name: series.drops.any(i..j),
             });
         });
         SampleBudget::new(max_samples).charge(points)?;
@@ -722,7 +780,7 @@ mod tests {
                     (
                         labels.into(),
                         vec![Sample::new(i * 1_000, 1.0)],
-                        vec![false],
+                        DropFlags::Uniform(false),
                     )
                 })
                 .collect(),
@@ -759,7 +817,7 @@ mod tests {
         let union = EvaluatedSubquery::new(vec![(
             Labels::from_pairs(&[("job", "a")]).into(),
             (0..10).map(|t| Sample::new(t, 1.0)).collect(),
-            vec![false; 10],
+            DropFlags::Uniform(false),
         )]);
         assert!(union.window(0, 4, 5, 5).is_ok(), "exactly the cap");
         let Err(err) = union.window(0, 5, 6, 5) else {
@@ -768,5 +826,27 @@ mod tests {
         let err = err.to_string();
         assert!(err.contains("6 > 5"), "{err}");
         assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
+    }
+
+    /// A series' drop flags stay one value until a point differs, then keep
+    /// every point's flag, the earlier ones included.
+    #[test]
+    fn drop_flags_stay_uniform_until_one_differs() {
+        let mut flags = DropFlagsBuilder::default();
+        for at in 0..3 {
+            flags.push(true, at);
+        }
+        assert!(matches!(flags.clone().finish(), DropFlags::Uniform(true)));
+        flags.push(false, 3);
+        flags.push(true, 4);
+        let flags = flags.finish();
+        let DropFlags::Mixed(each) = &flags else {
+            panic!("one point differs");
+        };
+        assert_eq!(&each[..], [true, true, true, false, true]);
+        assert!(flags.any(0..3));
+        assert!(!flags.any(3..4));
+        assert!(DropFlags::Uniform(true).any(7..9));
+        assert!(!DropFlags::Uniform(false).any(0..5));
     }
 }
