@@ -2,6 +2,37 @@
 //! union preload is cached under.
 
 use super::*;
+use crate::common::Sample;
+
+/// How many inner steps of a subquery are evaluated, in parallel, before their
+/// samples are merged: a long subquery must not hold one vector per step.
+const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
+
+/// The most points an evaluated union grid may hold when the query's budget is
+/// unlimited: past it the subquery evaluates per step, as it would without.
+const MAX_SUBQUERY_GRID_POINTS: usize = 10_000_000;
+
+/// How many outer steps answered from an evaluated union grid, for tests that
+/// check the grid is used.
+#[cfg(test)]
+pub(crate) static SUBQUERY_GRID_USES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static GRIDS_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with evaluated subquery grids turned off on this thread — the one a
+/// range query prepares on — so its subqueries evaluate per step: the
+/// reference the grids are tested against.
+#[cfg(test)]
+pub(crate) fn without_subquery_grids<T>(f: impl FnOnce() -> T) -> T {
+    GRIDS_OFF.with(|off| off.set(true));
+    let out = f();
+    GRIDS_OFF.with(|off| off.set(false));
+    out
+}
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     pub(in crate::promql::exec) fn evaluate_subquery(
@@ -65,9 +96,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let (aligned_start_ms, _, _, expected_steps) =
             compute_subquery_alignment(subquery_start_ms, subquery_end_ms, step_ms, 0);
 
+        // The inner expression already evaluated at every step of the union
+        // (`preload_subqueries`): this window is a slice of it.
+        if let Some(evaluated) = self.evaluated_union(subquery) {
+            #[cfg(test)]
+            SUBQUERY_GRID_USES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return evaluated.window(
+                aligned_start_ms,
+                subquery_end_ms,
+                range_ms,
+                self.options.max_samples,
+            );
+        }
+
         let mut steps = step_times(aligned_start_ms, subquery_end_ms, step_ms);
         const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
-        const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
 
         // Preload the subquery's *own* grid, in a sub-evaluator that owns the
         // maps.
@@ -252,6 +295,104 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok((current_time_ms, samples))
     }
 
+    /// Whether a subquery over `grid` has outer windows that leave no gap
+    /// between them, so its union grid holds only steps the per-step path
+    /// evaluates anyway — every window is the same one (`@`), or the outer
+    /// step is no longer than the subquery's range. Only then is evaluating
+    /// the whole union up front never more work than evaluating per step.
+    pub(super) fn union_is_all_windows(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
+        #[cfg(test)]
+        if GRIDS_OFF.with(std::cell::Cell::get) {
+            return false;
+        }
+        subquery.at.is_some() || grid.step_ms <= duration_ms(subquery.range)
+    }
+
+    /// Evaluate `subquery`'s inner expression at every step of its `union`
+    /// grid, over the union's prepared data, for every outer step of `grid` to
+    /// slice its window from ([`EvaluatedSubquery::window`]).
+    ///
+    /// Each inner step is evaluated exactly as the per-step path evaluates it:
+    /// at its own timestamp, with the enclosing query's bounds, lookback and
+    /// deadline, so its value does not depend on which outer step asks. The
+    /// grid is held for the whole query, so it is charged to the query's
+    /// budget — only if it fits: `None` when it does not, or when it grows
+    /// past [`MAX_SUBQUERY_GRID_POINTS`], and the subquery evaluates per step.
+    pub(super) fn evaluate_union(
+        &self,
+        subquery: &SubqueryExpr,
+        prepared: &Arc<PreparedQuery>,
+        union: &PreloadGrid,
+        grid: &PreloadGrid,
+    ) -> EvalResult<Option<EvaluatedSubquery>> {
+        let sub = Evaluator::with_prepared(self.reader, self.options, Arc::clone(prepared));
+        let ctx = EvalContext {
+            query_start: grid.at_start_ms,
+            query_end: grid.at_end_ms,
+            evaluation_ts: union.start_ms,
+            lookback_delta_ms: grid.lookback_delta_ms,
+            step_ms: 0,
+            deadline: self.deadline,
+        };
+        let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
+        let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)> = Vec::new();
+        let mut points = 0usize;
+        let mut steps = union.steps();
+        loop {
+            let batch: Vec<Timestamp> = steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE).collect();
+            if batch.is_empty() {
+                break;
+            }
+            let results: Vec<(Timestamp, Vec<EvalSample>)> = batch
+                .into_par_rayon()
+                .map(|ts| sub.eval_subquery_step(subquery, &ctx, ts))
+                .into_fallible()
+                .collect()?;
+            // Steps come back in order, so each series' points ascend.
+            for (ts, samples) in results {
+                for sample in samples {
+                    points += 1;
+                    let at = *index.entry(sample.labels.clone()).or_insert_with(|| {
+                        series.push((sample.labels, Vec::new(), Vec::new()));
+                        series.len() - 1
+                    });
+                    series[at].1.push(Sample::new(ts, sample.value));
+                    series[at].2.push(sample.drop_name);
+                }
+            }
+            if points > MAX_SUBQUERY_GRID_POINTS {
+                return Ok(None);
+            }
+        }
+        if self.prepared.budget.check_ahead(points).is_err() {
+            return Ok(None);
+        }
+        self.charge_samples(points)?;
+        Ok(Some(EvaluatedSubquery {
+            series: series
+                .into_iter()
+                .map(|(labels, samples, drops)| EvaluatedSeries {
+                    labels,
+                    samples: Arc::from(samples),
+                    drops: Arc::from(drops),
+                })
+                .collect(),
+        }))
+    }
+
+    /// The grid `preload_subqueries` evaluated for `subquery`, if any; keyed
+    /// as [`Self::prepared_union`] is.
+    fn evaluated_union(&self, subquery: &SubqueryExpr) -> Option<Arc<EvaluatedSubquery>> {
+        let evaluated = &self.prepared.evaluated;
+        if evaluated.is_empty() {
+            return None;
+        }
+        match self.prepared.node_keys.subqueries.get(&node_addr(subquery)) {
+            Some(key) => evaluated.get(key).cloned(),
+            None => evaluated.get(&SubqueryKey::of(subquery)).cloned(),
+        }
+    }
+
     /// The union `preload_subqueries` prepared for `subquery`, if any: by the
     /// key [`NodeKeys`] memoized for the node, else by one built here — for a
     /// node built during evaluation.
@@ -323,5 +464,55 @@ impl Eq for SubqueryKey {}
 impl std::hash::Hash for SubqueryKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         state.write_u64(self.hash);
+    }
+}
+
+/// A subquery's inner expression evaluated at every step of its union grid:
+/// per series, its points at those steps and each one's pending `__name__`
+/// drop. Every outer step slices its own window out of it.
+pub(crate) struct EvaluatedSubquery {
+    series: Vec<EvaluatedSeries>,
+}
+
+struct EvaluatedSeries {
+    labels: EvalLabels,
+    /// Ascending by step.
+    samples: Arc<[Sample]>,
+    /// Whether the sample at the same position carried a pending drop.
+    drops: Arc<[bool]>,
+}
+
+impl EvaluatedSubquery {
+    /// The subquery's result for the window of inner steps `[start, end]`:
+    /// what per-step evaluation over those steps builds — the series with a
+    /// point in it, each its points in it (shared, not copied), dropping the
+    /// name if any of those points did — capped per evaluation at
+    /// `max_samples`, as the per-step path caps what it builds.
+    fn window(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+        range_ms: i64,
+        max_samples: usize,
+    ) -> EvalResult<ExprResult> {
+        let mut out = Vec::new();
+        let mut points = 0;
+        for series in &self.series {
+            let i = series.samples.partition_point(|p| p.timestamp < start);
+            let j = series.samples.partition_point(|p| p.timestamp <= end);
+            if i >= j {
+                continue;
+            }
+            points += j - i;
+            out.push(EvalSamples {
+                values: SampleWindow::shared(&series.samples, i..j),
+                labels: series.labels.clone(),
+                range_ms,
+                range_end_ms: end,
+                drop_name: series.drops[i..j].iter().any(|&drop| drop),
+            });
+        }
+        SampleBudget::new(max_samples).charge(points)?;
+        Ok(ExprResult::RangeVector(out))
     }
 }

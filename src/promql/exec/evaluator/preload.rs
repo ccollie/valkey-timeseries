@@ -159,6 +159,26 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 .prepare(plan)
             {
                 Ok(prepared) => {
+                    // Where its outer windows overlap, evaluate the inner
+                    // expression once over the whole union, for every outer
+                    // step to slice; a grid that does not fit is skipped and
+                    // the subquery evaluates per step.
+                    if self.union_is_all_windows(subquery, grid) {
+                        match self.evaluate_union(subquery, &prepared, &union, grid) {
+                            Ok(Some(evaluated)) => {
+                                self.preloads
+                                    .evaluated
+                                    .write()
+                                    .unwrap()
+                                    .insert(key.clone(), Arc::new(evaluated));
+                            }
+                            Ok(None) => {}
+                            Err(err) if is_query_ending(&err) => return Err(err),
+                            Err(err) => log_debug(format!(
+                                "subquery union evaluation failed; each outer step will evaluate its own window: {err}"
+                            )),
+                        }
+                    }
                     self.preloads
                         .subqueries
                         .write()

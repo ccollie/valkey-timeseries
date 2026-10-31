@@ -1,0 +1,112 @@
+//! A range query evaluates a subquery's inner expression once per step of the
+//! subquery's union grid and slices each outer step's window out of it. These
+//! pin that the answer is the one per-step evaluation gives, for every shape
+//! the slicing has to get right.
+use crate::common::Sample;
+use crate::labels::Labels;
+use crate::promql::QueryOptions;
+use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
+use crate::promql::engine::{QueryReader, evaluate_range};
+use crate::promql::exec::{SUBQUERY_GRID_USES, without_subquery_grids};
+use promql_parser::parser::{EvalStmt, parse};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, UNIX_EPOCH};
+
+/// `m` on two series every 10 s; `n` on one series with a gap; both over the
+/// whole query window plus its lookback.
+fn reader() -> Arc<dyn QueryReader> {
+    let querier = MemorySeriesQuerier::new();
+    for job in ["a", "b"] {
+        let labels = Labels::from_pairs(&[("__name__", "m"), ("job", job)]);
+        for t in 0..400 {
+            let value = if job == "a" {
+                t as f64
+            } else {
+                (t % 7) as f64 - 3.0
+            };
+            querier.add_sample(&labels, Sample::new(t * 10_000, value));
+        }
+    }
+    let labels = Labels::from_pairs(&[("__name__", "n"), ("job", "a")]);
+    for t in (0..400).filter(|t| !(150..210).contains(t)) {
+        querier.add_sample(&labels, Sample::new(t * 10_000, -(t as f64)));
+    }
+    Arc::new(querier)
+}
+
+fn options() -> QueryOptions {
+    QueryOptions {
+        deadline: None,
+        ..QueryOptions::default()
+    }
+}
+
+/// The range query `query` from 1500 s to 3000 s at `step`, as sorted
+/// `(labels, samples)`.
+fn run(query: &str, step: Duration) -> Vec<(Labels, Vec<Sample>)> {
+    let stmt = EvalStmt {
+        expr: parse(query).unwrap_or_else(|e| panic!("{query}: {e}")),
+        start: UNIX_EPOCH + Duration::from_secs(1_500),
+        end: UNIX_EPOCH + Duration::from_secs(3_000),
+        interval: step,
+        lookback_delta: Duration::from_secs(300),
+    };
+    evaluate_range(reader(), stmt, options())
+        .unwrap_or_else(|e| panic!("{query}: {e}"))
+        .into_iter()
+        .map(|s| (s.labels, s.samples))
+        .collect()
+}
+
+fn same_as_per_step(query: &str, step: Duration) -> bool {
+    let cached = run(query, step);
+    let per_step = without_subquery_grids(|| run(query, step));
+    assert_eq!(cached, per_step, "{query} at {step:?}");
+    !cached.is_empty()
+}
+
+const QUERIES: &[&str] = &[
+    "max_over_time(m[5m:1m])",
+    "sum_over_time(rate(m[2m])[10m:30s])",
+    "max_over_time(m[5m:1m]) - min_over_time(m[5m:1m])",
+    "max_over_time(max_over_time(m[2m:30s])[10m:1m])",
+    "max_over_time(m[5m:1m] @ 2000)",
+    "max_over_time(m[5m:1m] @ end())",
+    "avg_over_time(m[5m:1m] offset 2m)",
+    "max_over_time(timestamp(m)[5m:1m])",
+    "max_over_time(vector(time())[5m:1m])",
+    "last_over_time(abs(m)[5m:1m])",
+    "last_over_time(m[5m:1m])",
+    "count_over_time((m or abs(n))[10m:1m])",
+    // One label set whose pending drop changes from step to step: `n` itself
+    // where it reports, `abs` of its value ten minutes earlier in its gap.
+    "last_over_time((n or abs(n offset 10m))[10m:1m])",
+    "last_over_time(n[10m:30s])",
+    "sum by (job) (count_over_time(n[10m:1m]))",
+];
+
+/// Every query answers what per-step evaluation answers, at an outer step that
+/// lets the windows overlap (the grid is used) and at one that does not.
+#[test]
+fn evaluated_subquery_grids_answer_as_per_step_evaluation() {
+    for query in QUERIES {
+        for step in [Duration::from_secs(60), Duration::from_secs(30)] {
+            assert!(
+                same_as_per_step(query, step),
+                "{query}: no result to compare"
+            );
+        }
+        same_as_per_step(query, Duration::from_secs(900));
+    }
+}
+
+/// A subquery whose windows overlap is evaluated from its union grid; one
+/// whose outer step is wider than its range is not.
+#[test]
+fn only_overlapping_windows_use_the_grid() {
+    let uses = || SUBQUERY_GRID_USES.load(Ordering::Relaxed);
+    let before = uses();
+    run("max_over_time(m[5m:1m])", Duration::from_secs(60));
+    assert!(uses() > before, "an overlapping subquery used no grid");
+}

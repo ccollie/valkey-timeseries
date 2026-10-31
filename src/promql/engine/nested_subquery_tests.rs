@@ -9,6 +9,7 @@ use crate::promql::QueryOptions;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_instant, evaluate_range};
 use crate::promql::error::QueryError;
+use crate::promql::exec::without_subquery_grids;
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -85,6 +86,9 @@ fn assert_times_out(name: &str, run: impl FnOnce() -> Result<(), QueryError>) {
     );
 }
 
+/// Per step, as a subquery evaluates when its union grid is not evaluated up
+/// front (its windows leave gaps, or the grid does not fit): there nine levels
+/// take seconds, and only the step loop's own checks stop them.
 #[test]
 fn nested_subqueries_stop_at_the_deadline() {
     // A leaf with no reader call at all, a selector, and a rollup the preload fetches once up
@@ -95,8 +99,26 @@ fn nested_subqueries_stop_at_the_deadline() {
             max_subquery_steps: 0,
             ..options(Some(DEADLINE_MS))
         };
-        assert_times_out(&format!("instant {leaf}"), || instant(&query, uncapped()));
-        assert_times_out(&format!("range {leaf}"), || range(&query, uncapped()));
+        without_subquery_grids(|| {
+            assert_times_out(&format!("instant {leaf}"), || instant(&query, uncapped()));
+            assert_times_out(&format!("range {leaf}"), || range(&query, uncapped()));
+        });
+    }
+}
+
+/// Evaluated up front, the same nine levels take milliseconds; a deadline that
+/// passes while the grids are built still stops them there.
+#[test]
+fn nested_subquery_grids_stop_at_the_deadline() {
+    for leaf in ["vector(1)", "m", "rate(m[1m])"] {
+        let query = nested(leaf, DEEP);
+        // Well inside the 10-40 ms the grids take to build in a debug build.
+        let passed = || QueryOptions {
+            max_subquery_steps: 0,
+            ..options(Some(2))
+        };
+        assert_times_out(&format!("instant {leaf}"), || instant(&query, passed()));
+        assert_times_out(&format!("range {leaf}"), || range(&query, passed()));
     }
 }
 
