@@ -59,6 +59,7 @@ mod subquery;
 
 use pushdown::{fusable_aggregation, stepped_aggregation_key};
 use subquery::{EvaluatedSubquery, SubqueryKey};
+pub(crate) use subquery::subquery_grid_counts;
 #[cfg(test)]
 pub(crate) use subquery::{
     grid_points_evaluated_by, subquery_grids_built_by, with_test_grid_switch,
