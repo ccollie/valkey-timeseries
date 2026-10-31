@@ -58,7 +58,9 @@ mod pushdown;
 mod subquery;
 
 use pushdown::{fusable_aggregation, stepped_aggregation_key};
-use subquery::SubqueryKey;
+use subquery::{EvaluatedSubquery, SubqueryKey};
+#[cfg(test)]
+pub(crate) use subquery::{SUBQUERY_GRID_USES, without_subquery_grids};
 
 /// How many preload requests may be in flight at once.
 ///
@@ -86,6 +88,9 @@ pub(crate) struct PreparedQuery {
     /// Each subquery's inner grid, prepared once for every outer step; a
     /// subquery absent here prepares its own grid when evaluated.
     subqueries: SubqueryPreloadMap,
+    /// Each subquery's inner expression evaluated at every step of its union,
+    /// where its outer windows overlap; see [`Evaluator::evaluate_union`].
+    evaluated: EvaluatedSubqueryMap,
     /// Per-node lookup keys; see [`NodeKeys`].
     node_keys: NodeKeys,
     /// Whether any map has an entry: the per-step question
@@ -105,6 +110,7 @@ impl PreparedQuery {
             grids: GridPreloadMap::default(),
             matrices: MatrixPreloadMap::default(),
             subqueries: SubqueryPreloadMap::default(),
+            evaluated: EvaluatedSubqueryMap::default(),
             node_keys: NodeKeys::default(),
             any_preloaded: false,
             budget,
@@ -121,6 +127,7 @@ pub(crate) struct Preloads {
     grids: RwLock<GridPreloadMap>,
     matrices: RwLock<MatrixPreloadMap>,
     subqueries: RwLock<SubqueryPreloadMap>,
+    evaluated: RwLock<EvaluatedSubqueryMap>,
 }
 
 /// One subquery's evaluator, prepared for the union of every outer step's
@@ -132,6 +139,9 @@ pub(crate) struct Preloads {
 /// and a subquery's union follows from that grid and the subquery alone (its
 /// range, step and modifiers are all part of the content).
 type SubqueryPreloadMap = ahash::AHashMap<SubqueryKey, Arc<PreparedQuery>>;
+
+/// Each subquery's evaluated union grid, keyed as [`SubqueryPreloadMap`] is.
+type EvaluatedSubqueryMap = ahash::AHashMap<SubqueryKey, Arc<EvaluatedSubquery>>;
 
 /// The keys the step loop looks preloaded data up by, computed once per node of
 /// the expression instead of once per step.
@@ -232,12 +242,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             grids,
             matrices,
             subqueries,
+            evaluated,
         } = std::mem::take(&mut self.preloads);
-        let (instant, grids, matrices, subqueries) = (
+        let (instant, grids, matrices, subqueries, evaluated) = (
             instant.into_inner().unwrap(),
             grids.into_inner().unwrap(),
             matrices.into_inner().unwrap(),
             subqueries.into_inner().unwrap(),
+            evaluated.into_inner().unwrap(),
         );
         for key in node_keys.subqueries.values_mut() {
             if let Some((shared, _)) = subqueries.get_key_value(key) {
@@ -253,6 +265,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             grids,
             matrices,
             subqueries,
+            evaluated,
             node_keys,
             any_preloaded,
             budget: Arc::clone(&self.prepared.budget),
