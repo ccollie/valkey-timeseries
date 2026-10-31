@@ -42,6 +42,10 @@ pub(crate) struct Admission {
     memory_ratio: AtomicU32,
 }
 
+/// One query's reservations for optional data may take at most one over this of the
+/// in-flight room that everything else leaves: half.
+pub(crate) const RETAINED_SHARE_OF_ROOM: usize = 2;
+
 /// This node's admission state.
 pub(crate) static ADMISSION: Admission = Admission::new();
 
@@ -83,15 +87,21 @@ impl Admission {
         Ok(())
     }
 
-    /// Add `samples` to the process-wide count if that keeps it within `limit`; otherwise
-    /// add nothing and return false. For optional data a query keeps, which is declined
-    /// rather than allowed to refuse the query.
-    pub(super) fn try_reserve(&self, samples: usize, limit: usize) -> bool {
+    /// Add `samples` to the process-wide count for optional data a query keeps, if the
+    /// query's reservations, `own_retained` before these, stay within
+    /// [`RETAINED_SHARE_OF_ROOM`] of the room everything else leaves under `limit` (0: no
+    /// limit); otherwise add nothing and return false, so the data is declined rather than
+    /// allowed to refuse anyone. Everything else is other queries and this one's charges:
+    /// a reservation is checked when made, and cannot see the reads its query or another
+    /// will need later, so part of the room is always left for them.
+    pub(super) fn try_reserve(&self, samples: usize, limit: usize, own_retained: usize) -> bool {
         let total = self
             .in_flight
             .fetch_add(samples, Ordering::Relaxed)
             .saturating_add(samples);
-        if limit > 0 && total > limit {
+        let reserved = own_retained.saturating_add(samples);
+        let room = limit.saturating_sub(total.saturating_sub(reserved));
+        if limit > 0 && reserved > room / RETAINED_SHARE_OF_ROOM {
             self.in_flight.fetch_sub(samples, Ordering::Relaxed);
             return false;
         }

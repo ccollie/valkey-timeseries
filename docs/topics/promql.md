@@ -499,7 +499,7 @@ at startup.
 | `ts-promql-max-response-series` | 1000 | Maximum returned series, checked on the query's result as well as on each read; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. |
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
 | `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. The count is a running total: samples stay counted after the query drops them, so it bounds the query's work, not its memory at any one moment. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. Also caps the points one [subquery grid](#subquery-grids) may hold. |
-| `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. The points [subquery grids](#subquery-grids) hold count too, while they are held; a grid without room is not built. `0` means unlimited. |
+| `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. The points [subquery grids](#subquery-grids) hold count too, while they are held; a query's grids may take at most half the room everything else leaves, and a grid without it is not built. `0` means unlimited. |
 | `ts-promql-max-memory-percent` | 90 | Refuse new queries, and stop running ones at their next check, while used memory is at or past this percentage of `maxmemory`. `0` disables it; it has no effect without `maxmemory`. |
 | `ts-promql-max-reply-bytes` | 268435456 (256 MiB) | Maximum estimated size of a query's reply, checked before any of it is written. `0` means unlimited. |
 | `ts-promql-max-subquery-steps` | 20000000 | Maximum subquery steps one query may evaluate in all: each subquery's steps, multiplied by every subquery around it and by the query's own steps, summed. Checked before anything runs. `0` means unlimited. |
@@ -597,14 +597,19 @@ work, when:
   than sharing it saves;
 - its grid would hold more points than `ts-promql-max-samples-per-query`, or than the
   built-in ceiling of 10,000,000 points, whichever is lower;
-- `ts-promql-max-samples-in-flight` has no room for the grid's points; or
+- the grid's points, with the query's other grids, would take more than half the
+  `ts-promql-max-samples-in-flight` room that everything else leaves; or
 - evaluating the grid fails with an error that would not end the query.
 
 The two limits are checked while the grid is built, so a grid over either is abandoned after
 at most one batch of 64 inner steps past it; the churn check runs after a first batch of 8. A grid's points are not charged to `ts-promql-max-samples-per-query`; they are
 reserved against `ts-promql-max-samples-in-flight` while the grid is held, and given back when
 it is dropped, at the latest when the query ends. Other queries see that reservation in full;
-the query holding it does not, so its own reads are never refused for it.
+the query holding it does not, so its own reads are never refused for it. A reservation is
+checked only when it is made and cannot know what will be read after it, so a query's grids may
+take at most half the room left by other queries and its own reads: the rest stays for work that
+must run. Reads that follow can still carry the total past the limit by up to what the query's
+grids hold, and other queries are refused meanwhile.
 
 Memory: a grid point takes 20 bytes (a timestamp, a value, and its position among its step's
 series, which keeps tied values in the order evaluating each step gives them), plus, per series,
