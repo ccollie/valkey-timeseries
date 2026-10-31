@@ -17,12 +17,6 @@ use promql_parser::parser::{BinaryExpr, LabelModifier, VectorMatchCardinality};
 /// Below it the fan-out costs more than the hashing it splits: one
 /// `into_par()` call is ~30-35us on an M2 (release, system allocator), against
 /// a match key at ~165ns, so a 100-series operand is ~16us of real work.
-///
-/// Above it the fan-out is close to free but buys little: measured serial
-/// against parallel, 10000 series went 5.3ms -> 4.8ms and 100000 went 75ms ->
-/// 70ms, while 50000 went the other way (33ms -> 38ms). Hashing is the only
-/// part of this path that allocates nothing, which is why it is the only part
-/// left with a fan-out at all; the join beside it is serial at every size.
 const PARALLEL_MATCH_KEY_THRESHOLD: usize = 2048;
 
 // Vector-Vector operations
@@ -232,11 +226,6 @@ fn make_fill_one_sample(many_sample: &EvalSample, fill_value: f64) -> EvalSample
 /// "one" sample's *match* labels only, as Prometheus labels it
 /// (`Labels.MatchLabels`): with `on(...)` just the listed labels, otherwise
 /// everything but the ignored labels and `__name__`.
-///
-/// It used to take all of the "one" sample's labels, so under `group_left`
-/// the filled series carried the one side's extra labels
-/// (`{owner="team-c", status="404"}` where Prometheus returns
-/// `{status="404"}`), and a comparison kept the one side's metric name.
 #[inline]
 fn make_fill_many_sample(
     matching: Option<&LabelModifier>,
@@ -438,10 +427,6 @@ fn eval_arith_ops(
     left_vector: Vec<EvalSample>,
     right_vector: Vec<EvalSample>,
 ) -> EvalResult<ExprResult> {
-    // Resolve the operator before looking at the operands. An unsupported
-    // operator is a property of the expression, not of the data, so it is
-    // reported for an empty operand too — and identically whether one side is
-    // empty or both.
     let ctx = ArithOpContext::new(expr)?;
 
     // Without a fill, a pair needs both operands.
@@ -465,14 +450,6 @@ enum OneSlot {
 }
 
 /// Every arithmetic and comparison join, with or without modifiers.
-///
-/// A hash join. The "one" side is indexed by match key; the "many" side is
-/// probed in input order, emitting as it goes (or filling a missing "one"
-/// operand) and moving each "many" label set into its result; a last sweep
-/// fills a missing "many" operand for every "one" series nothing matched. It
-/// replaced a merge join that sorted both operands by key and gathered each
-/// key's group into a `Vec`, and a separate no-modifier fast path, which is now
-/// just the one-to-one, no-fill configuration of this loop.
 ///
 /// Cardinality is a property of the match-key grouping, never of the operator
 /// or of a comparison's outcome (a false comparison still errors):
