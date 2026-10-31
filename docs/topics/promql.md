@@ -498,8 +498,8 @@ at startup.
 | `ts-promql-max-query-len` | 4096 bytes | Maximum query string length. |
 | `ts-promql-max-response-series` | 1000 | Maximum returned series, checked on the query's result as well as on each read; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. |
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
-| `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. The count is a running total: samples stay counted after the query drops them, so it bounds the query's work, not its memory at any one moment. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. |
-| `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. `0` means unlimited. |
+| `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. The count is a running total: samples stay counted after the query drops them, so it bounds the query's work, not its memory at any one moment. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. Also caps the points one [subquery grid](#subquery-grids) may hold. |
+| `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. The points [subquery grids](#subquery-grids) hold count too, while they are held; a grid without room is not built. `0` means unlimited. |
 | `ts-promql-max-memory-percent` | 90 | Refuse new queries, and stop running ones at their next check, while used memory is at or past this percentage of `maxmemory`. `0` disables it; it has no effect without `maxmemory`. |
 | `ts-promql-max-reply-bytes` | 268435456 (256 MiB) | Maximum estimated size of a query's reply, checked before any of it is written. `0` means unlimited. |
 | `ts-promql-max-subquery-steps` | 20000000 | Maximum subquery steps one query may evaluate in all: each subquery's steps, multiplied by every subquery around it and by the query's own steps, summed. Checked before anything runs. `0` means unlimited. |
@@ -518,7 +518,9 @@ which can otherwise materialize many series and points.
 Whatever the configuration, no step grid may have more than 1,000,000 steps: a range
 query's own grid, a subquery's grid (`m[30d:1m]` is 43,200 steps), and a grid another
 node asks this one to evaluate. A query that needs more is rejected with an error before
-anything is read. Prometheus caps only the outer grid, at 11,000 points.
+anything is read. Prometheus caps only the outer grid, at 11,000 points. Likewise, no
+[subquery grid](#subquery-grids) holds more than 10,000,000 points; a subquery whose grid
+would is not refused, but evaluated per step.
 
 Nesting multiplies those grids: every step of an outer subquery evaluates the whole inner
 one. `ts-promql-max-subquery-steps` bounds the product, summed over every subquery and
@@ -572,22 +574,45 @@ and `ts_promql_query_cache_bytes` (and `_bytes_human`), with the counters
 `ts_promql_query_cache_hits_total`, `ts_promql_query_cache_misses_total` and
 `ts_promql_query_cache_evictions_total`. Text that differs only in spacing is a different entry.
 
-In a range query, a subquery whose windows overlap from one outer step to the next has its
-inner expression evaluated once over all of them, and each step reads its window from that.
-The points it holds are not charged to `ts-promql-max-samples-per-query`, but count toward
-`ts-promql-max-samples-in-flight` until the query ends, so other queries see the memory it keeps;
-they never make its own query fail. If doing so would hold more points than
-`ts-promql-max-samples-per-query` allows (and never more than ten million), more than
-`ts-promql-max-samples-in-flight` has room for, or fails, the subquery evaluates each step's
-window on its own instead: same answer, more work.
-`INFO ts_promql` counts both outcomes as `ts_promql_subquery_grids_built_total` and
-`ts_promql_subquery_grids_declined_total`.
-
 The per-query limits bound each query alone. Three limits bound what all of them take
 together, and each refuses rather than waits, since a query that waited mid-evaluation would
 hold what it had already loaded: the samples in flight, memory use against `maxmemory`, and
 the reply's size. A refusal for load names the limit and starts with
 `PromQL query refused while the node is overloaded`; retrying later can succeed.
+
+### Subquery grids
+
+In a range query, a subquery whose windows overlap from one outer step to the next has its
+inner expression evaluated once over all of them, into a *subquery grid*, and each outer step
+reads its window from that grid instead of evaluating the inner expression again. A grid is
+optional work: it never changes a query's answer, and never makes a query fail that would
+succeed without it. A subquery is evaluated per step instead, with the same answer and more
+work, when:
+
+- its outer step is wider than its range, so the windows leave gaps (never attempted);
+- its grid would hold more points than `ts-promql-max-samples-per-query`, or than the
+  built-in ceiling of 10,000,000 points, whichever is lower;
+- `ts-promql-max-samples-in-flight` has no room for the grid's points; or
+- evaluating the grid fails with an error that would not end the query.
+
+The two limits are checked while the grid is built, so a grid over either is abandoned after
+at most one batch of 64 inner steps past it. A grid's points are not charged to `ts-promql-max-samples-per-query`; they are
+reserved against `ts-promql-max-samples-in-flight` while the grid is held, and given back when
+it is dropped, at the latest when the query ends. Other queries see that reservation in full;
+the query holding it does not, so its own reads are never refused for it.
+
+Memory: a grid point takes about 17 bytes (a timestamp, a value and a flag), plus, per series,
+its labels and a few dozen bytes of index. A grid at the 10,000,000-point ceiling is therefore
+about 170 MB, and a query holds one grid per distinct subquery, nested ones included, for as
+long as it runs. Each counts toward `ts-promql-max-samples-in-flight`, which is what bounds
+their sum across queries: at its default of 200,000,000, grids alone could hold about 3.4 GB,
+less whatever the running queries' reads have charged. Lower it, or
+`ts-promql-max-samples-per-query`, to bound grid memory more tightly.
+
+`INFO ts_promql` counts grids built as `ts_promql_subquery_grids_built_total` and grids
+abandoned as `ts_promql_subquery_grids_declined_total`; a climbing declined count is
+subqueries running slower than they could. Each decline is also logged at debug level with
+its reason.
 
 ## Testing and compatibility
 
