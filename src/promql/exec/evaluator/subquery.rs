@@ -8,24 +8,41 @@ use crate::common::Sample;
 /// samples are merged: a long subquery must not hold one vector per step.
 const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
 
-/// The most points an evaluated union grid may hold when the query's budget is
-/// unlimited: past it the subquery evaluates per step, as it would without.
+/// The most points an evaluated union grid may hold, whatever the query's
+/// sample limit: past it the subquery evaluates per step, as it would without.
 const MAX_SUBQUERY_GRID_POINTS: usize = 10_000_000;
-
-/// How many outer steps answered from an evaluated union grid, for tests that
-/// check the grid is used.
-#[cfg(test)]
-pub(crate) static SUBQUERY_GRID_USES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 thread_local! {
+    /// Set by [`without_subquery_grids`] on the thread a test starts a query
+    /// from; copied into the query's options there ([`with_test_grid_switch`]).
     static GRIDS_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Union grids built on this thread — the one a range query prepares on,
+    /// nested unions included.
+    static GRIDS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Run `f` with evaluated subquery grids turned off on this thread — the one a
-/// range query prepares on — so its subqueries evaluate per step: the
-/// reference the grids are tested against.
+/// How many union grids `f` built on this thread.
+#[cfg(test)]
+pub(crate) fn subquery_grids_built_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = GRIDS_BUILT.with(std::cell::Cell::get);
+    let out = f();
+    (out, GRIDS_BUILT.with(std::cell::Cell::get) - before)
+}
+
+/// `opts` with evaluated subquery grids turned off when the thread starting the
+/// query asked for that ([`without_subquery_grids`]).
+#[cfg(test)]
+pub(crate) fn with_test_grid_switch(opts: QueryOptions) -> QueryOptions {
+    QueryOptions {
+        disable_subquery_grids: opts.disable_subquery_grids || GRIDS_OFF.with(std::cell::Cell::get),
+        ..opts
+    }
+}
+
+/// Run `f` with evaluated subquery grids turned off for the queries it starts
+/// on this thread, at every nesting level, so their subqueries evaluate per
+/// step: the reference the grids are tested against.
 #[cfg(test)]
 pub(crate) fn without_subquery_grids<T>(f: impl FnOnce() -> T) -> T {
     GRIDS_OFF.with(|off| off.set(true));
@@ -99,8 +116,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // The inner expression already evaluated at every step of the union
         // (`preload_subqueries`): this window is a slice of it.
         if let Some(evaluated) = self.evaluated_union(subquery) {
-            #[cfg(test)]
-            SUBQUERY_GRID_USES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return evaluated.window(
                 aligned_start_ms,
                 subquery_end_ms,
@@ -295,17 +310,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         Ok((current_time_ms, samples))
     }
 
-    /// Whether a subquery over `grid` has outer windows that leave no gap
-    /// between them, so its union grid holds only steps the per-step path
-    /// evaluates anyway — every window is the same one (`@`), or the outer
-    /// step is no longer than the subquery's range. Only then is evaluating
-    /// the whole union up front never more work than evaluating per step.
+    /// Whether `subquery`'s union over `grid` may be evaluated up front: its
+    /// windows leave no gap ([`PreloadGrid::windows_cover_union`]), so the
+    /// union holds only steps per-step evaluation visits anyway.
     pub(super) fn union_is_all_windows(&self, subquery: &SubqueryExpr, grid: &PreloadGrid) -> bool {
         #[cfg(test)]
-        if GRIDS_OFF.with(std::cell::Cell::get) {
+        if self.options.disable_subquery_grids {
             return false;
         }
-        subquery.at.is_some() || grid.step_ms <= duration_ms(subquery.range)
+        grid.windows_cover_union(subquery)
     }
 
     /// Evaluate `subquery`'s inner expression at every step of its `union`
@@ -314,10 +327,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     ///
     /// Each inner step is evaluated exactly as the per-step path evaluates it:
     /// at its own timestamp, with the enclosing query's bounds, lookback and
-    /// deadline, so its value does not depend on which outer step asks. The
-    /// grid is held for the whole query, so it is charged to the query's
-    /// budget — only if it fits: `None` when it does not, or when it grows
-    /// past [`MAX_SUBQUERY_GRID_POINTS`], and the subquery evaluates per step.
+    /// deadline, so its value does not depend on which outer step asks.
+    ///
+    /// Optional work, so it may never fail a query per-step evaluation would
+    /// answer: it is not charged to the query's budget (what the inner steps
+    /// read is, as on the per-step path), but held to the per-evaluation cap
+    /// per-step evaluation holds each window to, `max_samples`, and to
+    /// [`MAX_SUBQUERY_GRID_POINTS`]. Past either, `None`: the subquery
+    /// evaluates per step.
     pub(super) fn evaluate_union(
         &self,
         subquery: &SubqueryExpr,
@@ -333,6 +350,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             lookback_delta_ms: grid.lookback_delta_ms,
             step_ms: 0,
             deadline: self.deadline,
+        };
+        let cap = match self.options.max_samples {
+            0 => MAX_SUBQUERY_GRID_POINTS,
+            limit => limit.min(MAX_SUBQUERY_GRID_POINTS),
         };
         let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
         let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)> = Vec::new();
@@ -352,22 +373,25 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             for (ts, samples) in results {
                 for sample in samples {
                     points += 1;
-                    let at = *index.entry(sample.labels.clone()).or_insert_with(|| {
-                        series.push((sample.labels, Vec::new(), Vec::new()));
-                        series.len() - 1
-                    });
+                    // Labels are cloned only when a series is first seen.
+                    let at = match index.get(&sample.labels) {
+                        Some(&at) => at,
+                        None => {
+                            index.insert(sample.labels.clone(), series.len());
+                            series.push((sample.labels, Vec::new(), Vec::new()));
+                            series.len() - 1
+                        }
+                    };
                     series[at].1.push(Sample::new(ts, sample.value));
                     series[at].2.push(sample.drop_name);
                 }
             }
-            if points > MAX_SUBQUERY_GRID_POINTS {
+            if points > cap {
                 return Ok(None);
             }
         }
-        if self.prepared.budget.check_ahead(points).is_err() {
-            return Ok(None);
-        }
-        self.charge_samples(points)?;
+        #[cfg(test)]
+        GRIDS_BUILT.with(|built| built.set(built.get() + 1));
         Ok(Some(EvaluatedSubquery {
             series: series
                 .into_iter()
