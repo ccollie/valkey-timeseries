@@ -90,6 +90,11 @@ pub struct QueryOptions {
     /// with the query, so it reaches every nesting level on every thread.
     #[cfg(test)]
     pub(crate) disable_subquery_grids: bool,
+    /// Tests only: count the query's samples in flight against this rather
+    /// than the process-wide count every other test's queries share, so a
+    /// test probing `max_samples_in_flight` sees only its own.
+    #[cfg(test)]
+    pub(crate) admission: Option<&'static admission::Admission>,
 }
 
 impl QueryOptions {
@@ -119,6 +124,8 @@ impl QueryOptions {
             max_reply_bytes: config.max_reply_bytes,
             #[cfg(test)]
             disable_subquery_grids: false,
+            #[cfg(test)]
+            admission: None,
         }
     }
 
