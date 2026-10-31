@@ -163,7 +163,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     // expression once over the whole union, for every outer
                     // step to slice; a grid that does not fit is skipped and
                     // the subquery evaluates per step.
-                    if self.union_is_all_windows(subquery, grid) {
+                    if self.windows_cover_union(subquery, grid) {
                         match self.evaluate_union(subquery, &prepared, &union, grid) {
                             Ok(Some(evaluated)) => {
                                 count_subquery_grid(true);
