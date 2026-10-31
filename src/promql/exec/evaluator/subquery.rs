@@ -57,6 +57,8 @@ thread_local! {
     /// Points evaluated on this thread while building union grids, kept or
     /// abandoned.
     static GRID_POINTS_EVALUATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Series whose points a window looked up on this thread.
+    static SERIES_EXAMINED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// How many points `f` evaluated on this thread while building union grids.
@@ -454,16 +456,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
         #[cfg(test)]
         GRIDS_BUILT.with(|built| built.set(built.get() + 1));
-        Ok(Some(EvaluatedSubquery {
-            series: series
-                .into_iter()
-                .map(|(labels, samples, drops)| EvaluatedSeries {
-                    labels,
-                    samples: Arc::from(samples),
-                    drops: Arc::from(drops),
-                })
-                .collect(),
-        }))
+        Ok(Some(EvaluatedSubquery::new(series)))
     }
 
     /// The grid `preload_subqueries` evaluated for `subquery`, if any; keyed
@@ -558,6 +551,74 @@ impl std::hash::Hash for SubqueryKey {
 /// drop. Every outer step slices its own window out of it.
 pub(crate) struct EvaluatedSubquery {
     series: Vec<EvaluatedSeries>,
+    spans: SeriesSpans,
+}
+
+/// Which series of a union can have points in a window, found without
+/// looking at the others: where labels change from step to step, a union
+/// holds a series per step and each window only a few of them.
+///
+/// The series are in first-seen order, so their first timestamps ascend and a
+/// binary search finds those starting by the window's end. Of those, a max-tree
+/// over their last timestamps yields the ones still going at the window's
+/// start, in order, visiting O(log n) nodes per series it yields.
+struct SeriesSpans {
+    /// Each series' first timestamp, ascending.
+    firsts: Vec<Timestamp>,
+    /// Leaves in the tree: the series count rounded up to a power of two.
+    leaves: usize,
+    /// Node `k`'s children are `2k` and `2k + 1`; leaf `i` is at `leaves + i`
+    /// and holds series `i`'s last timestamp, `Timestamp::MIN` past the end.
+    last_max: Vec<Timestamp>,
+}
+
+impl SeriesSpans {
+    fn new(series: &[EvaluatedSeries]) -> Self {
+        let firsts: Vec<Timestamp> = series.iter().map(|s| s.samples[0].timestamp).collect();
+        debug_assert!(firsts.is_sorted(), "series not in first-seen order");
+        let leaves = series.len().next_power_of_two();
+        let mut last_max = vec![Timestamp::MIN; 2 * leaves];
+        for (i, s) in series.iter().enumerate() {
+            last_max[leaves + i] = s.samples[s.samples.len() - 1].timestamp;
+        }
+        for node in (1..leaves).rev() {
+            last_max[node] = last_max[2 * node].max(last_max[2 * node + 1]);
+        }
+        SeriesSpans {
+            firsts,
+            leaves,
+            last_max,
+        }
+    }
+
+    /// Calls `f` with each series, ascending, whose span meets
+    /// `[start, end]`: first point at or before `end`, last at or after
+    /// `start`. A series with a gap over the window is among them.
+    fn overlapping(&self, start: Timestamp, end: Timestamp, mut f: impl FnMut(usize)) {
+        let below = self.firsts.partition_point(|&t| t <= end);
+        self.visit(1, 0, self.leaves, below, start, &mut f);
+    }
+
+    fn visit(
+        &self,
+        node: usize,
+        lo: usize,
+        hi: usize,
+        below: usize,
+        start: Timestamp,
+        f: &mut impl FnMut(usize),
+    ) {
+        if lo >= below || self.last_max[node] < start {
+            return;
+        }
+        if node >= self.leaves {
+            f(lo);
+            return;
+        }
+        let mid = lo + (hi - lo) / 2;
+        self.visit(2 * node, lo, mid, below, start, f);
+        self.visit(2 * node + 1, mid, hi, below, start, f);
+    }
 }
 
 struct EvaluatedSeries {
@@ -569,6 +630,21 @@ struct EvaluatedSeries {
 }
 
 impl EvaluatedSubquery {
+    /// From each series' labels, points and drop flags, in the order the
+    /// series were first seen: by their first step.
+    fn new(series: Vec<(EvalLabels, Vec<Sample>, Vec<bool>)>) -> Self {
+        let series: Vec<EvaluatedSeries> = series
+            .into_iter()
+            .map(|(labels, samples, drops)| EvaluatedSeries {
+                labels,
+                samples: Arc::from(samples),
+                drops: Arc::from(drops),
+            })
+            .collect();
+        let spans = SeriesSpans::new(&series);
+        EvaluatedSubquery { series, spans }
+    }
+
     /// The subquery's result for the window of inner steps `[start, end]`:
     /// what per-step evaluation over those steps builds — the series with a
     /// point in it, each its points in it (shared, not copied), dropping the
@@ -583,11 +659,15 @@ impl EvaluatedSubquery {
     ) -> EvalResult<ExprResult> {
         let mut out = Vec::new();
         let mut points = 0;
-        for series in &self.series {
+        self.spans.overlapping(start, end, |at| {
+            #[cfg(test)]
+            SERIES_EXAMINED.with(|n| n.set(n.get() + 1));
+            let series = &self.series[at];
             let i = series.samples.partition_point(|p| p.timestamp < start);
             let j = series.samples.partition_point(|p| p.timestamp <= end);
             if i >= j {
-                continue;
+                // A gap in the series spans the window.
+                return;
             }
             points += j - i;
             out.push(EvalSamples {
@@ -597,8 +677,52 @@ impl EvaluatedSubquery {
                 range_end_ms: end,
                 drop_name: series.drops[i..j].iter().any(|&drop| drop),
             });
-        }
+        });
         SampleBudget::new(max_samples).charge(points)?;
         Ok(ExprResult::RangeVector(out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::labels::Labels;
+
+    /// `n` series that each report at one step only, one after another, as
+    /// `count_values` over a changing value gives.
+    fn churned(n: i64) -> EvaluatedSubquery {
+        EvaluatedSubquery::new(
+            (0..n)
+                .map(|i| {
+                    let labels = Labels::from_pairs(&[("v", &i.to_string())]);
+                    (
+                        labels.into(),
+                        vec![Sample::new(i * 1_000, 1.0)],
+                        vec![false],
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// A window looks only at series that can have points in it, so labels
+    /// that change from step to step don't make every window scan the union.
+    #[test]
+    fn a_window_skips_series_outside_it() {
+        let n = 2_000;
+        let union = churned(n);
+        let before = SERIES_EXAMINED.with(std::cell::Cell::get);
+        for t in 0..n {
+            let at = t * 1_000;
+            let Ok(ExprResult::RangeVector(found)) = union.window(at - 1_000, at, 1_000, 0) else {
+                panic!("not a range vector");
+            };
+            assert_eq!(found.len(), if t == 0 { 1 } else { 2 }, "at {at}");
+        }
+        let examined = SERIES_EXAMINED.with(std::cell::Cell::get) - before;
+        assert!(
+            examined <= 4 * n as usize,
+            "{examined} series looked up for {n} windows of at most 2"
+        );
     }
 }
