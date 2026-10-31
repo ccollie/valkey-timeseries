@@ -420,3 +420,49 @@ fn a_grid_of_new_series_at_every_step_needs_wide_sharing() {
         assert!(same_as_per_step(&churn(range), Duration::from_secs(60)));
     }
 }
+
+/// `x{s="a"}` and `x{s="b"}`, both 1 throughout: `a` was created first, so a
+/// read lists it first, but it starts at 2200 s, after `b`.
+fn tied_reader() -> Arc<dyn QueryReader> {
+    let querier = MemorySeriesQuerier::new();
+    let a = Labels::from_pairs(&[("__name__", "x"), ("s", "a")]);
+    let b = Labels::from_pairs(&[("__name__", "x"), ("s", "b")]);
+    for t in 220..400 {
+        querier.add_sample(&a, Sample::new(t * 10_000, 1.0));
+    }
+    for t in 0..400 {
+        querier.add_sample(&b, Sample::new(t * 10_000, 1.0));
+    }
+    Arc::new(querier)
+}
+
+/// Selection operators keep the first of equal values, so a subquery's series
+/// must come out of a grid in the order per-step evaluation gives them —
+/// first seen in each window, not first seen in the union — or `topk` over
+/// tied values picks differently depending on whether a grid was built.
+#[test]
+fn ties_between_subquery_series_break_as_per_step() {
+    for query in [
+        "topk(1, last_over_time(x[5m:1m]))",
+        "bottomk(1, max_over_time(x[5m:1m]))",
+        "limitk(1, last_over_time(x[5m:1m]))",
+    ] {
+        let run = || {
+            let stmt = EvalStmt {
+                expr: parse(query).unwrap(),
+                start: UNIX_EPOCH + Duration::from_secs(2_400),
+                end: UNIX_EPOCH + Duration::from_secs(3_000),
+                interval: Duration::from_secs(60),
+                lookback_delta: Duration::from_secs(300),
+            };
+            let result = evaluate_range(tied_reader(), stmt, options()).unwrap();
+            result
+                .into_iter()
+                .map(|s| (s.labels, s.samples))
+                .collect::<Vec<_>>()
+        };
+        let (cached, built) = subquery_grids_built_by(run);
+        assert_eq!(built, 1, "{query}: the grid is used");
+        assert_eq!(cached, without_subquery_grids(run), "{query}");
+    }
+}
