@@ -411,6 +411,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         union: &PreloadGrid,
         grid: &PreloadGrid,
     ) -> EvalResult<Option<EvaluatedSubquery>> {
+        #[cfg(test)]
+        if self.options.disconnect_at_grid_build {
+            self.options.cancel.disconnect_for_test();
+        }
         let sub = Evaluator::with_prepared(self.reader, self.options, Arc::clone(prepared));
         // Only the bounds that `@ start()`/`@ end()` resolve to, the lookback
         // and the deadline are read from this context: `eval_subquery_step`
