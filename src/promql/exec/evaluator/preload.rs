@@ -3,7 +3,7 @@
 //! stepped aggregations a source answers over the whole grid.
 
 use super::grid_plan::{GridPlan, RollupPreload};
-use super::subquery::SubqueryKey;
+use super::subquery::{SubqueryKey, count_subquery_grid};
 use super::*;
 use crate::promql::utils::subquery_step_ms;
 use itertools::Itertools;
@@ -166,17 +166,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     if self.union_is_all_windows(subquery, grid) {
                         match self.evaluate_union(subquery, &prepared, &union, grid) {
                             Ok(Some(evaluated)) => {
+                                count_subquery_grid(true);
                                 self.preloads
                                     .evaluated
                                     .write()
                                     .unwrap()
                                     .insert(key.clone(), Arc::new(evaluated));
                             }
-                            Ok(None) => {}
+                            Ok(None) => count_subquery_grid(false),
                             Err(err) if is_query_ending(&err) => return Err(err),
-                            Err(err) => log_debug(format!(
-                                "subquery union evaluation failed; each outer step will evaluate its own window: {err}"
-                            )),
+                            Err(err) => {
+                                count_subquery_grid(false);
+                                log_debug(format!(
+                                    "subquery union evaluation failed; each outer step will evaluate its own window: {err}"
+                                ));
+                            }
                         }
                     }
                     self.preloads

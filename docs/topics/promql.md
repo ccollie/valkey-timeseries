@@ -572,6 +572,14 @@ and `ts_promql_query_cache_bytes` (and `_bytes_human`), with the counters
 `ts_promql_query_cache_hits_total`, `ts_promql_query_cache_misses_total` and
 `ts_promql_query_cache_evictions_total`. Text that differs only in spacing is a different entry.
 
+In a range query, a subquery whose windows overlap from one outer step to the next has its
+inner expression evaluated once over all of them, and each step reads its window from that.
+If doing so would hold more points than `ts-promql-max-samples-per-query` allows (and never
+more than ten million), or fails, the subquery evaluates each step's window on its own instead:
+same answer, more work.
+`INFO ts_promql` counts both outcomes as `ts_promql_subquery_grids_built_total` and
+`ts_promql_subquery_grids_declined_total`.
+
 The per-query limits bound each query alone. Three limits bound what all of them take
 together, and each refuses rather than waits, since a query that waited mid-evaluation would
 hold what it had already loaded: the samples in flight, memory use against `maxmemory`, and
