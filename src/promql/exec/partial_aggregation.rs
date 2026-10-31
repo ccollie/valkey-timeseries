@@ -20,6 +20,7 @@
 //! PromQL aggregation counts and propagates NaN where the TS reducers reject it,
 //! and it groups by label set rather than by bucket timestamp.
 
+use crate::common::logging::log_debug;
 use crate::common::math::kahan_inc;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
@@ -341,6 +342,9 @@ pub(in crate::promql) struct SteppedPartialGroups {
     /// Boxed and filled on first use: a grid is often sparse, and a group map
     /// carries a few KiB of inline storage.
     steps: Vec<Option<Box<PartialGroups>>>,
+    /// Points and shard states dropped for falling between window ends: the
+    /// coordinator and a shard disagreeing on the grid. The first is logged.
+    off_grid: usize,
 }
 
 impl SteppedPartialGroups {
@@ -352,6 +356,27 @@ impl SteppedPartialGroups {
             kind,
             window_ends,
             steps,
+            off_grid: 0,
+        }
+    }
+
+    /// Count a point or state at `step_ts` dropped for not being a window end,
+    /// logging the first: once per sink, so a disagreement over the grid
+    /// explains a missing point without flooding the log.
+    fn drop_off_grid(&mut self, step_ts: Timestamp, what: &str) {
+        self.off_grid += 1;
+        if self.off_grid == 1 {
+            let grid = match (self.window_ends.first(), self.window_ends.last()) {
+                (Some(first), Some(last)) => format!(
+                    "the {} window ends from {first} to {last}",
+                    self.window_ends.len()
+                ),
+                _ => "an empty grid".to_owned(),
+            };
+            log_debug(format!(
+                "PromQL grid: dropped a {what} at {step_ts}, not on {grid}; \
+                 later ones for this request are not logged"
+            ));
         }
     }
 
@@ -441,6 +466,7 @@ impl SteppedPartialGroups {
         for (step_ts, value) in points {
             let Some(i) = self.step_index(step_ts, cursor) else {
                 debug_assert!(false, "point {step_ts} is not a window end of its grid");
+                self.drop_off_grid(step_ts, "rollup point");
                 continue;
             };
             cursor = i;
@@ -469,6 +495,7 @@ impl SteppedPartialGroups {
         state: AggregationPartial,
     ) -> usize {
         let Some(i) = self.step_index(step_ts, 0) else {
+            self.drop_off_grid(step_ts, "shard state");
             return 0;
         };
         let groups = self.step_mut(i);
@@ -1059,7 +1086,9 @@ mod tests {
     }
 
     /// A shard's state at a time that is not one of the grid's window ends has
-    /// no step to land on: it is dropped, and counts as nothing added.
+    /// no step to land on: it is dropped, and counts as nothing added — but is
+    /// counted as dropped, the first one logged, so a coordinator and shard
+    /// that disagree on the grid leave a trail.
     #[test]
     fn stepped_merge_drops_a_state_off_the_grid() {
         let mut groups = SteppedPartialGroups::new(AggregationKind::Sum, Arc::from([10, 20]));
@@ -1067,7 +1096,10 @@ mod tests {
         state.update(AggregationKind::Sum, 4.0);
         let labels = EvalLabels::from_pairs(&[("job", "a")]);
         assert_eq!(groups.merge(15, labels.clone(), state), 0);
+        assert_eq!(groups.merge(25, labels.clone(), state), 0);
+        assert_eq!(groups.off_grid, 2);
         assert_eq!(groups.merge(20, labels, state), 1);
+        assert_eq!(groups.off_grid, 2);
         let out = groups.finalize(&Deadline::default()).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].samples, vec![Sample::new(20, 4.0)]);
