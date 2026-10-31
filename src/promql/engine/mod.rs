@@ -85,6 +85,11 @@ pub struct QueryOptions {
     /// The largest reply the query may produce, as `admission::estimate_reply_bytes`
     /// sizes it (`ts-promql-max-reply-bytes`). 0 = unlimited.
     pub max_reply_bytes: usize,
+    /// Tests only: evaluate every subquery per step, never from an evaluated
+    /// union grid — the reference the grids are checked against. Carried
+    /// with the query, so it reaches every nesting level on every thread.
+    #[cfg(test)]
+    pub(crate) disable_subquery_grids: bool,
 }
 
 impl QueryOptions {
@@ -112,6 +117,8 @@ impl QueryOptions {
             max_memory_percent: config.max_memory_percent,
             max_subquery_steps: config.max_subquery_steps,
             max_reply_bytes: config.max_reply_bytes,
+            #[cfg(test)]
+            disable_subquery_grids: false,
         }
     }
 

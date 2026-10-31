@@ -653,6 +653,7 @@ mod tests {
             at_end_ms: 2 * HOUR,
             lookback_delta_ms: LOOKBACK,
             sample_timestamps: false,
+            dense: true,
         }
     }
 

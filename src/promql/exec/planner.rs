@@ -21,6 +21,13 @@ pub(crate) struct PreloadGrid {
     /// timestamp (the expression calls `timestamp()`). Set by the preload
     /// from the expression; a grid built from a context alone says no.
     pub(crate) sample_timestamps: bool,
+    /// Whether every step of this grid is one some evaluation visits: true
+    /// for a query's own grid and a subquery's per-step grid, and for a
+    /// subquery's union only when the enclosing grid is dense and the
+    /// subquery's windows over it leave no gap. Only over a dense grid can a
+    /// subquery's union be evaluated up front without doing work per-step
+    /// evaluation would not.
+    pub(crate) dense: bool,
 }
 
 impl PreloadGrid {
@@ -33,6 +40,7 @@ impl PreloadGrid {
             at_end_ms: ctx.query_end,
             lookback_delta_ms: ctx.lookback_delta_ms,
             sample_timestamps: false,
+            dense: true,
         }
     }
 
@@ -50,7 +58,16 @@ impl PreloadGrid {
             at_end_ms: ctx.query_end,
             lookback_delta_ms: ctx.lookback_delta_ms,
             sample_timestamps: false,
+            dense: true,
         }
+    }
+
+    /// Whether `subquery`'s windows over this grid leave no gap between
+    /// them, so its union holds only steps some window evaluates: every
+    /// window is the same one (`@`), or this grid's step is no longer than
+    /// the subquery's range — and this grid is itself dense.
+    pub(crate) fn windows_cover_union(&self, subquery: &SubqueryExpr) -> bool {
+        self.dense && (subquery.at.is_some() || self.step_ms <= duration_ms(subquery.range))
     }
 
     pub(crate) fn steps(&self) -> impl Iterator<Item = Timestamp> {
@@ -120,6 +137,7 @@ impl PreloadGrid {
             lookback_delta_ms: self.lookback_delta_ms,
             // Decided from the inner expression by whoever plans over it.
             sample_timestamps: false,
+            dense: self.windows_cover_union(subquery),
         })
     }
 }
@@ -168,6 +186,7 @@ mod tests {
             at_end_ms: end_ms,
             lookback_delta_ms: 300_000,
             sample_timestamps: false,
+            dense: true,
         }
     }
 
