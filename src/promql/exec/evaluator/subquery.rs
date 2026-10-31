@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::common::Sample;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many inner steps of a subquery are evaluated, in parallel, before their
 /// samples are merged: a long subquery must not hold one vector per step.
@@ -10,6 +11,36 @@ const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
 /// Fewer inner steps than this are evaluated on the calling thread: handing
 /// them to the pool costs more than it saves.
 const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
+
+static GRIDS_BUILT_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GRIDS_DECLINED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Subquery union grids since the module loaded: the ones built, and the ones
+/// abandoned for the sample limit or an error, whose subqueries then evaluated
+/// per step. A union whose windows leave gaps is never attempted, and counts
+/// as neither. Reported by `INFO ts_promql`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubqueryGridCounts {
+    pub built: u64,
+    pub declined: u64,
+}
+
+pub(crate) fn subquery_grid_counts() -> SubqueryGridCounts {
+    SubqueryGridCounts {
+        built: GRIDS_BUILT_TOTAL.load(Ordering::Relaxed),
+        declined: GRIDS_DECLINED_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+/// Counts one attempted union grid as built or declined.
+pub(super) fn count_subquery_grid(built: bool) {
+    let counter = if built {
+        &GRIDS_BUILT_TOTAL
+    } else {
+        &GRIDS_DECLINED_TOTAL
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
 
 /// The most points an evaluated union grid may hold, whatever the query's
 /// sample limit: past it the subquery evaluates per step, as it would without.
@@ -413,6 +444,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 }
             }
             if points > cap {
+                log_debug(format!(
+                    "subquery union grid declined: over {cap} points after {points}; \
+                     each outer step will evaluate its own window"
+                ));
                 return Ok(None);
             }
         }

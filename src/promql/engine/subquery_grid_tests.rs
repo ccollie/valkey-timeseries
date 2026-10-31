@@ -8,7 +8,7 @@ use crate::promql::QueryOptions;
 use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::{QueryReader, evaluate_range};
 use crate::promql::exec::{
-    grid_points_evaluated_by, subquery_grids_built_by, without_subquery_grids,
+    grid_points_evaluated_by, subquery_grid_counts, subquery_grids_built_by, without_subquery_grids,
 };
 use promql_parser::parser::{EvalStmt, parse};
 use std::sync::Arc;
@@ -190,5 +190,26 @@ fn a_grid_over_the_limit_is_abandoned_while_it_is_built() {
     assert!(
         evaluated <= 2 * 64,
         "built {evaluated} points of a grid capped at 100 before abandoning it"
+    );
+}
+
+/// `INFO ts_promql` counts the grids built and the ones declined for going over
+/// the sample limit, so a subquery left to evaluate per step leaves a trail.
+/// The counters are process-wide and other tests move them too, hence `>`.
+#[test]
+fn built_and_declined_grids_are_counted() {
+    let before = subquery_grid_counts();
+    run("max_over_time(m[5m:1m])", Duration::from_secs(60));
+    assert!(subquery_grid_counts().built > before.built, "a built grid");
+
+    let before = subquery_grid_counts();
+    let opts = QueryOptions {
+        max_samples: 100,
+        ..options()
+    };
+    succeeds("max_over_time(vector(1)[1d:1s])", opts);
+    assert!(
+        subquery_grid_counts().declined > before.declined,
+        "a grid over the limit"
     );
 }

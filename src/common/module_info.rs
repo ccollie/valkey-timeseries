@@ -9,6 +9,7 @@
 use crate::common::humanize::bytes_to_human;
 use crate::common::metrics::{self, MetricValue, Section};
 use crate::promql::engine::{admission, query_cache, query_workers};
+use crate::promql::subquery_grid_counts;
 use crate::series::index::index_memory_usage;
 use crate::series::{COMPACTION_FAILURES, COMPACTION_STATE_REBUILDS};
 use metered::Scalar;
@@ -161,9 +162,16 @@ fn info_value(value: &MetricValue) -> Option<InfoValue> {
 /// `bytes` (the estimated memory charged for them), and the counters `hits_total` and
 /// `misses_total` of lookups made while it was enabled and `evictions_total` that kept it within
 /// its limits.
+///
+/// The counters `promql_subquery_grids_built_total` and
+/// `promql_subquery_grids_declined_total` count the range-query subqueries whose inner
+/// expression was evaluated once over all their outer steps, and those that tried and went
+/// back to evaluating each outer step's window on its own: over the sample limit, or an error.
+/// A climbing declined count is subqueries running slower than they could.
 fn promql_fields() -> Vec<(String, InfoValue)> {
     let pool = query_workers::stats();
     let cache = query_cache::stats();
+    let grids = subquery_grid_counts();
     let cache_bytes = cache.bytes as u64;
     vec![
         (
@@ -206,6 +214,14 @@ fn promql_fields() -> Vec<(String, InfoValue)> {
         (
             "promql_query_cache_evictions_total".to_owned(),
             cache.evictions.into(),
+        ),
+        (
+            "promql_subquery_grids_built_total".to_owned(),
+            grids.built.into(),
+        ),
+        (
+            "promql_subquery_grids_declined_total".to_owned(),
+            grids.declined.into(),
         ),
     ]
 }
@@ -281,6 +297,8 @@ mod tests {
                 "promql_query_cache_hits_total",
                 "promql_query_cache_misses_total",
                 "promql_query_cache_evictions_total",
+                "promql_subquery_grids_built_total",
+                "promql_subquery_grids_declined_total",
             ]
         );
     }
