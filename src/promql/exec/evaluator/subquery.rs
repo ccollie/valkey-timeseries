@@ -420,7 +420,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let mut retained = Retained::new(&self.prepared.budget);
         let mut steps = union.steps();
         loop {
-            let batch: Vec<Timestamp> = steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE).collect();
+            // `steps` cannot say how many are left, so a plain `collect` would
+            // grow the batch from empty, reallocating on the way to 64.
+            let mut batch: Vec<Timestamp> = Vec::with_capacity(SUBQUERY_STEP_BATCH_SIZE);
+            batch.extend(steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE));
             if batch.is_empty() {
                 break;
             }
@@ -473,6 +476,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         GRIDS_BUILT.with(|built| built.set(built.get() + 1));
         Ok(Some(EvaluatedSubquery {
             _retained: Some(retained),
+            union_bounds: Some((union.start_ms, union.end_ms)),
             ..EvaluatedSubquery::new(
                 series
                     .into_iter()
@@ -578,6 +582,9 @@ pub(crate) struct EvaluatedSubquery {
     /// Its points' reservation in the process-wide in-flight count, held as
     /// long as the grid is and given back when it drops.
     _retained: Option<Retained>,
+    /// The first and last step of the union the grid was evaluated over: every
+    /// window must lie within them, or points it should hold were never made.
+    union_bounds: Option<(Timestamp, Timestamp)>,
 }
 
 /// Which series of a union can have points in a window, found without
@@ -724,6 +731,7 @@ impl EvaluatedSubquery {
             series,
             spans,
             _retained: None,
+            union_bounds: None,
         }
     }
 
@@ -739,6 +747,12 @@ impl EvaluatedSubquery {
         range_ms: i64,
         max_samples: usize,
     ) -> EvalResult<ExprResult> {
+        if let Some((first, last)) = self.union_bounds {
+            debug_assert!(
+                first <= start && end <= last,
+                "window [{start}, {end}] is not within the grid's union [{first}, {last}]"
+            );
+        }
         let mut out = Vec::new();
         let mut points = 0;
         self.spans.overlapping(start, end, |at| {
