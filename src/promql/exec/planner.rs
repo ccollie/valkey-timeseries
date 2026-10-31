@@ -70,6 +70,20 @@ impl PreloadGrid {
         self.dense && (subquery.at.is_some() || self.step_ms <= duration_ms(subquery.range))
     }
 
+    /// How many outer windows, at least, read each step of `subquery`'s union
+    /// over this grid: its range over this grid's step, or every step of this
+    /// grid when `@` makes every window the same one. Meaningful only where
+    /// [`Self::windows_cover_union`].
+    pub(crate) fn windows_per_union_step(&self, subquery: &SubqueryExpr) -> i64 {
+        if self.step_ms <= 0 {
+            return 1;
+        }
+        if subquery.at.is_some() {
+            return grid_step_count(self.start_ms, self.end_ms, self.step_ms) as i64;
+        }
+        duration_ms(subquery.range) / self.step_ms
+    }
+
     pub(crate) fn steps(&self) -> impl Iterator<Item = Timestamp> {
         step_times(self.start_ms, self.end_ms, self.step_ms)
     }
