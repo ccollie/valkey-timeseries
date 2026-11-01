@@ -180,9 +180,16 @@ impl AggregationHelper {
         bucket
     }
 
+    #[inline]
     fn update(&mut self, sample: Sample) {
-        for (aggregator, accepted) in self.aggregators.iter_mut().zip(self.accepted.iter_mut()) {
+        // The single-aggregation query (all RTS clients send) skips the column walk.
+        if let ([aggregator], [accepted]) = (&mut self.aggregators[..], &mut self.accepted[..]) {
             *accepted |= aggregator.update(sample.timestamp, sample.value);
+        } else {
+            for (aggregator, accepted) in self.aggregators.iter_mut().zip(self.accepted.iter_mut())
+            {
+                *accepted |= aggregator.update(sample.timestamp, sample.value);
+            }
         }
         self.saw_sample = true;
     }

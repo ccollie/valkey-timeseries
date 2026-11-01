@@ -2,7 +2,7 @@ use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::rounding::RoundingStrategy;
-use crate::common::threads::{IntoParRayon, ParMutRayon, ParRayon};
+use crate::common::threads::{IntoParRayon, ParMutRayon, ParRayon, request_par_threads};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -511,16 +511,20 @@ impl TimeSeries {
     pub(crate) fn split_chunks_if_needed(&mut self) -> TsdbResult<()> {
         // Almost every merge ends here with nothing to split: decide that with a scan
         // before entering a parallel section.
-        if !self.chunks.iter().any(Self::needs_split) {
+        let to_split = self.chunks.iter().filter(|c| Self::needs_split(c)).count();
+        if to_split == 0 {
             return Ok(());
         }
 
         let errored: AtomicBool = AtomicBool::new(false);
 
         // todo: track error, but allow partials
+        // A split re-encodes two half chunks (~thousands of samples), so a
+        // handful of them is worth the pool; one is not.
         let mut new_chunks = if self.is_compressed() {
             self.chunks
                 .par_mut_rayon()
+                .num_threads(request_par_threads(to_split, to_split * SPLIT_WORK))
                 .filter(|c| Self::needs_split(c))
                 .flat_map(|chunks| {
                     if let Ok(mut split_chunk) = chunks.split() {
@@ -733,6 +737,10 @@ impl TimeSeries {
                 [meta] => meta_fetch(meta),
                 _ => slice
                     .par_rayon()
+                    .num_threads(request_par_threads(
+                        slice.len(),
+                        slice.iter().map(|m| m.chunk.len()).sum(),
+                    ))
                     .map(|meta| meta_fetch(meta))
                     .into_fallible()
                     .flat_map(|r| r)
@@ -799,6 +807,22 @@ impl TimeSeries {
     pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SeriesSampleIterator<'_> {
         let start = start.max(self.get_min_timestamp());
         SeriesSampleIterator::new(self, start, end, false)
+    }
+
+    /// Copy the chunks `[start, end]` touches, for decoding after this series
+    /// is no longer borrowed. See [`RangeSnapshot`]. Ported from the promql
+    /// branch (9c845860e) for the deferred TS.MRANGE experiment.
+    pub fn snapshot_range(&self, start: Timestamp, end: Timestamp) -> RangeSnapshot {
+        let start = start.max(self.get_min_timestamp());
+        let chunks = if start > end || self.is_empty() || !self.overlaps(start, end) {
+            Vec::new()
+        } else {
+            match self.get_chunk_index_bounds(start, end) {
+                Some((first, last)) => self.chunks[first..=last].to_vec(),
+                None => Vec::new(),
+            }
+        };
+        RangeSnapshot { start, end, chunks }
     }
 
     /// Iterate the samples physically stored in `[start, end]`, **without** clamping `start`
@@ -963,11 +987,14 @@ impl TimeSeries {
                 deleted_samples
             }
             (true, [one]) => remove_internal(one, start_ts, end_ts)?,
-            (true, many) => many
-                .into_par_rayon()
-                .map(|chunk| remove_internal(chunk, start_ts, end_ts))
-                .into_fallible()
-                .sum()?,
+            (true, many) => {
+                let threads = request_par_threads(many.len(), many.iter().map(|c| c.len()).sum());
+                many.into_par_rayon()
+                    .num_threads(threads)
+                    .map(|chunk| remove_internal(chunk, start_ts, end_ts))
+                    .into_fallible()
+                    .sum()?
+            }
         };
 
         // Remove empty chunks
@@ -1191,9 +1218,14 @@ impl TimeSeries {
 
     pub fn optimize(&mut self) {
         // todo: merge chunks if possible
-        self.chunks.par_mut_rayon().for_each(|chunk| {
-            let _ = chunk.optimize();
-        });
+        let threads =
+            request_par_threads(self.chunks.len(), self.chunks.iter().map(|c| c.len()).sum());
+        self.chunks
+            .par_mut_rayon()
+            .num_threads(threads)
+            .for_each(|chunk| {
+                let _ = chunk.optimize();
+            });
     }
 
     #[cfg(test)]
@@ -1368,6 +1400,10 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
     }
 }
 
+/// Sample-equivalents a chunk split is worth in the dispatch decision: both
+/// halves are re-encoded, so it is roughly one chunk's worth of samples.
+const SPLIT_WORK: usize = 2048;
+
 fn get_range_parallel(
     chunks: &[TimeSeriesChunk],
     start: Timestamp,
@@ -1378,10 +1414,48 @@ fn get_range_parallel(
         [chunk] => chunk.get_range(start, end),
         _ => chunks
             .into_par_rayon()
+            .num_threads(request_par_threads(
+                chunks.len(),
+                chunks.iter().map(|c| c.len()).sum(),
+            ))
             .map(|chunk| chunk.get_range(start, end))
             .into_fallible()
             .flat_map(|x| x)
             .collect(),
+    }
+}
+
+/// The compressed chunks a range read needs, copied out of a series so they
+/// can be decoded after the series — and whatever guards it — are released.
+///
+/// A chunk is a few KB of compressed bytes; its decoded samples are several
+/// times that. Copying chunks on the main thread and decoding elsewhere turns
+/// main-thread time proportional to the decode into time proportional to the
+/// memcpy. Only the chunks overlapping the range are copied.
+pub struct RangeSnapshot {
+    /// Already clamped to the series' retention floor, as `range_iter` would.
+    start: Timestamp,
+    end: Timestamp,
+    chunks: Vec<TimeSeriesChunk>,
+}
+
+impl RangeSnapshot {
+    /// Upper bound on the samples the snapshot can yield.
+    pub fn capacity_hint(&self) -> usize {
+        self.chunks.iter().map(|c| c.len()).sum()
+    }
+
+    /// Bytes copied out of the series.
+    pub fn compressed_bytes(&self) -> usize {
+        self.chunks.iter().map(|c| c.size()).sum()
+    }
+
+    /// The samples in `[start, end]`, ascending, decoded on demand. Equivalent
+    /// to [`TimeSeries::range_iter`] over the same range at snapshot time.
+    pub fn range_iter(&self) -> impl Iterator<Item = Sample> + '_ {
+        self.chunks
+            .iter()
+            .flat_map(|chunk| chunk.range_iter(self.start, self.end))
     }
 }
 

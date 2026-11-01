@@ -168,11 +168,13 @@ impl RdbSerializable for KahanAvg {
 /// Returns (new_sum, new_compensation)
 ///
 /// Copyright (c) 2024-present, OpenData project, and contributors
-#[inline(never)]
-// Important: do NOT inline.
-// Compiler reordering of floating-point operations can cause precision loss.
-// This was observed in Prometheus (issue #16714) and we lock the behavior
-// to maintain IEEE-754 semantics exactly.
+// Inlined on purpose: this runs once per sample of every `sum`/`avg` bucket, and a call
+// per sample was ~6 % of an aggregating scan. Rust never reassociates or contracts
+// floating-point operations (there is no fast-math), so inlining cannot change the
+// compensated result — the Prometheus precision issue (#16714) this used to guard against
+// was a Go compiler behaviour. `kahan_pins_the_compensated_result` below fixes the
+// expected bits so any such change would be caught.
+#[inline]
 fn kahan_inc(inc: f64, sum: f64, c: f64) -> (f64, f64) {
     let t = sum + inc;
 
@@ -191,6 +193,26 @@ fn kahan_inc(inc: f64, sum: f64, c: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kahan_pins_the_compensated_result() {
+        // A sequence whose naive sum loses bits: the compensated result is fixed here
+        // bit-for-bit so a change in how `kahan_inc` is compiled (or written) shows up.
+        let terms = [
+            1e16, 1.0, -1e16, 0.1, 0.2, 0.3, 1e-8, -0.6, 1e16, 1.0, -1e16,
+        ];
+        let mut s = KahanSum::new();
+        for t in terms {
+            s += t;
+        }
+        let naive: f64 = terms.iter().sum();
+        assert_ne!(
+            s.value().to_bits(),
+            naive.to_bits(),
+            "the sequence must exercise compensation"
+        );
+        assert_eq!(s.value().to_bits(), 0x4000_0000_0157_98EE, "{}", s.value());
+    }
 
     #[test]
     fn test_add_and_add_assign_f64() {

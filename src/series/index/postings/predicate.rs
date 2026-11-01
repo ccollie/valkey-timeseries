@@ -113,10 +113,6 @@ fn handle_equal_match<'a>(
                 }
             }
             _ => {
-                // If the list contains an explicit empty alternative, include series
-                // without the label as well.
-                let contains_empty = val.iter().any(|s| s.is_empty());
-
                 let non_empty_values: Vec<String> =
                     val.iter().filter(|s| !s.is_empty()).cloned().collect();
 
@@ -124,8 +120,10 @@ fn handle_equal_match<'a>(
                     // only empty alternative -> postings without label
                     return ix.postings_without_label(label);
                 }
+                let contains_empty = val.len() != non_empty_values.len();
 
                 let mut result = ix.postings_for_label_values(label, &non_empty_values);
+
                 // include series that don't have the label only if the original
                 // alternatives contained an empty branch.
                 if contains_empty {
