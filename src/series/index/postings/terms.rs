@@ -14,6 +14,7 @@ use super::{EMPTY_BITMAP, Postings, PostingsBitmap, PostingsIndex, StaleSet};
 use crate::labels::SeriesLabel;
 use crate::series::SeriesRef;
 use crate::series::index::key_buffer::KeyBuffer;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
@@ -262,17 +263,32 @@ impl<'a> Terms<'a> {
     ///
     /// This exists primarily to ensure that we disallow duplicate metric names
     pub(super) fn posting_id_by_labels<T: SeriesLabel>(self, labels: &[T]) -> Option<SeriesRef> {
-        let mut it = labels.iter();
-
-        let first = it.next()?;
-        let first_key = KeyBuffer::for_label_value(first.name(), first.value());
-        // Borrow the first bitmap rather than cloning it: it is often `__name__`, holding a large
-        // share of the shard, and only the intersection needs to be materialised.
-        let mut acc = Cow::Borrowed(self.index.get(first_key.as_bytes())?);
-
-        for label in it {
+        // Look every bitmap up before intersecting any: a new series nearly always carries one
+        // unseen value, which this answers with key lookups alone.
+        let mut bitmaps: SmallVec<[&'a PostingsBitmap; 8]> = SmallVec::with_capacity(labels.len());
+        for label in labels {
             let key = KeyBuffer::for_label_value(label.name(), label.value());
             let bmp = self.index.get(key.as_bytes())?;
+            if bmp.is_empty() {
+                return None;
+            }
+            bitmaps.push(bmp);
+        }
+
+        // Smallest first, so the cost no longer depends on how the label names sort.
+        bitmaps.sort_unstable_by_key(|bmp| bmp.cardinality());
+        let (&smallest, rest) = bitmaps.split_first()?;
+
+        // Usually a per-series label (`host`, `instance`) pins one candidate: probe the rest for it
+        // instead of intersecting.
+        if smallest.cardinality() == 1 {
+            let id = smallest.minimum()?;
+            let unique = !self.stale.contains(id) && rest.iter().all(|bmp| bmp.contains(id));
+            return unique.then_some(id);
+        }
+
+        let mut acc = Cow::Borrowed(smallest);
+        for &bmp in rest {
             acc = match acc {
                 Cow::Borrowed(first) => Cow::Owned(first.and(bmp)),
                 Cow::Owned(mut acc) => {
@@ -389,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn posting_id_by_labels_intersects_without_cloning_first() {
+    fn posting_id_by_labels_finds_unique_id() {
         let mut postings = Postings::default();
         for id in 1..=100 {
             postings.add_posting_for_label_value(id, "__name__", "cpu");
@@ -410,6 +426,54 @@ mod tests {
 
         postings.mark_ids_as_stale(&[42]);
         assert_eq!(postings.posting_id_by_labels(&labels), None);
+    }
+
+    #[test]
+    fn posting_id_by_labels_ignores_label_order() {
+        let mut postings = Postings::default();
+        for id in 1..=100 {
+            postings.add_posting_for_label_value(id, "__name__", "cpu");
+            postings.add_posting_for_label_value(id, "host", &format!("h{id}"));
+        }
+        let forward = [Label::new("__name__", "cpu"), Label::new("host", "h42")];
+        let reversed = [Label::new("host", "h42"), Label::new("__name__", "cpu")];
+        assert_eq!(postings.posting_id_by_labels(&forward), Some(42));
+        assert_eq!(postings.posting_id_by_labels(&reversed), Some(42));
+
+        // the single candidate must carry every other label too
+        let mismatch = [Label::new("__name__", "mem"), Label::new("host", "h42")];
+        assert_eq!(postings.posting_id_by_labels(&mismatch), None);
+        postings.add_posting_for_label_value(42, "__name__", "mem");
+        postings.add_posting_for_label_value(43, "__name__", "mem");
+        assert_eq!(postings.posting_id_by_labels(&mismatch), Some(42));
+        let missing = [Label::new("__name__", "cpu"), Label::new("host", "h-new")];
+        assert_eq!(postings.posting_id_by_labels(&missing), None);
+    }
+
+    #[test]
+    fn posting_id_by_labels_without_a_unique_label() {
+        let mut postings = Postings::default();
+        for id in [1, 2, 3] {
+            postings.add_posting_for_label_value(id, "a", "x");
+        }
+        for id in [2, 3, 4] {
+            postings.add_posting_for_label_value(id, "b", "y");
+        }
+        for id in [3, 5] {
+            postings.add_posting_for_label_value(id, "c", "z");
+        }
+        let labels = [
+            Label::new("a", "x"),
+            Label::new("b", "y"),
+            Label::new("c", "z"),
+        ];
+        assert_eq!(postings.posting_id_by_labels(&labels), Some(3));
+
+        // two candidates left after masking one of three
+        let ab = [Label::new("a", "x"), Label::new("b", "y")];
+        assert_eq!(postings.posting_id_by_labels(&ab), None);
+        postings.mark_ids_as_stale(&[2]);
+        assert_eq!(postings.posting_id_by_labels(&ab), Some(3));
     }
 
     #[test]
