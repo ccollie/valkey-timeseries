@@ -50,7 +50,10 @@ impl<'a> Terms<'a> {
         for m in filters {
             let matches_empty = m.matches("");
 
-            let is_subtracting = matches_empty || m.is_negative_matcher();
+            // A matcher that rejects "" needs the label present, so it intersects even when
+            // negative (`l!=""`, `l!~"a*"`): the loop below puts every such matcher in `its`.
+            // Counting it as subtracting would seed `its` with all postings for nothing.
+            let is_subtracting = matches_empty;
 
             if is_subtracting {
                 has_subtracting_matchers = true;
