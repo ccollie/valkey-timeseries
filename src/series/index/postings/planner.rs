@@ -287,8 +287,15 @@ where
     let Some(second) = its.next() else {
         return first.into_owned();
     };
-    // `and` allocates only the intersection; cloning `first` would copy all of it.
-    let mut result = first.and(&second);
+    // A borrowed `first` gets a fresh bitmap sized to the intersection rather than a full clone;
+    // an owned one is narrowed in place.
+    let mut result = match first {
+        Cow::Borrowed(first) => first.and(&second),
+        Cow::Owned(mut first) => {
+            first.and_inplace(&second);
+            first
+        }
+    };
     for it in its {
         if result.is_empty() {
             break;
