@@ -95,13 +95,6 @@ impl<'a> Terms<'a> {
         }
     }
 
-    /// Clone postings for a key (or empty), then remove stale IDs in-place.
-    fn postings_for_key_owned(self, key: &[u8]) -> PostingsBitmap {
-        let mut out = self.index.get(key).cloned().unwrap_or_default();
-        self.mask(&mut out);
-        out
-    }
-
     pub(super) fn postings_for_label_value(
         self,
         name: &str,
@@ -152,10 +145,14 @@ impl<'a> Terms<'a> {
 
     /// `postings_for_label_values` returns a `PostingsBitmap` for the label pairs.
     /// The postings here contain the ids to the series inside the index.
-    pub(super) fn postings_for_label_values(self, name: &str, values: &[String]) -> PostingsBitmap {
+    pub(super) fn postings_for_label_values(
+        self,
+        name: &str,
+        values: &[String],
+    ) -> Cow<'a, PostingsBitmap> {
         if let [value] = values {
             let key = KeyBuffer::for_label_value(name, value);
-            return self.postings_for_key_owned(key.as_bytes());
+            return self.postings_for_key(key.as_bytes());
         }
 
         let mut result = PostingsBitmap::new();
@@ -168,7 +165,7 @@ impl<'a> Terms<'a> {
         }
 
         self.mask(&mut result);
-        result
+        Cow::Owned(result)
     }
 
     /// `postings_for_label_matching` returns postings having a label with the given name and a value
