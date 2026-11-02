@@ -30,13 +30,22 @@ fn fleet_labels(id: u64) -> [(String, String); 5] {
     ]
 }
 
+fn metric_name(pairs: &[(String, String)]) -> MetricName {
+    MetricName::from_pairs(pairs.iter().map(|(n, v)| (n.as_str(), v.as_str())))
+}
+
+/// Labels as the series-create path builds them for the uniqueness check.
+fn query_labels(pairs: &[(String, String)]) -> Vec<Label> {
+    metric_name(pairs).to_label_vec()
+}
+
 fn build_index(size: u64) -> TimeSeriesIndex {
     let index = TimeSeriesIndex::new();
     for id in 1..=size {
         let labels = fleet_labels(id);
         let mut ts = TimeSeries::new();
         ts.id = id;
-        ts.labels = MetricName::from_pairs(labels.iter().map(|(n, v)| (n.as_str(), v.as_str())));
+        ts.labels = metric_name(&labels);
         index.index_timeseries(&ts, format!("ts:{id}").as_bytes());
     }
     index
@@ -63,6 +72,8 @@ const SELECTOR_CASES: &[(&str, &str, u64)] = &[
     ("list_two_present", r#"{region=~"r0|r1"}"#, 10),
     // control: two intersecting sets
     ("eq_and_eq", r#"{__name__="cpu", env="prod"}"#, 10),
+    // owned union as the smallest set of an intersection: narrowed in place
+    ("list_and_eq", r#"{region=~"r0|r1", job="api"}"#, 10),
 ];
 
 fn bench_selectors(c: &mut Criterion) {
@@ -105,14 +116,13 @@ fn bench_series_id_by_labels(c: &mut Criterion) {
     for size in FLEET_SIZES {
         let index = build_index(size);
         let id = size / 2 + 1;
-        let labels: Vec<Label> = fleet_labels(id)
-            .into_iter()
-            .map(|(name, value)| Label::new(name, value))
-            .collect();
+        // TS.CREATE passes `MetricName::to_label_vec`, which is in label-name order.
+        let mut pairs = fleet_labels(id);
+        let labels = query_labels(&pairs);
         assert_eq!(index.series_id_by_labels(&labels), Some(id));
-        // a new series: same labels except an unseen host, as on TS.CREATE
-        let mut fresh = labels.clone();
-        fresh[1] = Label::new("host", "h-new");
+        // a new series: same labels except an unseen host
+        pairs[1].1 = "h-new".into();
+        let fresh = query_labels(&pairs);
         assert_eq!(index.series_id_by_labels(&fresh), None);
 
         group.bench_with_input(BenchmarkId::new("existing", size), &labels, |b, labels| {
