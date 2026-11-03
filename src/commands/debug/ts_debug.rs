@@ -126,13 +126,13 @@ fn refresh_clustermap(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyRes
         }
     };
     reply_with_map(ctx, 4);
-    reply_with_str(ctx, "outcome");
-    reply_with_str(ctx, outcome);
-    reply_with_str(ctx, "consistent");
+    reply_with_simple_string(ctx, "outcome");
+    reply_with_simple_string(ctx, outcome);
+    reply_with_simple_string(ctx, "consistent");
     reply_with_bool(ctx, map.is_consistent);
-    reply_with_str(ctx, "shards");
+    reply_with_simple_string(ctx, "shards");
     reply_with_usize(ctx, map.all_shards().len());
-    reply_with_str(ctx, "fingerprint");
+    reply_with_simple_string(ctx, "fingerprint");
     reply_with_bulk_string(ctx, &map.cluster_slots_fingerprint().to_string());
     Ok(())
 }
