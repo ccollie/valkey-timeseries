@@ -563,6 +563,66 @@ mod tests {
         validate_optimized(q, result_expected);
     }
 
+    /// A histogram function consumes its bucket labels: the result has no `le`
+    /// or `vmrange`, so a filter on one says nothing about the other operand,
+    /// and pushed the other way it would drop buckets and change the value.
+    /// Other labels pass through as usual.
+    #[rstest]
+    #[case("histogram_avg")]
+    #[case("histogram_stddev")]
+    #[case("histogram_stdvar")]
+    #[case("histogram_quantile(0.5,")]
+    #[case("histogram_fraction(0, 1,")]
+    fn histogram_functions_keep_bucket_filters_on_their_side(#[case] func: &str) {
+        let call = |inner: &str| {
+            if func.ends_with(',') {
+                format!("{func} {inner})")
+            } else {
+                format!("{func}({inner})")
+            }
+        };
+        for bucket_label in ["le", "vmrange"] {
+            // Out of the argument: `bar` does not get the bucket filter.
+            validate_optimized(
+                &format!(
+                    r#"{} + bar{{x="y"}}"#,
+                    call(&format!(r#"foo{{{bucket_label}="1"}}"#))
+                ),
+                &format!(
+                    r#"{} + bar{{x="y"}}"#,
+                    call(&format!(r#"foo{{{bucket_label}="1",x="y"}}"#))
+                ),
+            );
+            // Into the argument: `foo` does not get it either.
+            validate_optimized(
+                &format!(r#"{} + bar{{{bucket_label}!="1"}}"#, call("foo")),
+                &format!(r#"{} + bar{{{bucket_label}!="1"}}"#, call("foo")),
+            );
+        }
+    }
+
+    /// `histogram_quantiles` also writes its quantile label, so a filter on that
+    /// label is about the output: `foo` carries no such label to select on.
+    #[rstest]
+    #[case(
+        r#"histogram_quantiles(foo, "q", 0.5) * on(q) bar{q="0.5"}"#,
+        r#"histogram_quantiles(foo, "q", 0.5) * on (q) bar{q="0.5"}"#
+    )]
+    #[case(
+        r#"histogram_quantiles(foo{q="1"}, "q", 0.5) + bar{x="y"}"#,
+        r#"histogram_quantiles(foo{q="1",x="y"}, "q", 0.5) + bar{x="y"}"#
+    )]
+    #[case(
+        r#"histogram_quantiles(foo{le="1"}, "q", 0.5) + bar{x="y"}"#,
+        r#"histogram_quantiles(foo{le="1",x="y"}, "q", 0.5) + bar{x="y"}"#
+    )]
+    fn histogram_quantiles_keeps_its_label_filters_on_its_side(
+        #[case] q: &str,
+        #[case] result_expected: &str,
+    ) {
+        validate_optimized(q, result_expected);
+    }
+
     #[rstest]
     #[case(
         r#"label_join(foo, "a", "b", "c") + bar{x="y"}"#,

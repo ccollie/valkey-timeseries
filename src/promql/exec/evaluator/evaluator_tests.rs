@@ -4442,6 +4442,45 @@ mod tests {
         }
     }
 
+    /// The parser declares `histogram_quantiles` experimental and the other
+    /// histogram statistics stable, as Prometheus does.
+    #[test]
+    fn only_histogram_quantiles_is_gated_as_experimental() {
+        let reader = rollup_reader();
+        let options = QueryOptions {
+            timeout: None,
+            enable_experimental_functions: false,
+            ..QueryOptions::default()
+        };
+        let evaluator = Evaluator::new(&reader, options);
+        let at = UNIX_EPOCH + Duration::from_secs(120);
+        let lookback = Duration::from_secs(300);
+        let err = parse_and_evaluate(
+            &evaluator,
+            r#"histogram_quantiles(metric, "q", 0.5)"#,
+            at,
+            lookback,
+        )
+        .expect_err("experimental function must be gated");
+        assert!(
+            err.to_string()
+                .contains("histogram_quantiles is not enabled"),
+            "{err}"
+        );
+        for name in ["histogram_avg", "histogram_stddev", "histogram_stdvar"] {
+            parse_and_evaluate(&evaluator, &format!("{name}(metric)"), at, lookback)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+    }
+
+    /// Prometheus' argument order is the only one: the parser's built-in
+    /// signature refuses VictoriaMetrics' label-first form.
+    #[test]
+    fn histogram_quantiles_takes_prometheus_argument_order() {
+        assert!(parse_registered(r#"histogram_quantiles(metric, "q", 0.5, 0.9)"#).is_ok());
+        assert!(parse_registered(r#"histogram_quantiles("q", 0.5, 0.9, metric)"#).is_err());
+    }
+
     /// promqltest never compares `expect fail msg:` text, so the argument
     /// errors' wording is pinned here.
     #[test]
