@@ -122,7 +122,7 @@ The evaluator supports scalar, instant-vector, and range-vector expressions, inc
   `changes`, `resets`, `predict_linear`, `avg_over_time`, `count_over_time`,
   `first_over_time`, `last_over_time`, `max_over_time`, `min_over_time`,
   `present_over_time`, `quantile_over_time`, `stddev_over_time`, `stdvar_over_time`,
-  `sum_over_time`, and timestamp-of-extrema functions.
+  `sum_over_time`, `integral` (experimental), and timestamp-of-extrema functions.
 - Math and date functions, including trigonometric, logarithmic, rounding, clamping,
   calendar, `time()`, and `timestamp()` functions.
 - Label and ordering helpers: `label_join`, `label_replace`, `sort`, `sort_desc`,
@@ -137,6 +137,32 @@ The supported function registry is maintained in
 PromQL behavior should be treated as the module’s implemented subset rather than a
 guarantee that every function or sample type supported by an external Prometheus release
 is available.
+
+### Experimental functions from Prometheus
+
+**`integral(v range-vector, strategy=2 scalar)`** — the time integral of each series over
+the window, in value-seconds. Use it on gauges, typically ones holding a rate per second.
+It is available only when `ts-promql-enable-experimental-functions` is on.
+
+`strategy` chooses the rule applied to each adjacent pair of samples: `0` uses the earlier
+sample (left-point), `1` the later sample (right-point), and `2` their mean (trapezoidal,
+the default).
+
+- Each pair is weighted by its real interval, and integration runs across gaps with no
+  staleness cutoff.
+- A `NaN` sample counts as `0`. A window with one sample, or with only `NaN` samples, answers
+  `0`. A window with no samples gives no result.
+- Any other `strategy` answers as trapezoidal, without the warning Prometheus adds.
+- The result drops `__name__`, and in cluster mode a literal `strategy` is pushed down to the
+  shards.
+
+```
+# Total cost over the last week, given a cost per hour.
+integral(hourly_cost[7d]) / 3600
+
+# Share of the last week a 0/1 metric was 1.
+integral(service_sla_ok[7d]) / (3600 * 24 * 7)
+```
 
 ### Functions beyond Prometheus
 
