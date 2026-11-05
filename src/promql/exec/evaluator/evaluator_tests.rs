@@ -6180,7 +6180,6 @@ mod tests {
     fn should_push_down_integral_with_a_literal_strategy() {
         for (query, param, expected) in [
             ("integral(metric[1m])", None, 475.0),
-            ("integral(metric[1m], 2)", Some(2.0), 475.0),
             ("integral(metric[1m], 0)", Some(0.0), 450.0),
             ("integral(metric[1m], 1)", Some(1.0), 500.0),
         ] {
@@ -6197,6 +6196,40 @@ mod tests {
             assert_eq!(offered.len(), 1, "{query}: one grid request");
             assert_eq!(offered[0].kind(), RollupKind::Integral, "{query}");
         }
+    }
+
+    /// Naming the default strategy asks for the same grid as omitting it, so a
+    /// query using both shares one request. The instant path has no grid to
+    /// share and sends what the query says.
+    #[test]
+    fn should_share_one_grid_between_default_and_explicit_trapezoidal_integral() {
+        let (both, offered) = evaluate_range_with_pushdown(
+            "integral(metric[1m]) + integral(metric[1m], 2)",
+            0,
+            300_000,
+            30_000,
+            GridAnswer::Evaluated,
+        );
+        assert_eq!(offered.len(), 1, "one grid request: {offered:?}");
+        assert_eq!(offered[0].rollup.as_ref().unwrap().param, None);
+
+        let (doubled, _) = evaluate_range_with_pushdown(
+            "integral(metric[1m]) * 2",
+            0,
+            300_000,
+            30_000,
+            GridAnswer::Evaluated,
+        );
+        assert_steps_near(
+            rendered_steps(doubled),
+            rendered_steps(both),
+            "a + a == a * 2",
+        );
+
+        let (explicit, offered) =
+            evaluate_rollup_pushdown("integral(metric[1m], 2)", 120_000, GridAnswer::Evaluated);
+        assert_eq!(offered[0].rollup.as_ref().unwrap().param, Some(2.0));
+        assert_eq!(explicit[0].value, 475.0);
     }
 
     /// An invalid strategy stays local and answers as trapezoidal. A computed
@@ -6315,12 +6348,28 @@ mod tests {
     /// Aggregations over `range_over_time` fuse like any other rollup.
     #[test]
     fn should_match_local_evaluation_for_fused_range_over_time() {
-        for query in [
+        assert_fused_matches_local(&[
             "sum by (job) (range_over_time(metric[1m]))",
             "max(range_over_time(metric[3m]))",
             "avg without (instance) (range_over_time(metric[1m]))",
             "count(range_over_time(metric[1m]) >= 5)",
-        ] {
+        ]);
+    }
+
+    /// Aggregations over `integral` fuse like any other rollup, whichever
+    /// strategy the request carries.
+    #[test]
+    fn should_match_local_evaluation_for_fused_integral() {
+        assert_fused_matches_local(&[
+            "sum by (job) (integral(metric[1m]))",
+            "sum by (job) (integral(metric[1m], 0))",
+            "max(integral(metric[3m], 1))",
+            "avg without (instance) (integral(metric[1m]))",
+        ]);
+    }
+
+    fn assert_fused_matches_local(queries: &[&str]) {
+        for &query in queries {
             let (local, _) = evaluate_range_with_pushdown_on(
                 grouped_rollup_reader(),
                 query,
