@@ -266,6 +266,13 @@ These functions read classic histograms: float series that share their labels ap
 `le`. VictoriaMetrics `vmrange` buckets are converted to `le` buckets first. A series whose
 `le` does not parse as a float is not a bucket. Each result drops `le` and the metric name.
 
+The function's semantics also decide what makes one histogram. The Prometheus functions keep
+the metric name in the grouping, so `a_bucket` and `b_bucket` with otherwise equal labels are
+two histograms and, once their names are dropped, a duplicate label set error. The
+VictoriaMetrics functions group without the name, so the same series are buckets of one
+histogram. That gives no error when a selector matches unrelated histograms: their buckets
+are combined, so select one histogram unless combining them is what you mean.
+
 | Function | Result | Semantics follow |
 |----------|--------|------------------|
 | `histogram_quantile(phi, buckets)` | Estimated `phi` quantile | Prometheus |
@@ -284,8 +291,10 @@ label set error. VictoriaMetrics' label-first argument order is not accepted.
 `histogram_avg`, `histogram_stddev` and `histogram_stdvar` place every
 observation at the midpoint of its bucket, with the lowest bucket starting at 0. Observations
 in the `+Inf` bucket have no midpoint and are left out of these estimates, which do not need a
-`+Inf` bucket to exist. Unlike VictoriaMetrics, buckets with the same bound are merged and
-counts made monotonic first, as `histogram_quantile` does, so a dip does not weigh negatively.
+`+Inf` bucket to exist. Unlike VictoriaMetrics, buckets with the same bound are merged and a
+count below an earlier one is lifted to it first, so a dip does not weigh negatively. Increases
+are all kept, however small: `histogram_quantile`'s tolerance for floating-point noise does not
+apply.
 
 With no observations in a finite bucket, the result is NaN.
 
