@@ -182,7 +182,7 @@ mod tests {
     /// as `kahan_avg` does: the reference answers `Inf` here.
     #[test]
     fn midpoint_overflow_is_inf() {
-        let near_max = 9.988465674311579e307;
+        let near_max = 1e308;
         assert_eq!(integrate(&[near_max, near_max], None), f64::INFINITY);
     }
 

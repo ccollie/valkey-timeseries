@@ -116,8 +116,8 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
     def get_config_file_lines(self, test_dir, port) -> List[str]:
         # Every rollup kind is covered, the experimental ones included
         # (`first_over_time`, `mad_over_time`, `ts_of_*_over_time`,
-        # `range_over_time`, `double_exponential_smoothing`, the state
-        # functions), and those are off by default.
+        # `range_over_time`, `integral`, `double_exponential_smoothing`, the
+        # state functions), and those are off by default.
         lines = super().get_config_file_lines(test_dir, port)
         return [f'{line} ts-promql-enable-experimental-functions yes'
                 if line.startswith('loadmodule ') else line
@@ -556,6 +556,34 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
 
         with pytest.raises(ResponseError):
             self.instant_query(f'range_over_time(mem_usage[{RANGE}], 1)')
+
+    def test_integral_across_shards(self):
+        """`integral` per window and per series, whichever shard holds the
+        series: the trapezoid is the mean of the two rectangle rules, and an
+        invalid strategy answers as the default."""
+        self.setup_fleet()
+
+        trapezoid = self.steps_by_instance(
+            self.range_query(f'integral(mem_usage[{RANGE}])'))
+        self.assert_steps_exact(
+            trapezoid,
+            self.steps_by_instance(self.range_query(
+                f'(integral(mem_usage[{RANGE}], 0) + integral(mem_usage[{RANGE}], 1)) / 2')),
+            context='trapezoid == mean of left and right')
+        self.assert_steps_exact(
+            trapezoid,
+            self.steps_by_instance(self.range_query(f'integral(mem_usage[{RANGE}], 3)')),
+            context='an invalid strategy answers as trapezoidal')
+
+        self.assert_values_exact(
+            self.values_by_label(
+                self.instant_query(f'sum by (job) (integral(mem_usage[{RANGE}]))'), 'job'),
+            self.values_by_label(
+                self.instant_query(f'sum by (job) (integral(mem_usage[{RANGE}], 2))'), 'job'),
+            context='sum by (job)')
+
+        with pytest.raises(ResponseError):
+            self.instant_query(f'integral(mem_usage[{RANGE}], 1, 2)')
 
     def test_ts_of_functions_across_shards(self):
         """The `ts_of_*` family returns a timestamp in seconds.
@@ -1144,9 +1172,14 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
         'range_over_time(mem_usage[2m])',
         'range_over_time(mem_usage[30s])',
         'range_over_time(sparse_metric[1m])',
+        'integral(mem_usage[2m])',
+        'integral(mem_usage[3m], 0)',
+        'integral(sparse_metric[1m], 1)',
     ]
 
     EQUIVALENCE_RANGE = [
+        'integral(mem_usage[2m])',
+        'integral(mem_usage[2m], 0)',
         'sum_over_time(mem_usage[2m])',
         'count_over_time(mem_usage[2m])',
         'avg_over_time(mem_usage[2m])',
