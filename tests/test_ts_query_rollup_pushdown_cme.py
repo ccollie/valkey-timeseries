@@ -579,8 +579,10 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
             self.values_by_label(
                 self.instant_query(f'sum by (job) (integral(mem_usage[{RANGE}]))'), 'job'),
             self.values_by_label(
-                self.instant_query(f'sum by (job) (integral(mem_usage[{RANGE}], 2))'), 'job'),
-            context='sum by (job)')
+                self.instant_query(
+                    f'sum by (job) ((integral(mem_usage[{RANGE}], 0)'
+                    f' + integral(mem_usage[{RANGE}], 1)) / 2)'), 'job'),
+            context='fused sum by (job) == sum of the unfused mean')
 
         with pytest.raises(ResponseError):
             self.instant_query(f'integral(mem_usage[{RANGE}], 1, 2)')
@@ -1223,6 +1225,8 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
         'sum by (job) (state_duration_over_time(mem_usage[2m], 7, "1m"))',
         'count(state_duration_over_time(mem_usage[1m], 8))',
         'sum by (job) (state_count_over_time(mem_usage[2m], 7))',
+        'sum by (job) (integral(mem_usage[2m]))',
+        'sum by (job) (integral(mem_usage[2m], 0))',
         'avg(state_count_over_time(mem_usage[1m], 8))',
         'max by (job) (range_over_time(mem_usage[2m]))',
         'sum(range_over_time(mem_usage[1m]))',
