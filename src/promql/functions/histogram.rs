@@ -11,6 +11,7 @@ use crate::promql::hashers::FingerprintHashMap;
 use crate::promql::model::is_stale_nan;
 use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
 use ahash::AHashMap;
+use promql_parser::label::METRIC_NAME;
 
 static ELLIPSIS: &str = "...";
 static LE: &str = "le";
@@ -267,7 +268,7 @@ fn histogram_fraction(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
     let upper = expect_scalar(arg_iter.next().unwrap(), "histogram_fraction", "upper")?;
     let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_fraction")?;
 
-    let rvs = classic_histograms(series)
+    let rvs = classic_histograms(series, HistogramGrouping::WithName)
         .map(|(mut sample, mut buckets)| {
             sample.value = bucket_fraction(lower, upper, &mut buckets);
             sample.drop_name = true;
@@ -287,7 +288,7 @@ pub(super) fn histogram_quantile(args: Vec<PromQLArg>) -> EvalResult<ExprResult>
     let phi = expect_scalar(arg_iter.next().unwrap(), "histogram_quantile", "phi")?;
     let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_quantile")?;
 
-    let rvs = classic_histograms(series)
+    let rvs = classic_histograms(series, HistogramGrouping::WithName)
         .map(|(mut sample, mut buckets)| {
             sample.value = bucket_quantile(phi, &mut buckets);
             sample.drop_name = true;
@@ -318,7 +319,7 @@ fn histogram_quantiles(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
         .map(|arg| expect_scalar(arg, "histogram_quantiles", "phi"))
         .collect::<EvalResult<Vec<f64>>>()?;
 
-    let mut histograms: Vec<_> = classic_histograms(series).collect();
+    let mut histograms: Vec<_> = classic_histograms(series, HistogramGrouping::WithName).collect();
     let mut rvs = Vec::with_capacity(phis.len() * histograms.len());
     for &phi in &phis {
         let phi_label = format_open_metrics_float(phi);
@@ -373,7 +374,7 @@ fn histogram_statistic(
     statistic: fn(&mut Vec<ClassicBucket>) -> f64,
 ) -> EvalResult<ExprResult> {
     let series = expect_instant_vector(arg, name)?;
-    let rvs = classic_histograms(series)
+    let rvs = classic_histograms(series, HistogramGrouping::WithoutName)
         .map(|(mut sample, mut buckets)| {
             sample.value = statistic(&mut buckets);
             sample.drop_name = true;
@@ -383,17 +384,27 @@ fn histogram_statistic(
     Ok(ExprResult::InstantVector(rvs))
 }
 
+/// Which labels tell one classic histogram from another, `le` aside.
+#[derive(Clone, Copy, PartialEq)]
+enum HistogramGrouping {
+    /// Prometheus: the name's drop is pending until the result is rendered, so
+    /// `a_bucket` and `b_bucket` stay separate histograms, and a duplicate label
+    /// set error if nothing else tells them apart.
+    WithName,
+    /// VictoriaMetrics: the name is removed first, so `a_bucket` and `b_bucket`
+    /// with otherwise equal labels are buckets of one histogram.
+    WithoutName,
+}
+
 /// The classic histograms in `series`, each as its output sample (the first
-/// bucket's, without `le`) and its buckets.
+/// bucket's, without `le`) and its buckets, grouped as `grouping` says.
 ///
-/// One histogram per label set without `le`, the metric name included, as
-/// Prometheus groups them: the name's drop is pending until the result is
-/// rendered, so `a_bucket` and `b_bucket` stay separate histograms. A series
-/// whose `le` does not parse as a float is not a bucket. VictoriaMetrics
+/// A series whose `le` does not parse as a float is not a bucket. VictoriaMetrics
 /// `vmrange` buckets are converted to `le` buckets first; Prometheus-format
 /// buckets pass through unchanged.
 fn classic_histograms(
     series: Vec<EvalSample>,
+    grouping: HistogramGrouping,
 ) -> impl Iterator<Item = (EvalSample, Vec<ClassicBucket>)> {
     let mut histograms: FingerprintHashMap<(EvalSample, Vec<ClassicBucket>)> =
         FingerprintHashMap::default();
@@ -410,6 +421,9 @@ fn classic_histograms(
             continue;
         };
         ts.labels.remove(LE);
+        if grouping == HistogramGrouping::WithoutName {
+            ts.labels.remove(METRIC_NAME);
+        }
         let bucket = ClassicBucket {
             upper_bound,
             count: ts.value,
@@ -500,9 +514,8 @@ pub(super) fn bucket_quantile(q: f64, buckets: &mut Vec<ClassicBucket>) -> f64 {
 /// observation taken to sit at its bucket's midpoint, as VictoriaMetrics'
 /// `histogram_avg`/`_stddev`/`_stdvar` take it. The lowest bucket starts at 0,
 /// whatever its sign, and observations in the `+Inf` bucket have no midpoint so
-/// are left out. Same-bound buckets are merged and counts made monotonic first,
-/// as for [`bucket_quantile`]; without that a dip weighs negatively. A `+Inf`
-/// bucket is not required.
+/// are left out. Same-bound buckets are merged and decreases lifted first (see
+/// [`lift_count_decreases`]). A `+Inf` bucket is not required.
 struct MidpointMoments {
     /// The observations in the finite buckets.
     weight: f64,
@@ -512,10 +525,26 @@ struct MidpointMoments {
     sum_squares: f64,
 }
 
+/// Lift each count that falls below the highest before it, so a dip weighs 0
+/// rather than negatively. Every increase stands, however small: unlike
+/// [`ensure_monotonic_and_ignore_small_deltas`], which keeps float noise from
+/// moving [`bucket_quantile`]'s rank search, there is no tolerance, as a tiny
+/// increment is a tiny weight here, and on a large count may be real observations.
+fn lift_count_decreases(buckets: &mut [ClassicBucket]) {
+    let mut highest = f64::NEG_INFINITY;
+    for bucket in buckets {
+        if bucket.count < highest {
+            bucket.count = highest;
+        } else {
+            highest = bucket.count;
+        }
+    }
+}
+
 fn midpoint_moments(buckets: &mut Vec<ClassicBucket>) -> MidpointMoments {
     buckets.sort_by(|a, b| a.upper_bound.total_cmp(&b.upper_bound));
     coalesce_buckets(buckets);
-    ensure_monotonic_and_ignore_small_deltas(buckets, SMALL_DELTA_TOLERANCE);
+    lift_count_decreases(buckets);
     let mut moments = MidpointMoments {
         weight: 0.0,
         sum: 0.0,
@@ -917,27 +946,81 @@ mod tests {
         samples
     }
 
+    /// Equal to one part in a billion, for values that do not compare exactly.
+    fn assert_close(a: f64, b: f64) {
+        assert!((a - b).abs() <= 1e-9 * b.abs(), "{a} is not close to {b}");
+    }
+
+    /// A small increment on a large count is an observation, here one at about
+    /// 5e11, however tiny relative to the count: the quantile's noise tolerance
+    /// would erase it, taking the average to 0.5 and the variance to 0.
     #[test]
-    fn statistics_drop_le_and_the_name_and_group_by_name() {
+    fn statistics_keep_a_small_increment_on_a_large_count() {
+        let h = || buckets(&[(1.0, 1e12), (1e12, 1e12 + 1.0), (INF, 1e12 + 1.0)]);
+        assert_close(bucket_avg(&mut h()), 1.0);
+        assert_close(bucket_stdvar(&mut h()), 2.5e11);
+        assert_close(bucket_stddev(&mut h()), 2.5e11_f64.sqrt());
+    }
+
+    /// Steps of 1 on 1e12 straddle the quantile's tolerance, which would drop
+    /// some of these 1000 observations.
+    #[test]
+    fn statistics_keep_many_small_increments() {
+        let mut pairs = vec![(1.0, 1e12)];
+        pairs.extend((1..=1000).map(|i| (1.0 + f64::from(i), 1e12 + f64::from(i))));
+        let moments = midpoint_moments(&mut buckets(&pairs));
+        assert_eq!(moments.weight, 1e12 + 1000.0);
+    }
+
+    /// Only a real decrease is repaired, however small it is.
+    #[test]
+    fn statistics_lift_a_small_dip_and_weigh_it_zero() {
+        // The dip at le=2 is lifted to 8, so its weight is 0, not -1e-3.
+        let mut h = buckets(&[(1.0, 8.0), (2.0, 8.0 - 1e-3), (4.0, 10.0), (INF, 10.0)]);
+        // (0.5*8 + 1.5*0 + 3*2) / 10.
+        assert_eq!(bucket_avg(&mut h), 1.0);
+        assert_eq!(h[1].count, 8.0);
+    }
+
+    /// VictoriaMetrics' grouping: the name does not separate histograms, any
+    /// other label does.
+    #[test]
+    fn statistics_group_without_the_name() {
         let series = vec![
-            bucket("a_bucket", "1", 2.0),
-            bucket("a_bucket", "+Inf", 4.0),
-            bucket("b_bucket", "2", 3.0),
-            bucket("b_bucket", "+Inf", 3.0),
-            bucket("a_bucket", "1kb", 100.0),
+            sample(&[("__name__", "a_bucket"), ("job", "x"), ("le", "1")], 2.0),
+            sample(&[("__name__", "b_bucket"), ("job", "x"), ("le", "2")], 6.0),
+            sample(&[("__name__", "a_bucket"), ("job", "y"), ("le", "1")], 3.0),
+            // Not a float: not a bucket.
+            sample(
+                &[("__name__", "a_bucket"), ("job", "x"), ("le", "1kb")],
+                100.0,
+            ),
         ];
         let mut samples = eval_one(&HistogramAvgFunction, series);
         samples.sort_by(|a, b| a.labels.cmp(&b.labels));
-        assert_eq!(samples.len(), 2, "one result per histogram");
-        // a: 2 at 0.5; b: 3 at 1.
-        assert_eq!(samples[0].value, 0.5);
-        assert_eq!(samples[1].value, 1.0);
+        assert_eq!(samples.len(), 2, "one result per job");
+        // x: 2 at 0.5 and 4 at 1.5; y: 3 at 0.5.
+        assert_eq!(samples[0].labels.get("job"), Some("x"));
+        assert_eq!(samples[0].value, 7.0 / 6.0);
+        assert_eq!(samples[1].labels.get("job"), Some("y"));
+        assert_eq!(samples[1].value, 0.5);
         for s in &samples {
-            assert!(
-                s.drop_name,
-                "the name is dropped when the result is rendered"
-            );
+            assert_eq!(s.labels.get("__name__"), None);
             assert_eq!(s.labels.get("le"), None);
+        }
+    }
+
+    /// Unlike VictoriaMetrics' statistics, which take a difference between them
+    /// in whichever order the sort left them, same-bound buckets of different
+    /// names are merged, so the result does not depend on input order.
+    #[test]
+    fn same_bound_buckets_of_different_names_merge_in_any_order() {
+        let a = || sample(&[("__name__", "a_bucket"), ("le", "2")], 2.0);
+        let b = || sample(&[("__name__", "b_bucket"), ("le", "2")], 6.0);
+        for series in [vec![a(), b()], vec![b(), a()]] {
+            let samples = eval_one(&HistogramAvgFunction, series);
+            assert_eq!(samples.len(), 1);
+            assert_eq!(samples[0].value, 1.0);
         }
     }
 

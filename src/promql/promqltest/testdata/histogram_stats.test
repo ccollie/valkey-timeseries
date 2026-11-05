@@ -83,7 +83,7 @@ eval instant at 0 histogram_avg(noinf_bucket)
 
 clear
 
-# Non-monotonic buckets are repaired as histogram_quantile repairs them, so the
+# A count below an earlier one is lifted to it, so the
 # dip at le=2 weighs 0 rather than -2: (0.5*5 + 1.5*0 + 3*3) / 8.
 load 5m
 	dip_bucket{le="1"}    5
@@ -183,3 +183,29 @@ eval range from 0 to 5m step 5m histogram_quantile(0.5, b_bucket) + on(job) othe
 
 eval range from 0 to 5m step 5m histogram_quantiles(b_bucket, "p", 0.5) * on(p) want
 	{p="0.5"} 3 3
+
+clear
+
+# As in VictoriaMetrics, the statistics group by labels without the metric name:
+# series of different names form one histogram rather than a duplicate label set.
+# Midpoints 0.5 and 1.5 with weights 2 and 4.
+load 5m
+	a_bucket{le="1"} 2
+	b_bucket{le="2"} 6
+
+eval instant at 0 histogram_avg({__name__=~"[ab]_bucket"})
+	{} 1.1666666666666667
+
+eval instant at 0 histogram_stdvar({__name__=~"[ab]_bucket"})
+	{} 0.22222222222222188
+
+eval instant at 0 histogram_stddev({__name__=~"[ab]_bucket"})
+	{} 0.4714045207910313
+
+# histogram_quantile and histogram_fraction keep Prometheus' grouping, name
+# included, so the same input is two histograms with one label set.
+eval instant at 0 histogram_quantile(0.5, {__name__=~"[ab]_bucket"})
+	expect fail
+
+eval instant at 0 histogram_fraction(0, 1, {__name__=~"[ab]_bucket"})
+	expect fail
