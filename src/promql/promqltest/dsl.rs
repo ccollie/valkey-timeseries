@@ -513,8 +513,14 @@ fn parse_values(s: &str) -> Result<Vec<(i64, f64)>, String> {
             .parse()
             .map_err(|_| format!("Invalid count: {count_str}"))?;
 
+        // Repeated addition, not `start + step * i`, as Prometheus expands them.
+        let mut value = start;
         Ok((0..=count)
-            .map(|i| (i as i64, start + step * i as f64))
+            .map(|i| {
+                let sample = (i as i64, value);
+                value += step;
+                sample
+            })
             .collect())
     } else if let Some((value_str, count_str)) = s
         .split_once('x')
@@ -888,6 +894,16 @@ pub fn parse_test_file(input: &str) -> Result<Vec<Command>, String> {
 mod tests {
     use super::*;
     use crate::promql::QueryValue;
+
+    /// Prometheus expands `a+bxN` by repeated addition, and fixtures can depend
+    /// on the rounding that accumulates: a counter that lands just above the next
+    /// literal value reads as a reset rather than as no increase.
+    #[test]
+    fn should_expand_stepped_values_by_repeated_addition() {
+        let values = parse_values("0+99.01x100").unwrap();
+        assert_eq!(values.len(), 101);
+        assert_eq!(values[100], (100, 9901.000000000016));
+    }
 
     #[test]
     fn should_parse_clear_command() {
