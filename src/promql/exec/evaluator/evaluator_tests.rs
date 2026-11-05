@@ -6172,6 +6172,55 @@ mod tests {
         assert_eq!(offered[0].kind(), RollupKind::RangeOverTime);
     }
 
+    // ── integral push-down ──────────────────────────────────────────────
+
+    /// A literal strategy ships as the request's parameter. Window (60s, 120s]
+    /// holds 7..12, 10 s apart.
+    #[test]
+    fn should_push_down_integral_with_a_literal_strategy() {
+        for (query, param, expected) in [
+            ("integral(metric[1m])", None, 475.0),
+            ("integral(metric[1m], 2)", Some(2.0), 475.0),
+            ("integral(metric[1m], 0)", Some(0.0), 450.0),
+            ("integral(metric[1m], 1)", Some(1.0), 500.0),
+        ] {
+            let (pushed, offered) = evaluate_rollup_pushdown(query, 120_000, GridAnswer::Evaluated);
+            assert_eq!(offered.len(), 1, "{query}: instant offered once");
+            let rollup = offered[0].rollup.as_ref().unwrap();
+            assert_eq!(rollup.kind, RollupKind::Integral, "{query}");
+            assert_eq!(rollup.param, param, "{query}");
+            assert_eq!(pushed.len(), 1, "{query}");
+            assert_eq!(pushed[0].value, expected, "{query}");
+
+            let (_, offered) =
+                evaluate_range_with_pushdown(query, 0, 300_000, 30_000, GridAnswer::Evaluated);
+            assert_eq!(offered.len(), 1, "{query}: one grid request");
+            assert_eq!(offered[0].kind(), RollupKind::Integral, "{query}");
+        }
+    }
+
+    /// An invalid strategy stays local and answers as trapezoidal. A computed
+    /// one could differ per step, so a range query cannot ship it as one request.
+    #[test]
+    fn should_keep_integral_local_when_the_strategy_cannot_ship() {
+        for query in ["integral(metric[1m], 3)", "integral(metric[1m], NaN)"] {
+            let (result, offered) = evaluate_rollup_pushdown(query, 120_000, GridAnswer::Evaluated);
+            assert!(offered.is_empty(), "{query}: {offered:?}");
+            assert_eq!(result.len(), 1, "{query}");
+            assert_eq!(result[0].value, 475.0, "{query}");
+        }
+
+        let computed = "integral(metric[1m], scalar(vector(0)))";
+        let (_, offered) =
+            evaluate_range_with_pushdown(computed, 0, 300_000, 30_000, GridAnswer::Evaluated);
+        assert!(offered.is_empty(), "{offered:?}");
+
+        // The instant path resolves the parameter first, so it may ship it.
+        let (result, _) = evaluate_rollup_pushdown(computed, 120_000, GridAnswer::Evaluated);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, 450.0);
+    }
+
     /// A series whose windows hold NaNs and infinities, which is where a
     /// one-pass `max - min` could part ways with the two functions it fuses.
     fn non_finite_rollup_reader() -> MemorySeriesQuerier {

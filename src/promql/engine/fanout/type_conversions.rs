@@ -380,6 +380,7 @@ wire_enum_map! {
     StateDurationOverTime => StateDurationOverTime,
     StateCountOverTime => StateCountOverTime,
     RangeOverTime => RangeOverTime,
+    Integral => Integral,
 }
 
 impl From<&LabelModifier> for ProtoAggregationGrouping {

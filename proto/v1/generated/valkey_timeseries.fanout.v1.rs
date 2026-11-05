@@ -692,8 +692,8 @@ pub struct GridRollup {
     #[prost(int64, tag = "2")]
     pub range_ms: i64,
     /// / Numeric function parameter — `quantile_over_time`'s phi, the state of
-    /// / `state_duration_over_time` and `state_count_over_time`. Absent for the
-    /// / parameterless rollups.
+    /// / `state_duration_over_time` and `state_count_over_time`, `integral`'s
+    /// / strategy. Absent for the parameterless rollups.
     #[prost(double, optional, tag = "3")]
     pub scalar_param: ::core::option::Option<f64>,
     /// / Output unit in milliseconds, for the kinds that take one
@@ -1055,6 +1055,7 @@ pub enum RollupKind {
     StateDurationOverTime = 25,
     StateCountOverTime = 26,
     RangeOverTime = 27,
+    Integral = 28,
 }
 impl RollupKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1091,6 +1092,7 @@ impl RollupKind {
             Self::StateDurationOverTime => "ROLLUP_KIND_STATE_DURATION_OVER_TIME",
             Self::StateCountOverTime => "ROLLUP_KIND_STATE_COUNT_OVER_TIME",
             Self::RangeOverTime => "ROLLUP_KIND_RANGE_OVER_TIME",
+            Self::Integral => "ROLLUP_KIND_INTEGRAL",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1124,6 +1126,7 @@ impl RollupKind {
             "ROLLUP_KIND_STATE_DURATION_OVER_TIME" => Some(Self::StateDurationOverTime),
             "ROLLUP_KIND_STATE_COUNT_OVER_TIME" => Some(Self::StateCountOverTime),
             "ROLLUP_KIND_RANGE_OVER_TIME" => Some(Self::RangeOverTime),
+            "ROLLUP_KIND_INTEGRAL" => Some(Self::Integral),
             _ => None,
         }
     }
