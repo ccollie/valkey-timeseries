@@ -22,6 +22,33 @@ pub(crate) fn max_with_nan(left: f64, right: f64) -> f64 {
     }
 }
 
+/// NaN-ignoring minimum, used by the `min` aggregator and `min_of`: NaN is only
+/// returned if both values are NaN, and a tie keeps `left`, so `-0` and `+0`
+/// resolve the way Prometheus does.
+///
+/// NaN is the identity element (`min_ignore_nan(NaN, v) == v`), which is what
+/// lets the push-down partial fold start from NaN and still match the
+/// single-node `reduce(min_ignore_nan)`.
+#[inline]
+pub(crate) fn min_ignore_nan(left: f64, right: f64) -> f64 {
+    if left > right || left.is_nan() {
+        right
+    } else {
+        left
+    }
+}
+
+/// NaN-ignoring maximum, used by the `max` aggregator and `max_of`; see
+/// [`min_ignore_nan`].
+#[inline]
+pub(crate) fn max_ignore_nan(left: f64, right: f64) -> f64 {
+    if left < right || left.is_nan() {
+        right
+    } else {
+        left
+    }
+}
+
 pub(in crate::promql) fn sample_regression(samples: &[Sample]) -> Option<(f64, f64)> {
     if samples.len() < 2 {
         return None;
@@ -94,6 +121,37 @@ mod tests {
                 value: *v,
             })
             .collect()
+    }
+
+    #[test]
+    fn ignore_nan_helpers_return_nan_only_when_both_are_nan() {
+        for helper in [min_ignore_nan, max_ignore_nan] {
+            assert_eq!(helper(f64::NAN, 3.0), 3.0);
+            assert_eq!(helper(3.0, f64::NAN), 3.0);
+            assert_eq!(helper(f64::NAN, f64::INFINITY), f64::INFINITY);
+            assert_eq!(helper(f64::NEG_INFINITY, f64::NAN), f64::NEG_INFINITY);
+            assert!(helper(f64::NAN, f64::NAN).is_nan());
+        }
+        assert_eq!(min_ignore_nan(3.0, 5.0), 3.0);
+        assert_eq!(max_ignore_nan(3.0, 5.0), 5.0);
+    }
+
+    #[test]
+    fn ignore_nan_helpers_keep_the_first_of_two_zeros() {
+        for helper in [min_ignore_nan, max_ignore_nan] {
+            assert!(helper(-0.0, 0.0).is_sign_negative());
+            assert!(helper(0.0, -0.0).is_sign_positive());
+        }
+    }
+
+    #[test]
+    fn with_nan_helpers_still_propagate_nan() {
+        // `clamp*` keeps math.Min/math.Max semantics; only the aggregators and
+        // `min_of`/`max_of` ignore NaN.
+        for helper in [min_with_nan, max_with_nan] {
+            assert!(helper(f64::NAN, 3.0).is_nan());
+            assert!(helper(3.0, f64::NAN).is_nan());
+        }
     }
 
     #[test]

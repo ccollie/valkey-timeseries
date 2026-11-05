@@ -23,11 +23,10 @@
 use crate::common::math::kahan_inc;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
+use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::query_reader::{AggregationParam, GridAggregation, GridSeries};
-use crate::promql::exec::aggregations::{
-    AggregationKind, PushdownStrategy, apply_aggregation, max_ignore_nan, min_ignore_nan,
-};
+use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply_aggregation};
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::hashers::FingerprintHashMap;
 use crate::promql::model::RangeSample;
