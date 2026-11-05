@@ -1,5 +1,5 @@
 use super::go_compat::{cosh, sinh};
-use crate::promql::common::math::{max_with_nan, min_with_nan};
+use crate::promql::common::math::{max_ignore_nan, max_with_nan, min_ignore_nan, min_with_nan};
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
     exact_arity_error, map_scalar_or_vector, three_args, two_args,
@@ -186,28 +186,30 @@ impl PromQLFunction for ClampFunction {
     }
 }
 
-/// max_of returns the maximum of two scalars as a scalar.
+/// max_of returns the maximum of two scalars as a scalar. Like the `max`
+/// aggregator, it returns NaN only if both arguments are NaN.
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct MaxOfFunction;
 
 impl PromQLFunction for MaxOfFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         let (a, b) = two_args("max_of", args)?;
-        Ok(ExprResult::Scalar(max_with_nan(
+        Ok(ExprResult::Scalar(max_ignore_nan(
             a.into_scalar()?,
             b.into_scalar()?,
         )))
     }
 }
 
-/// min_of returns the minimum of two scalars as a scalar.
+/// min_of returns the minimum of two scalars as a scalar. Like the `min`
+/// aggregator, it returns NaN only if both arguments are NaN.
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct MinOfFunction;
 
 impl PromQLFunction for MinOfFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         let (a, b) = two_args("min_of", args)?;
-        Ok(ExprResult::Scalar(min_with_nan(
+        Ok(ExprResult::Scalar(min_ignore_nan(
             a.into_scalar()?,
             b.into_scalar()?,
         )))
