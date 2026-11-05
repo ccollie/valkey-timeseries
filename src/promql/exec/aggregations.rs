@@ -2,6 +2,7 @@ use crate::common::Timestamp;
 use crate::common::hash::IntMap;
 use crate::common::math::{kahan_avg, kahan_std_dev, kahan_sum, kahan_variance, quantile};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
+use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::functions::utils::is_valid_label_name;
@@ -738,28 +739,6 @@ fn sample_value_label(value: f64) -> String {
         "-Inf".to_string()
     } else {
         value.to_string()
-    }
-}
-
-/// NaN-ignoring minimum. NaN is the identity element (`min_ignore_nan(NaN, v)
-/// == v`), which is what lets the push-down partial fold start from NaN and
-/// still match the single-node `reduce(min_ignore_nan)`.
-pub(super) fn min_ignore_nan(lhs: f64, rhs: f64) -> f64 {
-    match (lhs.is_nan(), rhs.is_nan()) {
-        (true, true) => f64::NAN,
-        (true, false) => rhs,
-        (false, true) => lhs,
-        (false, false) => lhs.min(rhs),
-    }
-}
-
-/// NaN-ignoring maximum; see [`min_ignore_nan`].
-pub(super) fn max_ignore_nan(lhs: f64, rhs: f64) -> f64 {
-    match (lhs.is_nan(), rhs.is_nan()) {
-        (true, true) => f64::NAN,
-        (true, false) => rhs,
-        (false, true) => lhs,
-        (false, false) => lhs.max(rhs),
     }
 }
 
