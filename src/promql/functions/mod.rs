@@ -6,6 +6,7 @@ mod go_compat;
 mod histogram;
 mod holt_winters;
 mod idelta;
+mod integral;
 mod irate;
 mod labels;
 mod math_functions;
