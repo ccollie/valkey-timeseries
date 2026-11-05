@@ -11,6 +11,7 @@ use crate::promql::functions::holt_winters::{
     DoubleExponentialSmoothingFunction, HoltWintersFunction,
 };
 use crate::promql::functions::idelta::IDeltaFunction;
+use crate::promql::functions::integral::IntegralFunction;
 use crate::promql::functions::irate::IRateFunction;
 use crate::promql::functions::labels::{LabelJoinFunction, LabelReplaceFunction};
 use crate::promql::functions::math_functions::{
@@ -279,6 +280,7 @@ macro_rules! promql_function_list {
             ),
             (FirstOverTime, "first_over_time", FirstOverTimeFunction),
             (HoltWinters, "holt_winters", HoltWintersFunction),
+            (Integral, "integral", IntegralFunction),
             (IRate, "irate", IRateFunction),
             (IDelta, "idelta", IDeltaFunction),
             (LastOverTime, "last_over_time", LastOverTimeFunction),

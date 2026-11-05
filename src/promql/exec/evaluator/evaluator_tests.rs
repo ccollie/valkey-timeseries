@@ -4427,6 +4427,7 @@ mod tests {
             ("state_duration_over_time", ", 12"),
             ("state_count_over_time", ", 12"),
             ("range_over_time", ""),
+            ("integral", ""),
         ] {
             let err = parse_and_evaluate(
                 &evaluator,
@@ -4530,12 +4531,25 @@ mod tests {
             "range_over_time(metric)",
             "range_over_time(metric[1m], 1)",
             "range_over_time(1)",
+            "integral()",
+            "integral(metric)",
+            "integral(metric[1m], 1, 2)",
+            "integral(1)",
         ] {
             let err = parse_and_evaluate(&evaluator, query, at, Duration::from_secs(300))
                 .expect_err(query)
                 .to_string();
             assert!(err.contains("Parse error"), "{query}: {err}");
         }
+    }
+
+    /// promqltest label assertions cannot prove `__name__` went away, so this
+    /// reads the flag directly.
+    #[test]
+    fn integral_drops_the_metric_name() {
+        let samples = eval_rollup(&rollup_reader(), "integral(metric[1m])", 120_000);
+        assert_eq!(samples.len(), 1);
+        assert!(samples.iter().all(|sample| sample.drop_name));
     }
 
     /// Gate G1: a rollup evaluates the window the matrix selector loaded, once.
