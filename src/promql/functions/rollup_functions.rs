@@ -4,6 +4,7 @@ use crate::promql::functions::PromQLArg;
 use crate::promql::functions::PromQLFunction;
 use crate::promql::functions::deriv::rollup_deriv;
 use crate::promql::functions::idelta::rollup_idelta;
+use crate::promql::functions::integral::{IntegralStrategy, rollup_integral};
 use crate::promql::functions::irate::rollup_irate;
 use crate::promql::functions::range_vector_functions::{rollup_changes, rollup_resets};
 use crate::promql::functions::rate::{RateKind, extrapolated_rate_window};
@@ -67,6 +68,7 @@ pub enum RollupKind {
     StateDurationOverTime,
     StateCountOverTime,
     RangeOverTime,
+    Integral,
 }
 
 /// How a rollup reduces one window, mirroring the shapes the local evaluation
@@ -139,7 +141,8 @@ impl RollupKind {
             "changes" => RollupKind::Changes,
             "state_duration_over_time" => RollupKind::StateDurationOverTime,
             "state_count_over_time" => RollupKind::StateCountOverTime,
-            "range_over_time" => RollupKind::RangeOverTime
+            "range_over_time" => RollupKind::RangeOverTime,
+            "integral" => RollupKind::Integral
         )
         .copied()
     }
@@ -178,6 +181,7 @@ impl RollupKind {
             StateDurationOverTime => "state_duration_over_time",
             StateCountOverTime => "state_count_over_time",
             RangeOverTime => "range_over_time",
+            Integral => "integral",
         }
     }
 
@@ -221,6 +225,9 @@ impl RollupKind {
         if takes_state && param.is_none_or(f64::is_nan) {
             return Err(format!("{self:?} needs a state that is not NaN"));
         }
+        if self == RollupKind::Integral && IntegralStrategy::from_param(param).is_none() {
+            return Err(format!("{self:?} needs a strategy of 0, 1 or 2"));
+        }
         Ok(())
     }
 
@@ -258,6 +265,7 @@ impl RollupKind {
             StateDurationOverTime,
             StateCountOverTime,
             RangeOverTime,
+            Integral,
         ];
         for kind in all {
             // Exhaustive: adding a variant without adding it above fails to
@@ -289,7 +297,8 @@ impl RollupKind {
                 | Changes
                 | StateDurationOverTime
                 | StateCountOverTime
-                | RangeOverTime => {}
+                | RangeOverTime
+                | Integral => {}
             }
         }
         all.to_vec()
@@ -329,6 +338,7 @@ impl RollupKind {
             }
             RollupKind::StateCountOverTime => RollupImpl::Windowed(rollup_state_count),
             RollupKind::RangeOverTime => RollupImpl::Windowed(rollup_range),
+            RollupKind::Integral => RollupImpl::Windowed(rollup_integral),
         }
     }
 
@@ -799,6 +809,26 @@ mod tests {
         };
         assert_eq!(rollup_ts_of_min(&window, None), 0.02);
         assert_eq!(rollup_ts_of_max(&window, None), 0.02);
+    }
+
+    /// A strategy naming no rule stays local, which also keeps a NaN out of the
+    /// grid request and its preload key. A shard refuses one outright.
+    #[test]
+    fn integral_params_accept_only_the_three_rules() {
+        let kind = RollupKind::Integral;
+        for strategy in [None, Some(0.0), Some(1.0), Some(2.0)] {
+            assert!(kind.check_params(strategy, None).is_ok(), "{strategy:?}");
+        }
+        for strategy in [3.0, 0.5, f64::NAN] {
+            assert!(
+                kind.check_params(Some(strategy), None).is_err(),
+                "{strategy}"
+            );
+        }
+        assert!(
+            kind.check_params(None, Some(60_000)).is_err(),
+            "takes no unit"
+        );
     }
 
     /// A kind's name must round-trip: with two dozen hand-written entries in
