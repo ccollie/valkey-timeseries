@@ -231,6 +231,15 @@ impl RollupKind {
         Ok(())
     }
 
+    /// `param` in its canonical spelling, so two calls asking for the same
+    /// reduction ask for the same grid.
+    pub(in crate::promql) fn canonical_param(self, param: Option<f64>) -> Option<f64> {
+        match (self, param) {
+            (RollupKind::Integral, Some(2.0)) => None,
+            _ => param,
+        }
+    }
+
     /// Every kind, for exhaustive testing. A new variant that is not listed here
     /// escapes the conformance suite, so the compiler is made to complain: this
     /// is written as a match rather than a bare array.
@@ -809,6 +818,17 @@ mod tests {
         };
         assert_eq!(rollup_ts_of_min(&window, None), 0.02);
         assert_eq!(rollup_ts_of_max(&window, None), 0.02);
+    }
+
+    #[test]
+    fn only_integrals_explicit_default_strategy_is_rewritten() {
+        assert_eq!(RollupKind::Integral.canonical_param(Some(2.0)), None);
+        assert_eq!(RollupKind::Integral.canonical_param(Some(0.0)), Some(0.0));
+        assert_eq!(RollupKind::Integral.canonical_param(None), None);
+        assert_eq!(
+            RollupKind::QuantileOverTime.canonical_param(Some(2.0)),
+            Some(2.0)
+        );
     }
 
     /// A strategy naming no rule stays local, which also keeps a NaN out of the

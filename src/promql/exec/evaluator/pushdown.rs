@@ -56,7 +56,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let rollup = GridRollup {
             kind,
             range_ms: matrix_range_ms(matrix),
-            param,
+            param: kind.canonical_param(param),
             unit_ms,
         };
         Some((matrix, rollup))
