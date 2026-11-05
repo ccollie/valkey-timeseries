@@ -127,8 +127,10 @@ The evaluator supports scalar, instant-vector, and range-vector expressions, inc
   calendar, `time()`, and `timestamp()` functions.
 - Label and ordering helpers: `label_join`, `label_replace`, `sort`, `sort_desc`,
   `sort_by_label`, and `sort_by_label_desc`.
-- Special and histogram functions: `absent`, `scalar`, `vector`, `histogram_quantile`,
-  and `histogram_fraction`.
+- Special functions: `absent`, `scalar`, and `vector`.
+- Classic histogram functions: `histogram_quantile`, `histogram_quantiles`,
+  `histogram_fraction`, `histogram_avg`, `histogram_stddev`, and `histogram_stdvar`. See
+  [Classic histogram functions](#classic-histogram-functions).
 
 The supported function registry is maintained in
 [`src/promql/functions/function_list.rs`](../../src/promql/functions/function_list.rs).
@@ -232,6 +234,39 @@ range_over_time(temperature_celsius[1h])
 range_over_time(queue_depth[5m]) > 10
 ```
 
+### Classic histogram functions
+
+These functions read classic histograms: float series that share their labels apart from
+`le`. VictoriaMetrics `vmrange` buckets are converted to `le` buckets first. A series whose
+`le` does not parse as a float is not a bucket. Each result drops `le` and the metric name.
+
+| Function | Result | Semantics follow |
+|----------|--------|------------------|
+| `histogram_quantile(phi, buckets)` | Estimated `phi` quantile | Prometheus |
+| `histogram_quantiles(buckets, "label", phi1, ..., phiN)` | One series per `phi`, labelled `label="<phi>"` | Prometheus (experimental) |
+| `histogram_fraction(lower, upper, buckets)` | Estimated fraction of observations in the range | Prometheus |
+| `histogram_avg(buckets)` | Estimated mean of observations | VictoriaMetrics |
+| `histogram_stddev(buckets)` | Estimated standard deviation | VictoriaMetrics |
+| `histogram_stdvar(buckets)` | Estimated variance | VictoriaMetrics |
+
+`histogram_quantiles` takes one to ten quantiles and needs
+`ts-promql-enable-experimental-functions`. Its label holds the quantile as an OpenMetrics
+float (`0.0`, `0.25`, `1.0`, `1e-05`) and replaces any label of that name in the input. A
+repeated quantile, or a label that was all that told two histograms apart, is a duplicate
+label set error. VictoriaMetrics' label-first argument order is not accepted.
+
+`histogram_avg`, `histogram_stddev` and `histogram_stdvar` place every
+observation at the midpoint of its bucket, with the lowest bucket starting at 0. Observations
+in the `+Inf` bucket have no midpoint and are left out of these estimates, which do not need a
+`+Inf` bucket to exist. Unlike VictoriaMetrics, buckets with the same bound are merged and
+counts made monotonic first, as `histogram_quantile` does, so a dip does not weigh negatively.
+
+With no observations in a finite bucket, the result is NaN.
+
+`histogram_count` and `histogram_sum` are not supported: Prometheus defines them for native
+histograms only, and VictoriaMetrics has neither. For a classic histogram, read its `_count`
+and `_sum` series.
+
 ## Support, conformance, and deviations from Prometheus
 
 Valkey TimeSeries follows the PromQL expression model and aims to match Prometheus
@@ -283,9 +318,11 @@ The following differences are intentional or are limitations of the current impl
 - **Float samples are the storage boundary.** Valkey TimeSeries stores numeric float
   samples. Prometheus native histogram samples, histogram bucket-layout reconciliation,
   and native-histogram-specific operators and functions are not supported as a native
-  sample type. `histogram_quantile` and `histogram_fraction` operate on classic histogram
-  data represented by float series and labels such as `le`; they do not add native
-  histogram storage.
+  sample type. The `histogram_*` functions operate on classic histogram data represented
+  by float series and labels such as `le`; they do not add native histogram storage.
+- **`histogram_avg`, `_stddev` and `_stdvar` read classic buckets.**
+  Prometheus defines them for native histograms only and returns nothing for float
+  samples. See [Classic histogram functions](#classic-histogram-functions).
 - **The function set can lag the current Prometheus release.** Functions absent from
   [`function_list.rs`](../../src/promql/functions/function_list.rs) are unsupported.
   Prometheus may add functions or change experimental-function status independently of a

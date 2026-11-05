@@ -8,7 +8,7 @@ use promql_parser::label::{METRIC_NAME, Matcher, Matchers};
 use promql_parser::parser::token::{T_COUNT_VALUES, T_LOR, T_LUNLESS};
 use promql_parser::parser::value::ValueType;
 use promql_parser::parser::{
-    AggregateExpr, BinaryExpr, Expr, LabelModifier, VectorMatchCardinality, VectorSelector,
+    AggregateExpr, BinaryExpr, Call, Expr, LabelModifier, VectorMatchCardinality, VectorSelector,
 };
 use smallvec::SmallVec;
 #[cfg(test)]
@@ -63,6 +63,31 @@ impl LeafFilters for WrittenFilters {
 /// `scalar(x)` would change the value it yields, not prune series.
 fn carries_labels(e: &Expr) -> bool {
     matches!(e.value_type(), ValueType::Vector | ValueType::Matrix)
+}
+
+/// The labels a histogram function's result does not share with its buckets,
+/// so whose filters must not cross the call in either direction: the bucket
+/// labels it consumes (narrowing `le` would drop buckets and change the value)
+/// and the label `histogram_quantiles` writes. `None` for any other function.
+fn labels_rewritten_by_call(fe: &Call) -> Option<[&str; 3]> {
+    const LE: &str = "le";
+    const VMRANGE: &str = "vmrange";
+    match fe.func.name {
+        "histogram_avg" | "histogram_fraction" | "histogram_quantile" | "histogram_stddev"
+        | "histogram_stdvar" => Some([LE, VMRANGE, LE]),
+        "histogram_quantiles" => {
+            // The parser's signature makes the second argument a string.
+            let mut label = fe.args.args.get(1).map(|arg| &**arg);
+            while let Some(Expr::Paren(p)) = label {
+                label = Some(&*p.expr);
+            }
+            match label {
+                Some(Expr::StringLiteral(s)) => Some([LE, VMRANGE, s.val.as_str()]),
+                _ => Some([LE, VMRANGE, LE]),
+            }
+        }
+        _ => None,
+    }
 }
 
 pub fn pushdown_filters_in_place(expr: &mut Expr) {
@@ -147,7 +172,11 @@ pub fn get_common_label_filters_with(e: &Expr, leaves: &dyn LeafFilters) -> Vec<
                             return vec![];
                         };
                         let arg = &fe.args.args[pos];
-                        get_common_label_filters_with(arg, leaves)
+                        let mut filters = get_common_label_filters_with(arg, leaves);
+                        if let Some(labels) = labels_rewritten_by_call(fe) {
+                            filters.retain(|m| !labels.contains(&m.name.as_str()));
+                        }
+                        filters
                     }
                 };
             }
@@ -497,6 +526,13 @@ pub fn push_down_binary_op_filters_in_place_with(
                 if fe.func.name == "absent" || fe.func.name == "absent_over_time" {
                     return;
                 }
+                let passing: Option<Vec<Matcher>> = labels_rewritten_by_call(fe).map(|labels| {
+                    common_filters
+                        .iter()
+                        .filter(|m| !labels.contains(&m.name.as_str()))
+                        .cloned()
+                        .collect()
+                });
                 if let Some(index) = fe
                     .func
                     .arg_types
@@ -504,7 +540,8 @@ pub fn push_down_binary_op_filters_in_place_with(
                     .position(|&arg| arg != ValueType::Scalar && arg != ValueType::String)
                     && let Some(arg) = fe.args.args.get_mut(index)
                 {
-                    push_down_binary_op_filters_in_place_with(arg, common_filters, leaves);
+                    let filters = passing.as_deref().unwrap_or(common_filters);
+                    push_down_binary_op_filters_in_place_with(arg, filters, leaves);
                 }
             }
         },

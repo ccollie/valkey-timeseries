@@ -1,0 +1,185 @@
+# Statistics over classic (float `le`) histogram buckets:
+# histogram_avg/stddev/stdvar and histogram_quantiles.
+#
+# avg/stddev/stdvar follow VictoriaMetrics' transforms: each finite bucket's
+# observations sit at the bucket's midpoint, the lowest bucket starting at 0,
+# and the +Inf bucket is left out.
+#
+# The histogram below has midpoints 0.5, 1.5 and 3 with weights 2, 4 and 2:
+#   sum    = 1 + 6 + 6              = 13
+#   avg    = 13 / 8                 = 1.625
+#   stdvar = 27.5 / 8 - 1.625 ^ 2   = 0.796875
+load 5m
+	h_bucket{job="a", le="1"}    2 2
+	h_bucket{job="a", le="2"}    6 6
+	h_bucket{job="a", le="4"}    8 8
+	h_bucket{job="a", le="+Inf"} 8 16
+	plain{job="a"} 3
+
+eval instant at 0 histogram_avg(h_bucket)
+	{job="a"} 1.625
+
+eval instant at 0 histogram_stdvar(h_bucket)
+	{job="a"} 0.796875
+
+eval instant at 0 histogram_stddev(h_bucket)
+	{job="a"} 0.8926785535678563
+
+# The +Inf bucket gained 8 at 5m. The estimates see only the finite buckets, so
+# they do not move.
+eval range from 0 to 5m step 5m histogram_avg(h_bucket)
+	{job="a"} 1.625 1.625
+
+# Series without `le` are not buckets.
+eval instant at 0 histogram_avg(plain)
+
+clear
+
+# No observations: undefined.
+load 5m
+	empty_bucket{le="1"}    0
+	empty_bucket{le="+Inf"} 0
+
+eval instant at 0 histogram_avg(empty_bucket)
+	{} NaN
+
+eval instant at 0 histogram_stdvar(empty_bucket)
+	{} NaN
+
+eval instant at 0 histogram_stddev(empty_bucket)
+	{} NaN
+
+clear
+
+# Observations, but none in a finite bucket: nothing to estimate from.
+load 5m
+	overflow_bucket{le="+Inf"} 5
+
+eval instant at 0 histogram_avg(overflow_bucket)
+	{} NaN
+
+clear
+
+# Some observations above the highest finite bound: left out of the estimates.
+# (2 at 0.5, 4 at 1.5, 4 above 2.)
+load 5m
+	partial_bucket{le="1"}    2
+	partial_bucket{le="2"}    6
+	partial_bucket{le="+Inf"} 10
+
+eval instant at 0 histogram_avg(partial_bucket)
+	{} 1.1666666666666667
+
+clear
+
+# No +Inf bucket: unlike histogram_quantile, these still answer, from the
+# buckets there are.
+load 5m
+	noinf_bucket{le="1"} 2
+	noinf_bucket{le="2"} 6
+
+eval instant at 0 histogram_avg(noinf_bucket)
+	{} 1.1666666666666667
+
+clear
+
+# Non-monotonic buckets are repaired as histogram_quantile repairs them, so the
+# dip at le=2 weighs 0 rather than -2: (0.5*5 + 1.5*0 + 3*3) / 8.
+load 5m
+	dip_bucket{le="1"}    5
+	dip_bucket{le="2"}    3
+	dip_bucket{le="4"}    8
+	dip_bucket{le="+Inf"} 8
+
+eval instant at 0 histogram_avg(dip_bucket)
+	{} 1.4375
+
+clear
+
+# VictoriaMetrics `vmrange` buckets are per-range, not cumulative. They convert
+# to le=1:2, le=2:5, le=+Inf:5, whichever function reads them.
+load 5m
+	vm_bucket{vmrange="0...1"} 2
+	vm_bucket{vmrange="1...2"} 3
+
+eval instant at 0 histogram_avg(vm_bucket)
+	{} 1.1
+
+eval instant at 0 histogram_fraction(0, 1, vm_bucket)
+	{} 0.4
+
+eval instant at 0 histogram_quantile(0.4, vm_bucket)
+	{} 1
+
+clear
+
+# histogram_quantiles(buckets, label, phi...), as in Prometheus: one series per
+# phi, the label holding the phi as an OpenMetrics float, each value equal to
+# the matching histogram_quantile. Fuller cases are in histograms.test.
+load 5m
+	q_bucket{job="a", le="1"}    2
+	q_bucket{job="a", le="2"}    6
+	q_bucket{job="a", le="4"}    8
+	q_bucket{job="a", le="+Inf"} 8
+	r_bucket{quantile="x", le="1"}    1
+	r_bucket{quantile="x", le="+Inf"} 1
+
+eval instant at 0 histogram_quantiles(q_bucket, "quantile", 0.5, 0.9)
+	{job="a", quantile="0.5"} 1.5
+	{job="a", quantile="0.9"} 3.2
+
+eval instant at 0 histogram_quantile(0.9, q_bucket)
+	{job="a"} 3.2
+
+# Whole numbers are written with a fraction.
+eval instant at 0 histogram_quantiles(q_bucket, "p", 0, 1, -1, 2)
+	{job="a", p="0.0"} 0
+	{job="a", p="1.0"} 4
+	{job="a", p="-1.0"} -Inf
+	{job="a", p="2.0"} +Inf
+
+# The same phi twice would be two series with one label set.
+eval instant at 0 histogram_quantiles(q_bucket, "p", 0.5, 0.5)
+	expect fail
+
+# A label the input already has is overwritten.
+eval instant at 0 histogram_quantiles(r_bucket, "quantile", 0.5)
+	{quantile="0.5"} 0.5
+
+clear
+
+# Filters must not cross a histogram function. `le` is consumed by it: `other`
+# selecting le="1" must not narrow the buckets to that one. The quantile label
+# is written by it: `want` selecting p="0.5" must not filter the buckets at all.
+load 5m
+	b_bucket{job="a", le="1"}    2 2
+	b_bucket{job="a", le="2"}    6 6
+	b_bucket{job="a", le="4"}    8 8
+	b_bucket{job="a", le="+Inf"} 8 8
+	other{job="a", le="1"} 0 0
+	want{p="0.5"} 2 2
+
+eval instant at 0 histogram_avg(b_bucket) + on(job) other
+	{job="a"} 1.625
+
+eval instant at 0 histogram_stdvar(b_bucket) + on(job) other
+	{job="a"} 0.796875
+
+eval instant at 0 histogram_quantile(0.5, b_bucket) + on(job) other
+	{job="a"} 1.5
+
+eval instant at 0 histogram_fraction(0, 1, b_bucket) + on(job) other
+	{job="a"} 0.25
+
+eval instant at 0 histogram_quantiles(b_bucket, "p", 0.5) * on(p) want
+	{p="0.5"} 3
+
+# Range queries derive their filters before planning, from the series index.
+eval range from 0 to 5m step 5m histogram_avg(b_bucket) + on(job) other
+	{job="a"} 1.625 1.625
+
+eval range from 0 to 5m step 5m histogram_quantile(0.5, b_bucket) + on(job) other
+	{job="a"} 1.5 1.5
+
+eval range from 0 to 5m step 5m histogram_quantiles(b_bucket, "p", 0.5) * on(p) want
+	{p="0.5"} 3 3

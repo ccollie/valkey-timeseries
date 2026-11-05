@@ -158,3 +158,25 @@ class TestTsQueryCluster(ValkeyTimeSeriesClusterTestCase):
         assert len(db1_result.result) == 2
         assert {sample.metric['db'] for sample in db1_result.result} == {'1'}
         assert sorted(sample.value.value for sample in db1_result.result) == [100.0, 200.0]
+
+    def test_histogram_statistics_across_primaries(self):
+        # A realistic millisecond timestamp: TIME infers its unit from the magnitude.
+        at = 1_700_000_000_000
+        # Midpoints 0.5, 1.5, 3 with weights 2, 4, 2; a bucket on each primary.
+        for node, (le, count) in enumerate([("1", 2), ("2", 6), ("4", 8)]):
+            self.create(f"lat{le}", node, f'lat_bucket{{job="a",le="{le}"}}', [(at, count)])
+        self.create("latinf", 0, 'lat_bucket{job="a",le="+Inf"}', [(at, 8)])
+        # On another primary than most of the buckets, carrying le="1": that
+        # filter must not narrow the buckets.
+        self.create("other", 1, 'other{job="a",le="1"}', [(at, 0)])
+
+        for query, expected in [
+            ("histogram_avg(lat_bucket)", 1.625),
+            ("histogram_stdvar(lat_bucket)", 0.796875),
+            ("histogram_stddev(lat_bucket)", math.sqrt(0.796875)),
+            ("histogram_avg(lat_bucket) + on(job) other", 1.625),
+            ("histogram_quantile(0.5, lat_bucket) + on(job) other", 1.5),
+        ]:
+            result = self.instant_query(query, at).result
+            assert len(result) == 1, query
+            assert result[0].value.value == pytest.approx(expected), query

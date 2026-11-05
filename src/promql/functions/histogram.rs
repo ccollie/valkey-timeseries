@@ -3,12 +3,13 @@ use std::rc::Rc;
 
 use crate::labels::HasFingerprint;
 use crate::promql::functions::utils::{
-    exact_arity_error, expect_instant_vector, expect_scalar, is_inf,
+    exact_arity_error, expect_instant_vector, expect_min_arg_count, expect_scalar, expect_string,
+    is_inf, is_valid_label_name,
 };
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::hashers::FingerprintHashMap;
 use crate::promql::model::is_stale_nan;
-use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
+use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
 use ahash::AHashMap;
 
 static ELLIPSIS: &str = "...";
@@ -31,6 +32,33 @@ impl PromQLFunction for HistogramQuantileFunction {
         histogram_quantile(args)
     }
 }
+
+#[derive(Copy, Clone)]
+pub(in crate::promql) struct HistogramQuantilesFunction;
+
+impl PromQLFunction for HistogramQuantilesFunction {
+    fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
+        histogram_quantiles(args)
+    }
+}
+
+/// Declare a one-argument function reducing each classic histogram to a float.
+macro_rules! histogram_statistic {
+    ($Ty:ident, $name:literal, $statistic:path) => {
+        #[derive(Copy, Clone)]
+        pub(in crate::promql) struct $Ty;
+
+        impl PromQLFunction for $Ty {
+            fn apply(&self, arg: PromQLArg, _ctx: &EvalContext) -> EvalResult<ExprResult> {
+                histogram_statistic(arg, $name, $statistic)
+            }
+        }
+    };
+}
+
+histogram_statistic!(HistogramAvgFunction, "histogram_avg", bucket_avg);
+histogram_statistic!(HistogramStddevFunction, "histogram_stddev", bucket_stddev);
+histogram_statistic!(HistogramStdvarFunction, "histogram_stdvar", bucket_stdvar);
 
 type SharedTimeseries = Rc<RefCell<EvalSample>>;
 
@@ -270,6 +298,91 @@ pub(super) fn histogram_quantile(args: Vec<PromQLArg>) -> EvalResult<ExprResult>
     Ok(ExprResult::InstantVector(rvs))
 }
 
+/// `histogram_quantiles(buckets, label, phi...)`, as in Prometheus: one series
+/// per phi and histogram, its `label` holding the phi as an OpenMetrics float
+/// and replacing any label of that name. The same phi twice, or a `label` that
+/// was all that told two histograms apart, is left for the evaluator to reject
+/// as a duplicate label set.
+fn histogram_quantiles(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
+    expect_min_arg_count("histogram_quantiles", 3, args.len())?;
+
+    let mut arg_iter = args.into_iter();
+    let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_quantiles")?;
+    let label = expect_string(arg_iter.next().unwrap(), "histogram_quantiles", "label")?;
+    if !is_valid_label_name(&label) {
+        return Err(EvaluationError::InternalError(format!(
+            "invalid label name {label:?}"
+        )));
+    }
+    let phis = arg_iter
+        .map(|arg| expect_scalar(arg, "histogram_quantiles", "phi"))
+        .collect::<EvalResult<Vec<f64>>>()?;
+
+    let mut histograms: Vec<_> = classic_histograms(series).collect();
+    let mut rvs = Vec::with_capacity(phis.len() * histograms.len());
+    for &phi in &phis {
+        let phi_label = format_open_metrics_float(phi);
+        for (sample, buckets) in histograms.iter_mut() {
+            let mut out = sample.clone();
+            out.value = bucket_quantile(phi, buckets);
+            out.drop_name = true;
+            out.labels.set(&label, phi_label.clone());
+            rvs.push(out);
+        }
+    }
+
+    Ok(ExprResult::InstantVector(rvs))
+}
+
+/// Prometheus' `labels.FormatOpenMetricsFloat`: Go's shortest `%g`-style float,
+/// with `.0` added when that has neither a `.` nor an exponent.
+fn format_open_metrics_float(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "+Inf" } else { "-Inf" }.to_string();
+    }
+    if f == 0.0 {
+        return "0.0".to_string();
+    }
+    // `{:e}` has the same shortest digits as Go, only its exponent is unpadded.
+    let scientific = format!("{f:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("LowerExp always writes an exponent");
+    let exponent: i32 = exponent
+        .parse()
+        .expect("LowerExp writes a decimal exponent");
+    if !(-4..6).contains(&exponent) {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        return format!("{mantissa}e{sign}{:02}", exponent.abs());
+    }
+    let plain = f.to_string();
+    if plain.contains('.') {
+        plain
+    } else {
+        plain + ".0"
+    }
+}
+
+/// One sample per classic histogram in `arg`, holding `statistic` of its buckets.
+fn histogram_statistic(
+    arg: PromQLArg,
+    name: &str,
+    statistic: fn(&mut Vec<ClassicBucket>) -> f64,
+) -> EvalResult<ExprResult> {
+    let series = expect_instant_vector(arg, name)?;
+    let rvs = classic_histograms(series)
+        .map(|(mut sample, mut buckets)| {
+            sample.value = statistic(&mut buckets);
+            sample.drop_name = true;
+            sample
+        })
+        .collect();
+    Ok(ExprResult::InstantVector(rvs))
+}
+
 /// The classic histograms in `series`, each as its output sample (the first
 /// bucket's, without `le`) and its buckets.
 ///
@@ -381,6 +494,70 @@ pub(super) fn bucket_quantile(q: f64, buckets: &mut Vec<ClassicBucket>) -> f64 {
         rank -= buckets[b - 1].count;
     }
     bucket_start + (bucket_end - bucket_start) * (rank / count)
+}
+
+/// What the statistics read from a classic histogram's finite buckets, every
+/// observation taken to sit at its bucket's midpoint, as VictoriaMetrics'
+/// `histogram_avg`/`_stddev`/`_stdvar` take it. The lowest bucket starts at 0,
+/// whatever its sign, and observations in the `+Inf` bucket have no midpoint so
+/// are left out. Same-bound buckets are merged and counts made monotonic first,
+/// as for [`bucket_quantile`]; without that a dip weighs negatively. A `+Inf`
+/// bucket is not required.
+struct MidpointMoments {
+    /// The observations in the finite buckets.
+    weight: f64,
+    /// The sum of those observations.
+    sum: f64,
+    /// The sum of their squares.
+    sum_squares: f64,
+}
+
+fn midpoint_moments(buckets: &mut Vec<ClassicBucket>) -> MidpointMoments {
+    buckets.sort_by(|a, b| a.upper_bound.total_cmp(&b.upper_bound));
+    coalesce_buckets(buckets);
+    ensure_monotonic_and_ignore_small_deltas(buckets, SMALL_DELTA_TOLERANCE);
+    let mut moments = MidpointMoments {
+        weight: 0.0,
+        sum: 0.0,
+        sum_squares: 0.0,
+    };
+    let (mut prev_bound, mut prev_count) = (0.0, 0.0);
+    for bucket in buckets.iter().filter(|b| b.upper_bound.is_finite()) {
+        let midpoint = (bucket.upper_bound + prev_bound) / 2.0;
+        let weight = bucket.count - prev_count;
+        moments.weight += weight;
+        moments.sum += midpoint * weight;
+        moments.sum_squares += midpoint * midpoint * weight;
+        prev_bound = bucket.upper_bound;
+        prev_count = bucket.count;
+    }
+    moments
+}
+
+/// The mean of the finite buckets' observations; NaN when they have none.
+fn bucket_avg(buckets: &mut Vec<ClassicBucket>) -> f64 {
+    let moments = midpoint_moments(buckets);
+    if moments.weight == 0.0 {
+        return f64::NAN;
+    }
+    moments.sum / moments.weight
+}
+
+/// The variance of the finite buckets' observations; NaN when they have none.
+fn bucket_stdvar(buckets: &mut Vec<ClassicBucket>) -> f64 {
+    let moments = midpoint_moments(buckets);
+    if moments.weight == 0.0 {
+        return f64::NAN;
+    }
+    let mean = moments.sum / moments.weight;
+    // Rounding can take a variance just below zero. `max` would turn NaN into
+    // 0, so only a negative value is corrected.
+    let variance = moments.sum_squares / moments.weight - mean * mean;
+    if variance < 0.0 { 0.0 } else { variance }
+}
+
+fn bucket_stddev(buckets: &mut Vec<ClassicBucket>) -> f64 {
+    bucket_stdvar(buckets).sqrt()
 }
 
 /// Go's `sort.Search`: the smallest `i` in `[0, n)` for which `f(i)` holds,
@@ -686,6 +863,149 @@ mod tests {
         assert_eq!(bucket_fraction(f64::NEG_INFINITY, -2.0, &mut h()), 0.5);
         // (-1, 1] holds 3; from 0 to 1 is half of it.
         assert_eq!(bucket_fraction(0.0, 1.0, &mut h()), 0.15);
+    }
+
+    /// Reference values: midpoints 0.5, 1.5, 3 with weights 2, 4, 2.
+    #[test]
+    fn statistics_take_observations_at_bucket_midpoints() {
+        let h = || buckets(&[(INF, 8.0), (4.0, 8.0), (1.0, 2.0), (2.0, 6.0)]); // unsorted on purpose
+        assert_eq!(bucket_avg(&mut h()), 1.625);
+        assert_eq!(bucket_stdvar(&mut h()), 0.796875);
+        assert_eq!(bucket_stddev(&mut h()), 0.796875_f64.sqrt());
+    }
+
+    /// As in VictoriaMetrics, a negative lowest bucket also starts at 0: its
+    /// midpoint is halfway to 0, not somewhere below its bound.
+    #[test]
+    fn a_negative_lowest_bucket_starts_at_zero() {
+        // Midpoints -1 (0..-2) and -1.5 (-2..-1), each with weight 2.
+        let mut h = buckets(&[(-2.0, 2.0), (-1.0, 4.0), (INF, 4.0)]);
+        assert_eq!(bucket_avg(&mut h), -1.25);
+    }
+
+    #[test]
+    fn a_negative_rounding_variance_is_zero_and_nan_stays_nan() {
+        // All observations in one bucket: variance is exactly the rounding error.
+        let mut one = buckets(&[(0.1, 3.0), (INF, 3.0)]);
+        assert!(bucket_stdvar(&mut one) >= 0.0);
+        assert!(bucket_stdvar(&mut buckets(&[(1.0, f64::NAN), (INF, 1.0)])).is_nan());
+    }
+
+    #[test]
+    fn a_nan_count_makes_the_statistics_nan() {
+        let h = || buckets(&[(1.0, 2.0), (2.0, f64::NAN), (INF, 3.0)]);
+        assert!(bucket_avg(&mut h()).is_nan());
+    }
+
+    #[test]
+    fn same_bound_buckets_are_merged_for_the_statistics() {
+        // le=1 is 1 + 3 = 4, then 4 more in (1, 2]: (0.5*4 + 1.5*4) / 8.
+        let mut h = buckets(&[(1.0, 1.0), (1.0, 3.0), (2.0, 8.0), (INF, 8.0)]);
+        assert_eq!(bucket_avg(&mut h), 1.0);
+    }
+
+    fn eval_one(f: &dyn PromQLFunction, series: Vec<EvalSample>) -> Vec<EvalSample> {
+        let result = f
+            .apply_args(
+                vec![PromQLArg::InstantVector(series)],
+                &EvalContext::default(),
+            )
+            .unwrap();
+        let ExprResult::InstantVector(samples) = result else {
+            panic!("expected an instant vector");
+        };
+        samples
+    }
+
+    #[test]
+    fn statistics_drop_le_and_the_name_and_group_by_name() {
+        let series = vec![
+            bucket("a_bucket", "1", 2.0),
+            bucket("a_bucket", "+Inf", 4.0),
+            bucket("b_bucket", "2", 3.0),
+            bucket("b_bucket", "+Inf", 3.0),
+            bucket("a_bucket", "1kb", 100.0),
+        ];
+        let mut samples = eval_one(&HistogramAvgFunction, series);
+        samples.sort_by(|a, b| a.labels.cmp(&b.labels));
+        assert_eq!(samples.len(), 2, "one result per histogram");
+        // a: 2 at 0.5; b: 3 at 1.
+        assert_eq!(samples[0].value, 0.5);
+        assert_eq!(samples[1].value, 1.0);
+        for s in &samples {
+            assert!(
+                s.drop_name,
+                "the name is dropped when the result is rendered"
+            );
+            assert_eq!(s.labels.get("le"), None);
+        }
+    }
+
+    /// Pinned against Go: `labels.FormatOpenMetricsFloat`, itself
+    /// `strconv.FormatFloat(f, 'g', -1, 64)` plus `.0` when there is no `.` or
+    /// exponent. `%e` starts at exponents below -4 or from 6 up, with at least
+    /// two exponent digits.
+    #[test]
+    fn phi_labels_are_open_metrics_floats() {
+        for (f, want) in [
+            (0.0, "0.0"),
+            (-0.0, "0.0"),
+            (1.0, "1.0"),
+            (-1.0, "-1.0"),
+            (2.0, "2.0"),
+            (0.5, "0.5"),
+            (0.99, "0.99"),
+            (-0.1, "-0.1"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (1.5e-7, "1.5e-07"),
+            (100000.0, "100000.0"),
+            (1000000.0, "1e+06"),
+            (1234567.0, "1.234567e+06"),
+            (1e100, "1e+100"),
+            (f64::NAN, "NaN"),
+            (INF, "+Inf"),
+            (f64::NEG_INFINITY, "-Inf"),
+        ] {
+            assert_eq!(format_open_metrics_float(f), want, "{f}");
+        }
+    }
+
+    fn quantiles_args(label: &str, phis: &[f64]) -> Vec<PromQLArg> {
+        let mut args = vec![
+            PromQLArg::InstantVector(vec![
+                bucket("a_bucket", "1", 2.0),
+                bucket("a_bucket", "+Inf", 4.0),
+            ]),
+            PromQLArg::String(label.to_string()),
+        ];
+        args.extend(phis.iter().map(|&phi| PromQLArg::Scalar(phi)));
+        args
+    }
+
+    #[test]
+    fn quantiles_write_one_labelled_series_per_phi() {
+        let ExprResult::InstantVector(mut samples) =
+            histogram_quantiles(quantiles_args("q", &[0.25, 0.5])).unwrap()
+        else {
+            panic!("expected an instant vector");
+        };
+        samples.sort_by(|a, b| a.labels.cmp(&b.labels));
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].labels.get("q"), Some("0.25"));
+        assert_eq!(samples[0].value, 0.5);
+        assert_eq!(samples[1].labels.get("q"), Some("0.5"));
+        assert_eq!(samples[1].value, 1.0);
+        for s in &samples {
+            assert!(s.drop_name);
+            assert_eq!(s.labels.get("le"), None);
+        }
+    }
+
+    #[test]
+    fn quantiles_argument_errors() {
+        assert!(histogram_quantiles(quantiles_args("", &[0.5])).is_err());
+        assert!(histogram_quantiles(quantiles_args("q", &[])).is_err());
     }
 
     fn bucket(name: &str, le: &str, value: f64) -> EvalSample {
