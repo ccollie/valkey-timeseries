@@ -3,7 +3,10 @@ use crate::promql::functions::date_functions::{
     MinuteFunction, MonthFunction, TimeFunction, TimestampFunction, YearFunction,
 };
 use crate::promql::functions::deriv::DerivFunction;
-use crate::promql::functions::histogram::{HistogramFractionFunctions, HistogramQuantileFunction};
+use crate::promql::functions::histogram::{
+    HistogramAvgFunction, HistogramFractionFunctions, HistogramQuantileFunction,
+    HistogramQuantilesFunction, HistogramStddevFunction, HistogramStdvarFunction,
+};
 use crate::promql::functions::holt_winters::{
     DoubleExponentialSmoothingFunction, HoltWintersFunction,
 };
@@ -244,11 +247,19 @@ macro_rules! promql_function_list {
             (Range, "range", RangeFunction),
             (Step, "step", StepFunction),
             // ── Histogram ────────────────────────────────────────────────
+            (HistogramAvg, "histogram_avg", HistogramAvgFunction),
             (
                 HistogramQuantile,
                 "histogram_quantile",
                 HistogramQuantileFunction
             ),
+            (
+                HistogramQuantiles,
+                "histogram_quantiles",
+                HistogramQuantilesFunction
+            ),
+            (HistogramStddev, "histogram_stddev", HistogramStddevFunction),
+            (HistogramStdvar, "histogram_stdvar", HistogramStdvarFunction),
             (
                 HistogramFraction,
                 "histogram_fraction",
