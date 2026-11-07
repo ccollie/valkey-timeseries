@@ -1,6 +1,7 @@
 use super::raw_replies::{
     IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_bulk_string,
 };
+use crate::common::logging::ContextLog;
 use std::ops::Deref;
 use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
@@ -39,7 +40,7 @@ impl ReplyContext {
 
     /// Log a message at the specified `level` using the underlying context.
     pub fn log(&self, level: ValkeyLogLevel, message: &str) {
-        self.ctx.log(level, message);
+        self.ctx.log_at(level, message);
     }
 
     /// Convenience logging helpers

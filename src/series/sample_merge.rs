@@ -1,4 +1,5 @@
 use crate::common::context::key_for_display;
+use crate::common::logging::ContextLog;
 use crate::common::logging::log_warning;
 use crate::common::threads::ParMutRayon;
 use crate::common::{Sample, Timestamp};
@@ -304,7 +305,7 @@ fn run_group_compactions(ctx: &Context, groups: &mut [PerSeriesSamples]) {
         {
             let key = key_for_display(&group.series.key);
             let msg = format!("TSDB: error running compaction for key '{key}': {e}");
-            ctx.log_warning(&msg);
+            ctx.warning(&msg);
         }
     }
 }

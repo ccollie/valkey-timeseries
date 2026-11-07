@@ -14,6 +14,7 @@
 //! exactly like its primary.
 //!
 //! [`Postings::index_timeseries`]: crate::series::index::Postings::index_timeseries
+use crate::common::logging::ContextLog;
 use crate::common::logging::{log_debug, log_notice, log_warning};
 use crate::common::metrics::asm as metrics;
 use crate::common::module_options::{HANDLE_ATOMIC_SLOT_MIGRATION, declare_module_options};
@@ -43,7 +44,7 @@ fn supports_atomic_slot_migration(ctx: &Context) -> bool {
     }
     match ctx.get_server_version() {
         Err(e) => {
-            ctx.log_warning(&format!("Error getting server version: {e}"));
+            ctx.warning(format!("Error getting server version: {e}"));
             false
         }
         Ok(ver) => {
@@ -274,7 +275,7 @@ fn subscribe_to_atomic_slot_migration_events(ctx: &Context) {
         )
     };
     if res != raw::REDISMODULE_OK as i32 {
-        ctx.log_warning("Failed to subscribe to atomic slot migration events");
+        ctx.warning("Failed to subscribe to atomic slot migration events");
     }
     // Declare that this module handles atomic slot migration events, so the
     // server will permit ASM operations involving this module. Declared through
@@ -766,11 +767,11 @@ static ASM_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn register_asm_event_handler(ctx: &Context) {
     if supports_atomic_slot_migration(ctx) {
-        ctx.log_notice("Registering atomic slot migration event handler");
+        ctx.notice("Registering atomic slot migration event handler");
         subscribe_to_atomic_slot_migration_events(ctx);
         ASM_ENABLED.store(true, Ordering::Release);
     } else {
-        ctx.log_notice(
+        ctx.notice(
             "Atomic slot migration not supported, skipping registration of related event handler",
         );
     }

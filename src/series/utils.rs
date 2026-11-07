@@ -3,6 +3,7 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{
     create_key_string, get_current_db, is_real_user_client, notify_keyspace_event,
 };
+use crate::common::logging::ContextLog;
 use crate::common::rounding::{NO_ROUNDING_KEYWORD, RoundingStrategy};
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, MetricName};
@@ -188,7 +189,7 @@ pub fn create_and_store_internal(
     // event, matching RedisTimeSeries (compat plan §7.3).
     if notify {
         notify_keyspace_event(ctx, c"ts.create", key);
-        ctx.log_verbose("series created");
+        ctx.verbose("series created");
     }
 
     Ok(())
@@ -377,7 +378,7 @@ fn add_default_compactions(
                 "TSDB: compaction series for key '{child_key}' already exists; policy rule for \
                  '{key_str}' skipped."
             );
-            ctx.log_warning(&msg);
+            ctx.warning(&msg);
             continue;
         }
 
@@ -386,7 +387,7 @@ fn add_default_compactions(
             Err(e) => {
                 let msg =
                     format!("TSDB: error creating compaction series for key \"{child_key}\": {e}");
-                ctx.log_warning(&msg);
+                ctx.warning(&msg);
                 continue;
             }
         };

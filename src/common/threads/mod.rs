@@ -76,6 +76,7 @@ mod orx_pool;
 mod role;
 mod single_flight;
 
+use crate::common::logging::log_notice;
 pub use crate::common::metrics::task::{TaskMetrics, TaskRun};
 pub use executor::{BoundedExecutor, Capacity, ExecutorStats, Rejected, Reservation};
 pub use gil::{
@@ -89,7 +90,6 @@ pub use orx_pool::{
 pub use role::{ThreadRole, current_role, on_pool_worker, set_thread_role};
 pub use single_flight::{Flight, SingleFlight};
 use std::env;
-use valkey_module::logging::log_notice;
 
 const MAX_NUM_THREADS_ENV_VARIABLE: &str = "ORX_NUM_THREADS";
 

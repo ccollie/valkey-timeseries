@@ -3,6 +3,7 @@ use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
 use crate::commands::ts_create::{parse_series_options, series_option_keywords};
 use crate::common::block_on_keys::signal_timeseries_ready;
 use crate::common::context::notify_keyspace_event;
+use crate::common::logging::ContextLog;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, try_get_timeseries_mut};
@@ -212,7 +213,7 @@ fn run_compaction_for_increment(
         return;
     }
     if let Err(err) = series.compact_sample(ctx, added, prev_last_ts) {
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "TSDB: error running compaction for key '{key_name}': {err}"
         ));
     }

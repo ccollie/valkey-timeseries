@@ -4,6 +4,7 @@ use crate::commands::command_parser::{
 use crate::commands::ts_create::parse_series_options;
 use crate::common::block_on_keys::signal_timeseries_ready;
 use crate::common::context::notify_keyspace_event;
+use crate::common::logging::ContextLog;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::{
@@ -170,7 +171,7 @@ fn handle_add(
         && let Err(err) = series.compact_sample(ctx, Sample::new(ts, value), last_ts)
     {
         let key = &args[1];
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "TSDB: error running compaction for key '{key}': {err}"
         ));
     }

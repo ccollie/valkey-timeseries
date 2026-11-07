@@ -8,6 +8,7 @@ use crate::commands::parse_duration_ms;
 use crate::common::binop::ComparisonOperator;
 use crate::common::block_on_keys::{BlockedKeyHandler, ReadyStatus, block_client_on_key};
 use crate::common::context::is_blocking_denied;
+use crate::common::logging::ContextLog;
 use crate::common::metrics::read::{
     BLOCK_REFUSED, SERVED_WITHOUT_BLOCK, SPURIOUS_WAKEUPS, UNBLOCKED_BY_DELETE,
 };
@@ -471,7 +472,7 @@ pub fn ts_read_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             } else {
                 // The server refused to block; we still owe a reply.
                 BLOCK_REFUSED.fetch_add(1, Ordering::Relaxed);
-                ctx.log_warning("TS.READ: failed to block client; replying with current data");
+                ctx.warning("TS.READ: failed to block client; replying with current data");
                 reply_with_samples(ctx, std::iter::empty());
                 Ok(ValkeyValue::NoReply)
             }

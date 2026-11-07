@@ -4,13 +4,13 @@ use crate::analysis::outliers::{
     Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use crate::common::logging::log_warning;
 #[cfg(test)]
 use crate::common::threads::ParRayon;
 use crate::config::num_threads;
 use krcf::{RandomCutForest, RandomCutForestOptions};
 #[cfg(test)]
 use orx_parallel::{Par, ParResult};
-use valkey_module::logging::log_warning;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 /// The default score threshold (in std deviations) used to determine whether a point is considered

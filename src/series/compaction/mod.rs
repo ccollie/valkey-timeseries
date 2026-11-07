@@ -8,6 +8,7 @@
 //! - `links`: `LATEST`, relinking after `RENAME`, and rule-cycle checks.
 
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
+use crate::common::logging::ContextLog;
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_timestamp, rdb_save_bool, rdb_save_timestamp,
 };
@@ -190,7 +191,7 @@ pub(crate) fn resync_rules_after_removal(
     end: Timestamp,
 ) {
     if let Err(err) = apply_compaction(ctx, series, CompactionOp::RemoveRange { start, end }) {
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "TSDB: error running compaction after deleting from key '{key}': {err}"
         ));
     }

@@ -1,3 +1,4 @@
+use crate::common::logging::ContextLog;
 use ahash::AHashMap;
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
@@ -347,7 +348,7 @@ impl TimeSeriesIndex {
         }
 
         if !dangling_ids.is_empty() {
-            ctx.log_warning(&format!(
+            ctx.warning(format!(
                 "Index consistency: {} series ids have no key and were queued for removal.",
                 dangling_ids.len()
             ));

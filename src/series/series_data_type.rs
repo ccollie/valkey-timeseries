@@ -3,9 +3,9 @@ use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
 use valkey_module::{
     RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, native_types::ValkeyType,
 };
-use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, logging, raw};
+use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, raw};
 
-use crate::common::logging::log_debug;
+use crate::common::logging::{self, log_debug, log_io_error};
 use crate::common::metrics::rdb::LOAD_FAILURE;
 use crate::series::TimeSeries;
 use crate::series::defrag_series;
@@ -15,7 +15,7 @@ use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::digest::Digest;
-use valkey_module::logging::{ValkeyLogLevel, log_io_error};
+use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 

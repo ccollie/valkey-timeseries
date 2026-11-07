@@ -1,6 +1,7 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
+use crate::common::logging;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::threads::{IntoParRayon, ParMutRayon, ParRayon};
 use crate::common::time::current_time_millis;
@@ -29,7 +30,6 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use std::vec;
 use valkey_module::digest::Digest;
-use valkey_module::logging;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub type TimeseriesId = u64;

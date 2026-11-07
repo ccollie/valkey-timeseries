@@ -1,6 +1,24 @@
 # Threading rules (see `src/common/threads/mod.rs`): the raw pool and GIL entry points are
 # wrapped there, and everything else goes through the wrappers.
 disallowed-methods = [
+    # The server logs a module message as a printf *format* string, so text containing `%` (a key,
+    # a peer's handler name) reads stray arguments. `common::logging` escapes it; use that.
+    { path = "valkey_module::Context::log", reason = "use `common::logging::ContextLog`, which escapes printf directives" },
+    { path = "valkey_module::Context::log_debug", reason = "use `ContextLog::debug` from `common::logging`" },
+    { path = "valkey_module::Context::log_notice", reason = "use `ContextLog::notice` from `common::logging`" },
+    { path = "valkey_module::Context::log_verbose", reason = "use `ContextLog::verbose` from `common::logging`" },
+    { path = "valkey_module::Context::log_warning", reason = "use `ContextLog::warning` from `common::logging`" },
+    { path = "valkey_module::DetachedContext::log", reason = "use `common::logging::ContextLog`, which escapes printf directives" },
+    { path = "valkey_module::DetachedContext::log_debug", reason = "use `ContextLog::debug` from `common::logging`" },
+    { path = "valkey_module::DetachedContext::log_notice", reason = "use `ContextLog::notice` from `common::logging`" },
+    { path = "valkey_module::DetachedContext::log_verbose", reason = "use `ContextLog::verbose` from `common::logging`" },
+    { path = "valkey_module::DetachedContext::log_warning", reason = "use `ContextLog::warning` from `common::logging`" },
+    { path = "valkey_module::logging::log", reason = "use `common::logging`, which escapes printf directives" },
+    { path = "valkey_module::logging::log_debug", reason = "use `common::logging::log_debug`" },
+    { path = "valkey_module::logging::log_notice", reason = "use `common::logging::log_notice`" },
+    { path = "valkey_module::logging::log_verbose", reason = "use `common::logging::log_verbose`" },
+    { path = "valkey_module::logging::log_warning", reason = "use `common::logging::log_warning`" },
+    { path = "valkey_module::logging::log_io_error", reason = "use `common::logging::log_io_error`" },
     { path = "valkey_module::DetachedContext::lock", reason = "take the GIL with `LockGil::lock_gil`, which checks the threading rules" },
     { path = "valkey_module::ThreadSafeContext::lock", reason = "take the GIL with `LockGil::lock_gil`, which checks the threading rules" },
     { path = "rayon_core::spawn", reason = "use a `BoundedExecutor` or `spawn_background`: a pool job must not block, and an unbounded spawn has no back-pressure" },

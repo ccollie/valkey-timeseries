@@ -6,10 +6,12 @@ extern crate serial_test;
 extern crate valkey_module_macros;
 
 use crate::commands::register_fanout_operations;
+use crate::common::logging::ContextLog;
 use crate::common::module_options::{HANDLE_IO_ERRORS, declare_module_options};
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
@@ -22,6 +24,9 @@ pub mod common;
 pub mod config;
 mod error;
 pub mod error_consts;
+// Fanout still logs through the SDK here; fix/fanout-bug-sweep moves it onto
+// `common::logging`. Drop this allow once that lands.
+#[allow(clippy::disallowed_methods)]
 mod fanout;
 pub mod iterators;
 mod join;
@@ -79,7 +84,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     // perform preload validations here, useful for MODULE LOAD
     // unlike init which is called at the end of the valkey_module! macro this is called at the beginning
     let version = ctx.get_server_version().unwrap();
-    ctx.log_notice(&format!(
+    ctx.notice(format!(
         "preload for server version {version:?} with args: {args:?}"
     ));
 
@@ -88,7 +93,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
         .expect("Unable to get server version!");
 
     if !valid_server_version(ver) {
-        ctx.log_warning(
+        ctx.warning(
             format!(
                 "The minimum supported Valkey server version for the valkey-timeseries module is {:?}",
                 config::TIMESERIES_MIN_SUPPORTED_VERSION
@@ -99,7 +104,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     }
 
     if let Err(symbol) = check_required_module_apis() {
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "Required module API {symbol} is unavailable on this server; refusing to load"
         ));
         return Status::Err;
@@ -108,7 +113,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     // TS.READ's block-on-keys path dereferences these directly; fail the load rather than the
     // first blocking read.
     if let Err(symbol) = check_blocking_module_apis() {
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "Required module API {symbol} is unavailable on this server; refusing to load"
         ));
         return Status::Err;
@@ -165,18 +170,18 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
-        ctx.log_warning(&msg);
+        ctx.warning(&msg);
         return Status::Err;
     }
 
     if let Err(e) = assign_command_acl_categories(ctx) {
-        ctx.log_warning(&format!("Failed to assign command ACL categories: {e}"));
+        ctx.warning(format!("Failed to assign command ACL categories: {e}"));
         return Status::Err;
     }
 
     if let Err(e) = register_server_event_handlers(ctx) {
         let msg = format!("Failed to register server event handlers: {e}");
-        ctx.log_warning(&msg);
+        ctx.warning(&msg);
         return Status::Err;
     }
 
@@ -184,7 +189,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         init_fanout(ctx);
         if let Err(e) = register_fanout_operations() {
             let msg = format!("Failed to register fanout operations: {e}");
-            ctx.log_warning(&msg);
+            ctx.warning(&msg);
             return Status::Err;
         };
     }
@@ -193,20 +198,20 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
 
     init_thread_pool();
 
-    ctx.log_notice("valkey-timeseries module initialized");
+    ctx.notice("valkey-timeseries module initialized");
     IS_MODULE_INITIALIZED.store(true, Ordering::Relaxed);
     Status::Ok
 }
 
 fn deinitialize(ctx: &Context) -> Status {
-    ctx.log_notice("deinitialize");
+    ctx.notice("deinitialize");
     IS_MODULE_INITIALIZED.store(false, Ordering::Relaxed);
     Status::Ok
 }
 
 #[shutdown_event_handler]
 fn __shutdown_event_handler(ctx: &Context, _event: u64) {
-    ctx.log_notice("Server shutdown callback event ...");
+    ctx.notice("Server shutdown callback event ...");
     IS_SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
 
@@ -226,33 +231,39 @@ macro_rules! get_allocator {
     };
 }
 
-valkey_module! {
-    name: MODULE_NAME,
-    version: VK_TIMESERIES_VERSION,
-    allocator: (get_allocator!(), get_allocator!()),
-    data_types: [VK_TIME_SERIES_TYPE],
-    preload: preload,
-    init: initialize,
-    deinit: deinitialize,
-    acl_categories: [
-        "timeseries",
-    ]
-    // Command names are registered in lowercase to match RedisTimeSeries, both here and in
-    // the `#[command]` annotations in `src/commands/*`. The registered name is what Valkey
-    // echoes back in COMMAND INFO/DOCS and in the "wrong number of arguments for '<name>'
-    // command" arity error; RedisTimeSeries uses lowercase there. Command dispatch is
-    // case-insensitive, so clients may still invoke `TS.CREATE`, `ts.create`, etc.
-    commands: [
-        // User-facing commands are registered with full command info (summary, complexity,
-        // arity, and key specs) through the `#[valkey_module_macros::command]` attribute on
-        // each handler in `src/commands/*`; the `valkey_module!` macro registers them via
-        // `register_commands`. Only internal/admin commands remain in this positional table.
-        // ACL categories for the annotated commands come from the `acl_categories!`
-        // declaration beside each handler, applied by `assign_command_acl_categories`.
-        ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
-        ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
-    ]
-    event_handlers: [
-        [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
-    ]
+// The macro's own load/unload messages are fixed strings, logged through the SDK.
+#[allow(clippy::disallowed_methods)]
+mod module_registration {
+    use super::*;
+
+    valkey_module! {
+        name: MODULE_NAME,
+        version: VK_TIMESERIES_VERSION,
+        allocator: (get_allocator!(), get_allocator!()),
+        data_types: [VK_TIME_SERIES_TYPE],
+        preload: preload,
+        init: initialize,
+        deinit: deinitialize,
+        acl_categories: [
+            "timeseries",
+        ]
+        // Command names are registered in lowercase to match RedisTimeSeries, both here and in
+        // the `#[command]` annotations in `src/commands/*`. The registered name is what Valkey
+        // echoes back in COMMAND INFO/DOCS and in the "wrong number of arguments for '<name>'
+        // command" arity error; RedisTimeSeries uses lowercase there. Command dispatch is
+        // case-insensitive, so clients may still invoke `TS.CREATE`, `ts.create`, etc.
+        commands: [
+            // User-facing commands are registered with full command info (summary, complexity,
+            // arity, and key specs) through the `#[valkey_module_macros::command]` attribute on
+            // each handler in `src/commands/*`; the `valkey_module!` macro registers them via
+            // `register_commands`. Only internal/admin commands remain in this positional table.
+            // ACL categories for the annotated commands come from the `acl_categories!`
+            // declaration beside each handler, applied by `assign_command_acl_categories`.
+            ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
+            ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
+        ]
+        event_handlers: [
+            [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
+        ]
+    }
 }

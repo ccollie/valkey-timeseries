@@ -7,6 +7,7 @@
 use crate::common::block_on_keys::signal_timeseries_ready;
 #[cfg(not(test))]
 use crate::common::context::{create_key_string, notify_keyspace_event};
+use crate::common::logging::ContextLog;
 use crate::common::threads::{IterIntoParRayon, ParCollectionRayon};
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
@@ -560,7 +561,7 @@ pub fn bulk_insert_samples(
     let results = merge_samples_into_series(series, samples, policy);
 
     series.split_chunks_if_needed().unwrap_or_else(|e| {
-        ctx.log_warning(&format!(
+        ctx.warning(format!(
             "Failed to split chunks after bulk insert samples: {}",
             e
         ))
@@ -596,7 +597,7 @@ pub fn bulk_insert_samples(
         }
 
         if let Err(e) = series.batch_compaction(ctx, &added, prev_last, &input_order) {
-            ctx.log_warning(&format!(
+            ctx.warning(format!(
                 "Failed to run compactions after bulk insert samples: {e:?}"
             ))
         }

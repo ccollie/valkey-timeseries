@@ -1,4 +1,5 @@
 use crate::aggregators::AggregationHandler;
+use crate::common::logging::ContextLog;
 use crate::common::replies::ReplyContext;
 use crate::common::replies::is_resp3_client;
 use crate::common::rounding::RoundingStrategy;
@@ -314,7 +315,7 @@ fn get_rules_info(ctx: &Context, series: &TimeSeries, is_resp3: bool) -> ValkeyV
                     .is_some_and(|src| src.points_to(&series.key))
             );
             if !links_back {
-                ctx.log_warning("Compaction rule has an invalid destination; omitting it");
+                ctx.warning("Compaction rule has an invalid destination; omitting it");
                 return None;
             }
             Some((dest_key.to_string_lossy(), rule))
@@ -356,7 +357,7 @@ fn get_rules_info(ctx: &Context, series: &TimeSeries, is_resp3: bool) -> ValkeyV
 fn get_source_key(ctx: &Context, series: &TimeSeries) -> Option<String> {
     series.src_series.as_ref()?;
     let Some(source_key) = live_source_key(ctx, series) else {
-        ctx.log_warning("Compaction source series not found");
+        ctx.warning("Compaction source series not found");
         return None;
     };
     Some(source_key.to_string_lossy())

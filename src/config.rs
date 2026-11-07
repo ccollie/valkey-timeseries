@@ -1,4 +1,5 @@
 use crate::common::humanize::humanize_duration_ms;
+use crate::common::logging::{log_notice, log_warning};
 use crate::common::rounding::{
     MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, MIN_DECIMAL_DIGITS, MIN_SIGNIFICANT_DIGITS,
     RoundingStrategy,
@@ -21,7 +22,6 @@ use valkey_module::configuration::{
     get_i64_default_config_value, get_string_default_config_value, register_bool_configuration,
     register_i64_configuration, register_string_configuration,
 };
-use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
     ConfigurationValue, Context, RedisModule_LoadConfigs, ValkeyError, ValkeyGILGuard,
     ValkeyResult, ValkeyString, raw,

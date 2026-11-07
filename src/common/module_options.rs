@@ -5,6 +5,7 @@
 //! are OR-ed into a process-wide mask and the full mask is re-applied, so the order in which
 //! subsystems declare their options does not matter.
 
+use crate::common::logging::ContextLog;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
 use valkey_module::{Context, raw};
@@ -32,10 +33,10 @@ pub fn declare_module_options(ctx: &Context, flags: c_int) {
     // older servers may not export it.
     unsafe {
         let Some(set_opts) = raw::ValkeyModule_SetModuleOptions else {
-            ctx.log_notice("ValkeyModule_SetModuleOptions not available in raw bindings");
+            ctx.notice("ValkeyModule_SetModuleOptions not available in raw bindings");
             return;
         };
         set_opts(ctx.ctx as *mut raw::ValkeyModuleCtx, combined);
     }
-    ctx.log_notice(&format!("Declared module options: 0x{combined:x}"));
+    ctx.notice(format!("Declared module options: 0x{combined:x}"));
 }

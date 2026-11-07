@@ -5,6 +5,7 @@ use super::{
 };
 use crate::common::block_on_keys::signal_timeseries_ready;
 use crate::common::context::notify_keyspace_event;
+use crate::common::logging::ContextLog;
 use crate::common::logging::log_warning;
 use crate::common::threads::ParMutRayon;
 use crate::common::{Sample, Timestamp};
@@ -565,7 +566,7 @@ fn resolve_destination<'a>(
 
     let dest_key = rule.dest.to_key_string(ctx);
     let Ok(Some(dest)) = try_get_timeseries_mut(ctx, &dest_key, None) else {
-        ctx.log_verbose("Destination series for compaction not found");
+        ctx.verbose("Destination series for compaction not found");
         return Resolved::Stale;
     };
     let links_back = dest
@@ -573,7 +574,7 @@ fn resolve_destination<'a>(
         .as_ref()
         .is_some_and(|src| src.points_to(source_key));
     if !links_back {
-        ctx.log_verbose("Compaction destination no longer names this series as its source");
+        ctx.verbose("Compaction destination no longer names this series as its source");
         return Resolved::Stale;
     }
     Resolved::Open(dest_key, dest)

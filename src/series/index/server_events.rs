@@ -1,6 +1,8 @@
 //! This module subscribes to Valkey events to ensure secondary index consistency.
 //!
 use crate::common::context::{create_key_string, get_current_db, register_server_event_handler};
+use crate::common::logging;
+use crate::common::logging::ContextLog;
 use crate::common::sync::lock;
 use crate::series::index::asm::{reconcile_imports_after_load, register_asm_event_handler};
 use crate::series::index::bulk_build;
@@ -18,7 +20,7 @@ use valkey_module::server_events::{
     FLUSH_SERVER_EVENTS_LIST, FlushSubevent, LoadingSubevent, PersistenceSubevent,
     SWAPDB_SERVER_EVENTS_LIST,
 };
-use valkey_module::{Context, NotifyEvent, ValkeyResult, logging, raw};
+use valkey_module::{Context, NotifyEvent, ValkeyResult, raw};
 use valkey_module_macros::{loading_event_handler, persistence_event_handler};
 
 /// Logs persistence activity. Nothing here touches a slot import's state: a save that fails (a
@@ -26,12 +28,12 @@ use valkey_module_macros::{loading_event_handler, persistence_event_handler};
 #[persistence_event_handler]
 fn __persistence_event_handler(ctx: &Context, persistence_event: PersistenceSubevent) {
     match persistence_event {
-        PersistenceSubevent::RdbStart => ctx.log_notice("RDB persistence started"),
-        PersistenceSubevent::AofStart => ctx.log_notice("AOF persistence started"),
-        PersistenceSubevent::SyncRdbStart => ctx.log_notice("Sync RDB persistence started"),
-        PersistenceSubevent::SyncAofStart => ctx.log_notice("Sync AOF persistence started"),
-        PersistenceSubevent::Ended => ctx.log_notice("Persistence operation ended"),
-        PersistenceSubevent::Failed => ctx.log_warning("Persistence operation failed"),
+        PersistenceSubevent::RdbStart => ctx.notice("RDB persistence started"),
+        PersistenceSubevent::AofStart => ctx.notice("AOF persistence started"),
+        PersistenceSubevent::SyncRdbStart => ctx.notice("Sync RDB persistence started"),
+        PersistenceSubevent::SyncAofStart => ctx.notice("Sync AOF persistence started"),
+        PersistenceSubevent::Ended => ctx.notice("Persistence operation ended"),
+        PersistenceSubevent::Failed => ctx.warning("Persistence operation failed"),
     }
 }
 

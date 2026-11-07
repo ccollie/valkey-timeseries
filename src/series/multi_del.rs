@@ -1,6 +1,7 @@
 use crate::common::Timestamp;
 use crate::common::acl::KeyAccess;
 use crate::common::context::{create_key_string, notify_keyspace_event};
+use crate::common::logging::ContextLog;
 use crate::common::threads::ParMutRayon;
 use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
@@ -56,7 +57,7 @@ fn delete_key(ctx: &Context, key: &ValkeyString) -> ValkeyResult<usize> {
                 key.to_string_lossy(),
                 e
             );
-            ctx.log_warning(&msg);
+            ctx.warning(&msg);
             Ok(0)
         }
     }
@@ -92,7 +93,7 @@ fn handle_delete_range(
 
     let num_threads = usize::max(num_threads(), 2);
     let mut total_deleted = 0;
-    ctx.log_notice(&format!(
+    ctx.notice(format!(
         "Starting deletion of range [{start}, {end}] for {} series. Num threads: {num_threads}",
         ids.cardinality()
     ));
@@ -130,7 +131,7 @@ fn delete_range_batch(
     // Run compaction after deletions
     for (i, (deleted, ts)) in res.iter().zip(series.iter_mut()).enumerate() {
         if let Err(err) = deleted {
-            ctx.log_warning(&format!(
+            ctx.warning(format!(
                 "Got error removing range from series {}: {err:?}",
                 keys[i].to_string_lossy()
             ));
