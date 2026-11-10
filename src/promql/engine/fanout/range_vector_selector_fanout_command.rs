@@ -6,7 +6,6 @@ use crate::promql::generated::{
     RangeQuery, RangeQueryResponse, SeriesSelector as ProtoSeriesSelector,
 };
 use promql_parser::label::Matchers;
-use std::time::Duration;
 use valkey_module::ValkeyResult;
 
 pub struct RangeVectorSelectorFanoutCommand {
@@ -15,7 +14,6 @@ pub struct RangeVectorSelectorFanoutCommand {
     end_time: i64,
     max_series: u64,
     max_points_per_series: u64,
-    timeout: Duration,
     /// One entry per shard, each with its own symbol table. Label resolution
     /// and the duplicate-series check wait for the requester's pool (see
     /// `check_unique_series`): this callback runs on the main thread.
@@ -29,7 +27,6 @@ impl RangeVectorSelectorFanoutCommand {
         end_time: Timestamp,
         max_series: u64,
         max_points_per_series: u64,
-        timeout: Duration,
     ) -> Self {
         Self {
             matchers,
@@ -37,7 +34,6 @@ impl RangeVectorSelectorFanoutCommand {
             end_time,
             max_series,
             max_points_per_series,
-            timeout,
             responses: Vec::new(),
         }
     }
@@ -75,10 +71,6 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
         )
     }
 
-    fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
     fn generate_request(&self) -> RangeQuery {
         let selector = ProtoSeriesSelector::from(&self.matchers);
         RangeQuery {
@@ -87,12 +79,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
             end_time: self.end_time,
             max_series: self.max_series,
             max_points_per_series: self.max_points_per_series,
-            time_budget_ms: super::time_budget_to_wire(self.timeout),
         }
-    }
-
-    fn time_budget(req: &RangeQuery) -> Option<Duration> {
-        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {

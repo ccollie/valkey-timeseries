@@ -54,11 +54,9 @@ message InstantQuery {
   /// Field 5 carried `max_points_per_series`, which no shard ever read: an
   /// instant read yields one sample per series.
   reserved 5;
-  /// How long the requester waits for this answer, in milliseconds from when
-  /// it sent the request. The receiver drops the request, or stops reading,
-  /// once that long has passed since it received it: by then the requester has
-  /// answered without it. 0 means no limit (as from every older requester).
-  uint64 time_budget_ms = 6;
+  /// Field 6 carried `time_budget_ms`. The request envelope carries the
+  /// requester's time budget for every fan-out operation now.
+  reserved 6;
 }
 
 message InstantQueryResponse {
@@ -90,11 +88,9 @@ message RangeQuery {
   int64 end_time = 3;
   uint64 max_series = 4;
   uint64 max_points_per_series = 5;
-  /// How long the requester waits for this answer, in milliseconds from when
-  /// it sent the request. The receiver drops the request, or stops reading,
-  /// once that long has passed since it received it: by then the requester has
-  /// answered without it. 0 means no limit (as from every older requester).
-  uint64 time_budget_ms = 6;
+  /// Field 6 carried `time_budget_ms`. The request envelope carries the
+  /// requester's time budget for every fan-out operation now.
+  reserved 6;
 }
 
 message RangeQueryResponse {
@@ -303,11 +299,9 @@ message GridQuery {
   /// consumer stamps a value with its step, so the column is left out unless
   /// the query asks.
   bool sample_timestamps = 11;
-  /// How long the requester waits for this answer, in milliseconds from when
-  /// it sent the request. The receiver drops the request, or stops reading,
-  /// once that long has passed since it received it: by then the requester has
-  /// answered without it. 0 means no limit (as from every older requester).
-  uint64 time_budget_ms = 12;
+  /// Field 12 carried `time_budget_ms`. The request envelope carries the
+  /// requester's time budget for every fan-out operation now.
+  reserved 12;
 }
 
 /// One series' stepped or rolled-up output, in columns.
@@ -380,11 +374,9 @@ message LabelProfileQuery {
   /// Past this many matching series the node answers `overflow` rather than
   /// walking further; the coordinator then leaves the selector as written.
   uint64 max_series = 2;
-  /// How long the requester waits for this answer, in milliseconds from when
-  /// it sent the request. The receiver drops the request, or stops reading,
-  /// once that long has passed since it received it: by then the requester has
-  /// answered without it. 0 means no limit (as from every older requester).
-  uint64 time_budget_ms = 3;
+  /// Field 3 carried `time_budget_ms`. The request envelope carries the
+  /// requester's time budget for every fan-out operation now.
+  reserved 3;
   /// Count only the series with a retained sample in `[start_ms, end_ms]`
   /// (milliseconds, both inclusive). Unless both are set, every matching
   /// series counts, as from every older requester; a node that predates the

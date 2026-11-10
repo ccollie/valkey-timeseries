@@ -113,21 +113,12 @@ fn command_limited(request: GridRequest, max_samples: usize) -> GridFanoutComman
         0,
         0,
         max_samples,
-        Duration::from_secs(1),
         Deadline::default(),
     )
 }
 
 fn command_until(request: GridRequest, deadline: Deadline) -> GridFanoutCommand {
-    GridFanoutCommand::new(
-        Matchers::empty(),
-        request,
-        0,
-        0,
-        0,
-        Duration::from_secs(1),
-        deadline,
-    )
+    GridFanoutCommand::new(Matchers::empty(), request, 0, 0, 0, deadline)
 }
 
 fn node(port: u16) -> NodeInfo {
@@ -1641,7 +1632,6 @@ fn test_request_round_trip() {
         1_000,
         11_000,
         0,
-        Duration::from_secs(1),
         Deadline::default(),
     );
 

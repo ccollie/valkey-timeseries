@@ -78,6 +78,8 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   - `chunks/`: three encodings — **Chimp** (default), **Gorilla**, **Uncompressed**
     (`DEFAULT_CHUNK_ENCODING` in `src/config.rs`). Storage encoding is a user choice; cluster *wire*
     encoding is a separate, internal policy (see Conventions below).
+  - `RangeSnapshot` (`time_series.rs`) copies chunks under the module lock, decodes after releasing
+    it — used by fanout/query read paths to avoid decoding while holding the GIL.
   - `index/asm.rs` — atomic slot migration (ASM, Valkey 9.0+): event subscription and the registry
     of imports in flight. Imported series are indexed on arrival but hidden from reads
     (`index/postings/hidden.rs`) until the import completes. During an ASM the source node's
