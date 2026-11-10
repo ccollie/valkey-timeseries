@@ -860,9 +860,9 @@ pub struct LabelProfileQuery {
     /// / (milliseconds, both inclusive). Unless both are set, every matching
     /// / series counts, as from every older requester; a node that predates the
     /// / fields does the same, which can only cost a push-down, never a result.
-    #[prost(int64, optional, tag = "4")]
+    #[prost(int64, optional, tag = "3")]
     pub start_ms: ::core::option::Option<i64>,
-    #[prost(int64, optional, tag = "5")]
+    #[prost(int64, optional, tag = "4")]
     pub end_ms: ::core::option::Option<i64>,
 }
 /// / One label over the matched series.
