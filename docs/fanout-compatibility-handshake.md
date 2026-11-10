@@ -291,7 +291,7 @@ the fan-out lane's queue, and stops a read past it between batches
 reads the same deadline through `FanoutContext::deadline`.
 
 The PromQL requests used to carry their own copy of the budget in the payload.
-Those fields are reserved now: the envelope's applies to every operation.
+Those fields are gone: the envelope's applies to every operation.
 
 It needs no feature bit: a receiver that ignores it still answers correctly,
 only later than anyone wants, and an absent field decodes as `0`, which means
