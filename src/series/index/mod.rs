@@ -17,6 +17,7 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 use crate::common::hash::BuildNoHashHasher;
 use crate::series::index::postings::Postings;
 use crate::common::logging::log_warning;
+use crate::error_consts;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, try_get_timeseries_mut};
 pub use batched_querier::*;
@@ -346,8 +347,4 @@ mod bitmap_serialization_tests {
         assert!(deserialize_bitmap(&truncated[..truncated.len() - 1]).is_err());
         assert!(deserialize_bitmap(&[BITMAP_SERIALIZATION_VERSION, 0xFF, 0xFF]).is_err());
     }
-    PostingsBitmap::try_deserialize::<Portable>(&bitmap[1..]).unwrap_or_else(|| {
-        log_warning("Invalid serialized postings bitmap");
-        PostingsBitmap::default()
-    })
 }

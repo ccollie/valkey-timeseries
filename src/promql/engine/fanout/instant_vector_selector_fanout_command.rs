@@ -10,7 +10,6 @@ use crate::promql::generated::{
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalLabels, InstantSample};
 use promql_parser::label::Matchers;
-use std::time::Duration;
 use valkey_module::ValkeyResult;
 
 pub struct InstantVectorSelectorFanoutCommand {
@@ -21,7 +20,6 @@ pub struct InstantVectorSelectorFanoutCommand {
     /// Samples already in evaluator form: each response is resolved against
     /// its symbol table as it arrives (see `on_response`).
     results: Vec<InstantSample<EvalLabels>>,
-    timeout: Duration,
     seen: FingerprintHashSet,
 }
 
@@ -31,7 +29,6 @@ impl InstantVectorSelectorFanoutCommand {
         timestamp: Timestamp,
         lookback_delta: u64,
         max_series: u64,
-        timeout: Duration,
     ) -> Self {
         Self {
             matchers,
@@ -39,7 +36,6 @@ impl InstantVectorSelectorFanoutCommand {
             lookback_delta,
             max_series,
             results: vec![],
-            timeout,
             seen: FingerprintHashSet::default(),
         }
     }
@@ -77,10 +73,6 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
         )
     }
 
-    fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
     fn generate_request(&self) -> InstantQuery {
         let selector = ProtoSeriesSelector::from(&self.matchers);
         InstantQuery {
@@ -88,12 +80,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
             timestamp: self.timestamp,
             lookback_delta: self.lookback_delta,
             max_series: self.max_series,
-            time_budget_ms: super::time_budget_to_wire(self.timeout),
         }
-    }
-
-    fn time_budget(req: &InstantQuery) -> Option<Duration> {
-        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {

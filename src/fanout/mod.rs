@@ -25,13 +25,10 @@ use std::time::Duration;
 use valkey_module::Context;
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
+pub use cluster_rpc::get_cluster_command_timeout;
 pub(crate) use cluster_rpc::{
     inflight_request_count, inflight_requests, peer_request_count, peer_requests,
 };
-pub(crate) use cluster_rpc::{inflight_request_count, inflight_requests};
-pub use acl::*;
-pub use cluster_rpc::get_cluster_command_timeout;
-pub(crate) use cluster_rpc::{inflight_request_count, inflight_requests};
 pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;

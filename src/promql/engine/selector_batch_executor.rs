@@ -39,7 +39,7 @@ use orx_parallel::ParResult;
 use promql_parser::label::Matchers;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use valkey_module::{Context, MODULE_CONTEXT};
 
 /// Max number of requests to process in a single batch. The batch's reads share
@@ -568,8 +568,9 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
 /// How long a fan-out for this query may take: its timeout, but never past the query's
 /// deadline. A query's fan-outs run one after another (a preload, then the reads the step
 /// loop falls back to), and arming each with the whole timeout let the last of them outlive
-/// the query by up to a full timeout, and its shards with it. This is also the time budget
-/// the request carries, so the shards stop when the coordinator does.
+/// the query by up to a full timeout, and its shards with it. What is left of it when the
+/// request is sent also travels as its time budget, so the shards stop when the coordinator
+/// does.
 fn calculate_timeout(opts: &QueryOptions) -> Duration {
     remaining_budget(
         opts.timeout.unwrap_or_else(get_cluster_command_timeout),
@@ -636,7 +637,7 @@ fn fan_out<C, F>(
     let handler = move |cmd: C, result: FanoutCommandResult| {
         deliver_task_result(&on_done, answer(cmd, result));
     };
-    if let Err(e) = exec_command(ctx, cmd, targets, timeout, handler) {
+    if let Err(e) = exec_command(ctx, cmd, targets, Instant::now(), timeout, handler) {
         deliver_task_result(&responder, Err(e.into()));
     }
 }
@@ -655,7 +656,6 @@ fn execute_cluster_vector_selector(
         timestamp,
         lookback_delta,
         iqc.options.max_series as u64,
-        timeout,
     );
 
     let max_series = iqc.options.max_series;
@@ -691,7 +691,6 @@ fn execute_cluster_range_selector(
         rc.end_timestamp,
         rc.options.max_series as u64,
         rc.options.max_points_per_series.unwrap_or(0) as u64,
-        timeout,
     );
 
     let max_series = rc.options.max_series;
@@ -764,7 +763,7 @@ fn execute_cluster_aggregation(
         max_series: ac.options.max_series as u64,
     };
     let deadline = Deadline::from_options(&ac.options);
-    let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, timeout, deadline);
+    let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, deadline);
 
     let max_series = ac.options.max_series;
 
@@ -834,7 +833,6 @@ fn execute_cluster_grid(
         max_series as u64,
         max_points_per_series.unwrap_or(0) as u64,
         max_samples,
-        timeout,
         deadline,
     );
 
@@ -894,7 +892,6 @@ fn execute_cluster_label_profile(
         pc.matchers,
         pc.window,
         profiled_series_cap(&pc.options) as u64,
-        timeout,
     );
 
     fan_out(
