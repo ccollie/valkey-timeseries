@@ -9,9 +9,10 @@ use crate::commands::analysis_runner::panic_next_analysis_job;
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::replies::*;
 use crate::fanout::{
-    ClusterMapRefresh, inflight_requests, is_clustered, peer_request_count, peer_requests,
-    refresh_cluster_map,
+    ClusterMapRefresh, hold_request_lane, inflight_requests, is_clustered, peer_request_count,
+    peer_requests, refresh_cluster_map,
 };
+use crate::promql::engine::query_workers::panic_next_evaluation;
 use crate::series::index::series_keys_by_selectors;
 use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -79,19 +80,19 @@ fn peer_requests_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResu
     reply_with_array(ctx, requests.len());
     for request in &requests {
         reply_with_map(ctx, 7);
-        reply_with_str(ctx, "sender");
+        reply_with_simple_string(ctx, "sender");
         reply_with_bulk_string(ctx, request.sender.as_str());
-        reply_with_str(ctx, "id");
+        reply_with_simple_string(ctx, "id");
         reply_with_bulk_string(ctx, &request.id.to_string());
-        reply_with_str(ctx, "command");
-        reply_with_str(ctx, request.command);
-        reply_with_str(ctx, "ageMs");
+        reply_with_simple_string(ctx, "command");
+        reply_with_simple_string(ctx, request.command);
+        reply_with_simple_string(ctx, "ageMs");
         reply_with_integer(ctx, request.age.as_millis().min(i64::MAX as u128) as i64);
-        reply_with_str(ctx, "state");
-        reply_with_str(ctx, if request.running { "running" } else { "queued" });
-        reply_with_str(ctx, "cancellable");
+        reply_with_simple_string(ctx, "state");
+        reply_with_simple_string(ctx, if request.running { "running" } else { "queued" });
+        reply_with_simple_string(ctx, "cancellable");
         reply_with_bool(ctx, request.cancellable);
-        reply_with_str(ctx, "cancelled");
+        reply_with_simple_string(ctx, "cancelled");
         reply_with_bool(ctx, request.cancelled);
     }
     Ok(())

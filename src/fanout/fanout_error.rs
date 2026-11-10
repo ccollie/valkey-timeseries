@@ -433,6 +433,13 @@ fn convert_from_string(err: &str) -> FanoutError {
             kind: ErrorKind::Permissions,
             message: err.to_string(),
         },
+        QUERY_LIMIT_ERROR => ErrorKind::QueryLimit.into(),
+        _ if QUERY_LIMIT_ERROR_PREFIXES
+            .iter()
+            .any(|prefix| err.starts_with(prefix)) =>
+        {
+            FanoutError::query_limit(err)
+        }
         _ => FanoutError::custom(err.to_string()),
     }
 }
@@ -639,7 +646,7 @@ mod tests {
     /// not `Permissions`.
     #[test]
     fn test_unknown_kind_keeps_message() {
-        for kind in [14, 151, 254, 256, (1 << 32) + 4, u64::MAX] {
+        for kind in [15, 151, 254, 256, (1 << 32) + 4, u64::MAX] {
             let error = FanoutError::deserialize(&encode_raw_error(kind, b"text")).unwrap();
             assert_eq!(error.kind, ErrorKind::InvalidMessage, "kind {kind}");
             assert_eq!(error.message, "text");

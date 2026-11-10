@@ -30,9 +30,7 @@
 
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
-use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
-};
+use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
@@ -60,7 +58,6 @@ use crate::promql::{EvalLabels, QueryError, QueryResult};
 use crate::series::chunks::ChunkOps;
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
-use std::time::Duration;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 mod columns;
@@ -78,7 +75,6 @@ pub(in crate::promql) struct GridFanoutCommand {
     window_ends: Vec<i64>,
     max_series: u64,
     max_points_per_series: u64,
-    timeout: Duration,
     /// What the shards staged, in the request's shape: per-series entries, a
     /// reduction's per-`(group, step)` partials, or a selection's per-step
     /// candidates. Series are shard-local, so entries accumulate by
@@ -112,7 +108,6 @@ impl GridFanoutCommand {
         max_series: u64,
         max_points_per_series: u64,
         max_samples: usize,
-        timeout: Duration,
         deadline: Deadline,
     ) -> Self {
         let window_ends = request.window_ends();
@@ -123,7 +118,6 @@ impl GridFanoutCommand {
             window_ends,
             max_series,
             max_points_per_series,
-            timeout,
             sink,
             raw: Vec::new(),
             budget: SampleBudget::new(max_samples),
@@ -222,10 +216,6 @@ impl FanoutCommand for GridFanoutCommand {
         grid.finish()
     }
 
-    fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
     fn generate_request(&self) -> GridQuery {
         GridQuery {
             selector: Some(ProtoSeriesSelector::from(&self.matchers)),
@@ -252,12 +242,7 @@ impl FanoutCommand for GridFanoutCommand {
                 }
             }),
             sample_timestamps: self.request.sample_timestamps,
-            time_budget_ms: super::time_budget_to_wire(self.timeout),
         }
-    }
-
-    fn time_budget(req: &GridQuery) -> Option<Duration> {
-        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, mut resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
@@ -371,12 +356,11 @@ impl FanoutCommand for GridFanoutCommand {
         Ok(())
     }
 
-    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
         // A peer that does not know this operation (rolling upgrade) rejects
         // the envelope rather than answering it. Latched, as the aggregation
         // push-down does, so the caller can fall back to local evaluation.
         self.unsupported_peer |= error.is_unsupported_operation();
-        log_fanout_failure(Self::name(), target, &error);
     }
 }
 

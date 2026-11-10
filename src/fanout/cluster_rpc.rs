@@ -121,7 +121,11 @@ impl InFlightRequest {
     /// delivered too — the former as a `Custom` error — and so counted as a shard's reply in both
     /// this request's and the fan-out's bookkeeping, completing the fan-out while real shards
     /// were still outstanding.
-    fn handle_response(&self, resp: FanoutResult<&[u8]>, sender_id: *const c_char) -> bool {
+    fn handle_response(
+        &self,
+        resp: FanoutResult<&[u8]>,
+        sender_id: *const c_char,
+    ) -> Option<FanoutProgress> {
         let sender = node_id_of(sender_id);
         let Some(target_node) = self
             .get_target_node_opt(sender_id)
@@ -148,7 +152,7 @@ impl InFlightRequest {
         let handled = panic::catch_unwind(AssertUnwindSafe(|| {
             (self.response_handler)(resp, target_node)
         }));
-        let still_waiting = handled.unwrap_or_else(|_| {
+        let progress = handled.unwrap_or_else(|_| {
             log_error(format!(
                 "cluster rpc: processing the answer to {} request {} from {sender} panicked",
                 self.command, self.id
@@ -156,10 +160,10 @@ impl InFlightRequest {
             let err = FanoutError::custom("failed to process the node's answer");
             (self.response_handler)(Err(err), target_node)
         });
-        if !still_waiting {
+        if progress == FanoutProgress::Done {
             self.fanout_done.store(true, Ordering::Relaxed);
         }
-        true
+        Some(progress)
     }
 
     /// Deliver the fanout deadline to the response handler.
@@ -351,11 +355,10 @@ fn dispatch_send_failure(ctx: &Context, request_id: u64, target_node_id: *const 
     });
 }
 
-fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
-    let last = matches!(request.rpc_done(), Ok(1));
-    if last {
-        // Every shard answered before the deadline: the timer is still pending
-        // and this is one of the two places it is stopped.
+fn finish_inflight_request(ctx: &Context, request: &InFlightRequest, progress: FanoutProgress) {
+    if request.settle(progress) {
+        // Every shard answered and the fan-out completed before the deadline: the
+        // timer is still pending and this is one of the two places it is stopped.
         request.cancel_timer(ctx);
         INFLIGHT_REQUESTS.pin().remove(&request.id);
         return;
@@ -445,8 +448,8 @@ pub(super) fn send_cluster_request(
     response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,
 ) -> ValkeyResult<u64> {
-    validate_cluster_exec(ctx)?;
-
+    // Note: cluster-mode / MULTI / Lua validation is performed earlier at the
+    // fanout entry point (`exec_command`), before any machinery is set up.
     let id = generate_id();
     let db = get_current_db(ctx);
     let user = caller_user_name(ctx);
@@ -654,9 +657,6 @@ fn request_deadline(
 ///
 /// `received` is when the request arrived, before it waited in the lane's queue: its
 /// time budget counts from then.
-///
-/// `received` is when the request arrived, before it waited in the lane's queue: a
-/// request's time budget counts from then (see `FanoutCommand::time_budget`).
 fn process_request_message(
     header: FanoutMessageHeader,
     operation: RegisteredOperation,
@@ -664,7 +664,6 @@ fn process_request_message(
     sender_id: NodeId,
     received: Instant,
     registration: Option<PeerRequest>,
-    received: Instant,
 ) {
     let request_id = header.request_id;
 
@@ -886,7 +885,6 @@ fn request_received(
 
     // A blocking thread: the handler takes the GIL (R1 in `common::threads`).
     let registration = PeerRequest::register(sender, request_id, &operation, received);
-    let received = Instant::now();
     let queued = PEER_REQUEST_EXECUTOR.try_spawn(move || {
         process_request_message(
             header,
@@ -1020,12 +1018,12 @@ extern "C" fn on_cancel_received(
     });
 }
 
-/// Runs `f` against an in-flight request. `f` reports whether it delivered an answer that
-/// counts (see [`InFlightRequest::handle_response`]); only then is the request's outstanding
-/// count decremented.
+/// Runs `f` against an in-flight request. `f` reports where the fan-out stands if it delivered
+/// an answer that counts (see [`InFlightRequest::handle_response`]); only then is the request's
+/// outstanding count decremented.
 fn with_inflight_request<F>(ctx: &Context, request_id: u64, f: F)
 where
-    F: FnOnce(&InFlightRequest) -> bool,
+    F: FnOnce(&InFlightRequest) -> Option<FanoutProgress>,
 {
     let map = INFLIGHT_REQUESTS.pin();
     let Some(request) = map.get(&request_id) else {
@@ -1037,8 +1035,8 @@ where
         return;
     };
 
-    if f(request) {
-        finish_inflight_request(ctx, request);
+    if let Some(progress) = f(request) {
+        finish_inflight_request(ctx, request, progress);
     }
 }
 
@@ -1302,7 +1300,7 @@ mod tests {
                 Ok(_) => panic!("command code panicked"),
                 Err(e) => {
                     lock(&seen).push(e.to_string());
-                    true
+                    FanoutProgress::Pending
                 }
             }),
             outstanding: AtomicU64::new(1),
@@ -1313,10 +1311,10 @@ mod tests {
         };
 
         // Counted as the node's answer, delivered as an error.
-        assert!(request.handle_response(Ok(&[]), sender.raw_ptr()));
+        assert!(request.handle_response(Ok(&[]), sender.raw_ptr()).is_some());
         assert_eq!(lock(&errors).len(), 1);
         // A second answer from the same node is still a duplicate.
-        assert!(!request.handle_response(Ok(&[]), sender.raw_ptr()));
+        assert!(request.handle_response(Ok(&[]), sender.raw_ptr()).is_none());
     }
 
     #[test]
@@ -1515,7 +1513,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod settle_tests {
     use super::*;
     use crate::fanout::fanout_error::ErrorKind;
     use std::sync::Mutex;
@@ -1537,6 +1535,7 @@ mod tests {
             outstanding: AtomicU64::new(1),
             timer_id: 0,
             timed_out: AtomicBool::new(false),
+            fanout_done: AtomicBool::new(false),
             responded: Mutex::new(HashSet::default()),
         }
     }

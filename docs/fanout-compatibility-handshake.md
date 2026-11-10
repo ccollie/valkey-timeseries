@@ -282,26 +282,26 @@ bit instead and let it fail fast.
 
 ## 8. Request time budgets
 
-Every PromQL request (`InstantQuery`, and the `AggregationQuery` that embeds it,
-`RangeQuery`, `GridQuery`, `LabelProfileQuery`) carries `time_budget_ms`: how
-long the coordinator waits for the answer, counted from when it sent the
-request. A shard counts it from when the request *arrived*, drops a request that
-waited out its budget in the fan-out lane's queue, and stops a read past it
-between batches (`FanoutCommand::time_budget`, `FanoutContext::set_deadline`).
+Every fan-out request carries `time_budget_ms` in its envelope header: how long
+the coordinator waits for the answer, counted from when it sent the request. A
+PromQL fan-out sends what is left of the query's own timeout. A shard counts the
+budget from when the request *arrived*, drops a request that waited it out in
+the fan-out lane's queue, and stops a read past it between batches
+(`FanoutCommand::cancellable`, `FanoutContext::set_deadline`); a PromQL kernel
+reads the same deadline through `FanoutContext::deadline`.
 
-It lives in the payload rather than the envelope for the reason §1 gives: a
-receiver that ignores it still answers correctly, only later than anyone wants.
-So it needs no feature bit, and it degrades both ways across a rolling upgrade:
+The PromQL requests used to carry their own copy of the budget in the payload.
+Those fields are reserved now: the envelope's applies to every operation.
 
-- An old shard drops the unknown field and runs the request to completion, as
-  every shard did before.
-- A new shard from an old coordinator decodes the absent field as `0`, which
-  means "no limit".
-
-The budget is relative rather than a time of day, so nodes need not agree on the
-clock. The shard's deadline lands later than the coordinator's by the request's
-time in transit, never earlier, so a shard never abandons work its coordinator
-still wants.
+It needs no feature bit: a receiver that ignores it still answers correctly,
+only later than anyone wants, and an absent field decodes as `0`, which means
+"no limit". The budget is relative rather than a time of day, so nodes need not
+agree on the clock. The shard's deadline lands later than the coordinator's by
+the request's time in transit, never earlier, so a shard never abandons work its
+coordinator still wants. [The envelope's own
+document](topics/fanout-compatibility-handshake.md#time-budget) covers the
+cancel message that closes that gap, and what a shard does with a request that
+runs out of time.
 
 ---
 

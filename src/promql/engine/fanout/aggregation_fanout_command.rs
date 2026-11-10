@@ -20,9 +20,7 @@
 
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
-use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
-};
+use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_instant_eval_samples, shard_read};
@@ -41,7 +39,6 @@ use crate::promql::generated::{
 use crate::promql::{EvalResult, EvalSample, QueryError};
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
-use std::time::Duration;
 use valkey_module::ValkeyResult;
 
 /// The instant-vector half of the request: what to select, and when.
@@ -88,7 +85,6 @@ impl AggregationSink {
 pub(in crate::promql) struct AggregationFanoutCommand {
     vector: InstantVectorParams,
     aggregation: AggregationRequest,
-    timeout: Duration,
     /// Where the shards' output goes, by the operator's strategy.
     sink: AggregationSink,
     /// Raw instant-vector samples from a shard that did not apply the operator
@@ -114,14 +110,12 @@ impl AggregationFanoutCommand {
     pub fn new(
         vector: InstantVectorParams,
         aggregation: AggregationRequest,
-        timeout: Duration,
         deadline: Deadline,
     ) -> Self {
         Self {
             vector,
             sink: AggregationSink::for_kind(aggregation.kind),
             aggregation,
-            timeout,
             raw: Vec::new(),
             unsupported_peer: false,
             deadline,
@@ -285,21 +279,12 @@ impl FanoutCommand for AggregationFanoutCommand {
         }
     }
 
-    fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
-    fn time_budget(req: &AggregationQuery) -> Option<Duration> {
-        super::time_budget_from_wire(req.query.as_ref()?.time_budget_ms)
-    }
-
     fn generate_request(&self) -> AggregationQuery {
         let query = InstantQuery {
             selector: Some(ProtoSeriesSelector::from(&self.vector.matchers)),
             timestamp: self.vector.timestamp,
             lookback_delta: self.vector.lookback_delta,
             max_series: self.vector.max_series,
-            time_budget_ms: super::time_budget_to_wire(self.timeout),
         };
 
         let (scalar_param, label_param) =
@@ -367,12 +352,11 @@ impl FanoutCommand for AggregationFanoutCommand {
         Ok(())
     }
 
-    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
         // A peer that does not know this operation at all (rolling upgrade)
         // rejects the envelope rather than answering it. Latch that so the
         // caller can fall back to selecting the raw instant vector.
         self.unsupported_peer |= error.is_unsupported_operation();
-        log_fanout_failure(Self::name(), target, &error);
     }
 }
 
@@ -475,7 +459,7 @@ mod tests {
             lookback_delta: 300_000,
             max_series: 0,
         };
-        AggregationFanoutCommand::new(vector, aggregation, Duration::from_secs(1), deadline)
+        AggregationFanoutCommand::new(vector, aggregation, deadline)
     }
 
     /// One shard's response, produced the way `get_local_response` produces it.
@@ -699,12 +683,7 @@ mod tests {
             param: Some(AggregationParam::Scalar(5.0)),
             eval_timestamp: EVAL_TS,
         };
-        let cmd = AggregationFanoutCommand::new(
-            vector,
-            aggregation,
-            Duration::from_secs(1),
-            Deadline::default(),
-        );
+        let cmd = AggregationFanoutCommand::new(vector, aggregation, Deadline::default());
 
         let request = cmd.generate_request();
         let mut buf = Vec::new();

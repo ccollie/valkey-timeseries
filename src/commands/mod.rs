@@ -36,8 +36,6 @@ macro_rules! acl_categories {
 mod analysis_runner;
 pub mod command_parser;
 mod debug;
-pub(crate) mod fanout_codec;
-mod fanout_codec;
 // `pub(crate)` rather than private: `crate::promql` shares this wire contract
 // and re-exports `generated` from here.
 pub(crate) mod fanout_codec;

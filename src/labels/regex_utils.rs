@@ -6,7 +6,7 @@ use crate::labels::filters::{
     PredicateMatch, PredicateValue, RegexMatcher, validate_contains_value,
     validate_starts_with_value,
 };
-use crate::labels::regex::{build_with_repeat_fallback, try_escape_for_repeat_re};
+use crate::labels::regex::{build_cached, try_escape_for_repeat_re};
 use crate::parser::{ParseError, ParseResult};
 use regex::Error as RegexError;
 use regex::Regex;

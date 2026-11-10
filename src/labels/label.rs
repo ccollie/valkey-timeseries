@@ -1,5 +1,5 @@
-use crate::error_consts;
 use crate::common::constants::METRIC_NAME_LABEL;
+use crate::error_consts;
 use crate::labels::{HasFingerprint, InternedLabel, SeriesFingerprint};
 use std::cmp::Ordering;
 use std::fmt::Display;
@@ -115,6 +115,35 @@ pub(crate) fn hash_label<H: Hasher>(state: &mut H, name: &str, value: &str) {
     state.write_u8(super::hash::LABEL_SEP);
 }
 
+/// Fingerprint a sequence of labels, in the order given.
+///
+/// The same scheme [`HasFingerprint`] for `[Label]` uses — it is defined in
+/// terms of this — so fingerprinting a *filtered view* of a label set equals
+/// fingerprinting the label set you would get by materializing that filter.
+/// That equivalence is what lets a caller key by a projection (an aggregation's
+/// `by`/`without` grouping, say) without allocating the projected set, and it
+/// only holds while both go through here.
+/// Fingerprint an ordered sequence of labels by their `(name, value)` bytes.
+///
+/// Generic over [`SeriesLabel`] so owned `Label`s and borrowed views such as
+/// `InternedLabel` hash identically — `EvalLabels` relies on that to keep its
+/// variants interchangeable as map keys.
+pub(crate) fn fingerprint_labels<L: SeriesLabel>(
+    labels: impl IntoIterator<Item = L>,
+) -> SeriesFingerprint {
+    let mut hasher = super::hash::create_hasher();
+    for label in labels {
+        super::hash::hash_key_value(&mut hasher, label.name(), label.value());
+    }
+    hasher.finish_128()
+}
+
+impl HasFingerprint for [Label] {
+    fn fingerprint(&self) -> SeriesFingerprint {
+        fingerprint_labels(self)
+    }
+}
+
 /// Rejects a label name containing `=` (DIV-0063). No filter can select such a label (`a=b=2`
 /// is a parse error here and matches nothing on RTS), and the label index keys `name=value`
 /// split at the first `=`, so it would file `a=b 2` under the name `a`. Values may contain `=`.
@@ -153,34 +182,5 @@ mod tests {
                 "{name:?} was rejected"
             );
         }
-    }
-}
-
-/// Fingerprint a sequence of labels, in the order given.
-///
-/// The same scheme [`HasFingerprint`] for `[Label]` uses — it is defined in
-/// terms of this — so fingerprinting a *filtered view* of a label set equals
-/// fingerprinting the label set you would get by materializing that filter.
-/// That equivalence is what lets a caller key by a projection (an aggregation's
-/// `by`/`without` grouping, say) without allocating the projected set, and it
-/// only holds while both go through here.
-/// Fingerprint an ordered sequence of labels by their `(name, value)` bytes.
-///
-/// Generic over [`SeriesLabel`] so owned `Label`s and borrowed views such as
-/// `InternedLabel` hash identically — `EvalLabels` relies on that to keep its
-/// variants interchangeable as map keys.
-pub(crate) fn fingerprint_labels<L: SeriesLabel>(
-    labels: impl IntoIterator<Item = L>,
-) -> SeriesFingerprint {
-    let mut hasher = super::hash::create_hasher();
-    for label in labels {
-        super::hash::hash_key_value(&mut hasher, label.name(), label.value());
-    }
-    hasher.finish_128()
-}
-
-impl HasFingerprint for [Label] {
-    fn fingerprint(&self) -> SeriesFingerprint {
-        fingerprint_labels(self)
     }
 }

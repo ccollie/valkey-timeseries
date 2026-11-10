@@ -30,8 +30,6 @@ pub struct FanoutContext {
     user: Option<String>,
     db: i32,
     ctx: &'static DetachedContext,
-    /// When the request reached this node: what its time budget counts from.
-    received: Instant,
     /// When the requester stops waiting, if it said ([`Self::set_deadline`]).
     deadline: OnceLock<Instant>,
     /// Set by the requester's cancel message, if this request can get one.
@@ -52,7 +50,6 @@ impl FanoutContext {
             user,
             db,
             ctx: &MODULE_CONTEXT,
-            received: Instant::now(),
             deadline: OnceLock::new(),
             cancelled: OnceLock::new(),
             local_share: false,
@@ -94,6 +91,12 @@ impl FanoutContext {
     /// one, [`Self::expired`] is always false.
     pub fn set_deadline(&self, deadline: Instant) {
         let _ = self.deadline.set(deadline);
+    }
+
+    /// When the requester stops waiting, if it said: for work that checks it in its own
+    /// terms, as a PromQL kernel's deadline does.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline.get().copied()
     }
 
     /// The flag the requester's cancel message sets. Only the first call counts.

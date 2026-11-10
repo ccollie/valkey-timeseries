@@ -1,11 +1,11 @@
-use super::cluster_rpc::{abandon_inflight_request, invoke_rpc};
+use super::cluster_rpc::{abandon_inflight_request, invoke_rpc, validate_cluster_exec};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::acl::caller_user_name;
 use crate::common::context::get_current_db;
 use crate::common::logging::{log_debug, log_warning};
 use crate::common::metrics::fanout as metrics;
 use crate::common::sync::lock;
-use crate::common::threads::{LockGil, Rejected};
+use crate::common::threads::{BoundedExecutor, LockGil, Rejected};
 use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::workers::PEER_REQUEST_EXECUTOR;
@@ -19,26 +19,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
 
-/// Delivers one remote share's answer. Returns whether the fanout still wants
-/// answers: `false` once it has completed, so the RPC layer can stop waiting on
-/// (and cancel) the shares still running.
+/// Where a fan-out stands once a shard's answer has been handed to it — what the RPC layer
+/// checks before it stops the deadline timer, or stops waiting on the other shares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FanoutProgress {
+    /// The fan-out has completed: nothing it runs still needs the deadline, and the RPC
+    /// layer can stop waiting on (and cancel) the shares still running.
+    Done,
+    /// The fan-out has not completed. After the last remote answer, that means work for it
+    /// still waits on the worker lane — a deferred decode, or the local share — and only the
+    /// deadline timer can end it if the lane is slow to get there.
+    Pending,
+}
+
+/// Delivers one remote share's answer, and says where that leaves the fan-out.
 pub(super) type FanoutResponseCallback =
-    Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) -> bool + Send + Sync>;
+    Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) -> FanoutProgress + Send + Sync>;
 
 pub type FanoutCommandResult<T = ()> = Result<T, FanoutError>;
-
-/// Log a per-target fanout failure — the warning [`FanoutCommand::on_error`]
-/// emits by default.
-///
-/// Exposed because Rust has no way to call a trait method's default body from an
-/// override: an implementation that overrides `on_error` only to latch some
-/// state still has to report the failure, and should report it identically.
-pub fn log_fanout_failure(operation: &str, target: &NodeInfo, error: &FanoutError) {
-    crate::common::logging::log_warning(format!(
-        "Fanout operation {operation}, failed for target {}: {error}",
-        target.socket_address,
-    ))
-}
 
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
@@ -105,6 +103,15 @@ pub trait FanoutCommand: Sized + Send + 'static {
     /// overall fanout to reply with an error at completion). Implementations should
     /// return `Ok(())` on success.
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult;
+
+    /// Called once per share that failed, before the fanout acts on the failure.
+    ///
+    /// For a command that needs to know *how* a share failed, not only that the fanout
+    /// did: the generic error reply keeps the first failure's text but not its kind. The
+    /// PromQL push-downs latch a peer that does not know the operation here, and fall back
+    /// to the unoptimized path. Logging and bookkeeping are the fanout's own; the default
+    /// does nothing.
+    fn on_error(&mut self, _error: FanoutError, _target: &NodeInfo) {}
 }
 
 /// The reply for a fanout that failed on some share with an error that does not
@@ -195,22 +202,8 @@ where
     }
 
     let state = Arc::new(FanoutState::new(op, outstanding, f, started));
-
-    let rpc_state = state.clone();
-    let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
-        match res {
-            Ok(buf) => match OP::Response::deserialize(buf) {
-                Ok(resp) => rpc_state.on_response(resp, target),
-                Err(e) => {
-                    let err =
-                        FanoutError::serialization(format!("Failed to deserialize response: {e}"));
-                    rpc_state.on_error(err, target);
-                }
-            },
-            Err(err) => rpc_state.on_error(err, target),
-        }
-        !rpc_state.is_completed()
-    };
+    let response_handler =
+        rpc_response_handler(Arc::clone(&state), &PEER_REQUEST_EXECUTOR, deadline);
 
     let rpc = invoke_rpc(
         ctx,
@@ -488,6 +481,7 @@ where
         } else {
             log_warning(msg);
         }
+        self.op().on_error(error.clone(), target);
         self.error_count += 1;
         if error.kind == ErrorKind::Timeout {
             self.timed_out = true;
@@ -514,7 +508,9 @@ where
         // likewise leaves the result incomplete, and the client should see that it
         // can retry rather than a generic aggregate error. A shard that cannot
         // select the request's database never runs its share at all, so its error
-        // is the answer too.
+        // is the answer too. A query limit a shard enforced on its share is
+        // surfaced the same way: its message names the limit and both numbers, and
+        // the other shards' answers cannot rescue a read that is already refused.
         if matches!(
             error.kind,
             ErrorKind::KeyPermissions
@@ -545,7 +541,7 @@ where
 
         // Treat an error from the operation as a per-shard error, with the same
         // bookkeeping (error_count, timed_out handling, logging).
-        match self.operation.on_response(resp, target) {
+        match self.op().on_response(resp, target) {
             Ok(()) => self.rpc_done(),
             Err(err) => self.on_error(err, target),
         }
@@ -1171,7 +1167,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod deferred_decode_tests {
     use super::*;
     use crate::common::threads::Capacity;
     use crate::promql::generated::LabelProfileQuery;

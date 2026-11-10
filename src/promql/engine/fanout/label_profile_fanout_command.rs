@@ -15,9 +15,7 @@
 //! than answering, and the merged profile is then unavailable: the
 //! coordinator leaves the selector as written, which is always safe.
 
-use crate::fanout::{
-    FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo, log_fanout_failure,
-};
+use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::local_label_profile;
 use crate::promql::engine::label_profile::{
@@ -29,14 +27,12 @@ use crate::promql::generated::{
     SeriesSelector as ProtoSeriesSelector,
 };
 use promql_parser::label::Matchers;
-use std::time::Duration;
 use valkey_module::ValkeyResult;
 
 pub struct LabelProfileFanoutCommand {
     matchers: Matchers,
     window: Option<ProfileWindow>,
     max_series: u64,
-    timeout: Duration,
     merged: LabelProfileBuilder,
     /// A shard declined (more series than `max_series`): the merged profile
     /// is unavailable whatever the others said.
@@ -44,17 +40,11 @@ pub struct LabelProfileFanoutCommand {
 }
 
 impl LabelProfileFanoutCommand {
-    pub fn new(
-        matchers: Matchers,
-        window: Option<ProfileWindow>,
-        max_series: u64,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(matchers: Matchers, window: Option<ProfileWindow>, max_series: u64) -> Self {
         Self {
             matchers,
             window,
             max_series,
-            timeout,
             merged: LabelProfileBuilder::new(),
             unavailable: false,
         }
@@ -151,22 +141,13 @@ impl FanoutCommand for LabelProfileFanoutCommand {
         )
     }
 
-    fn get_timeout(&self) -> Duration {
-        self.timeout
-    }
-
     fn generate_request(&self) -> LabelProfileQuery {
         LabelProfileQuery {
             selector: Some(ProtoSeriesSelector::from(&self.matchers)),
             max_series: self.max_series,
-            time_budget_ms: super::time_budget_to_wire(self.timeout),
             start_ms: self.window.map(|w| w.start_ms),
             end_ms: self.window.map(|w| w.end_ms),
         }
-    }
-
-    fn time_budget(req: &LabelProfileQuery) -> Option<Duration> {
-        super::time_budget_from_wire(req.time_budget_ms)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
@@ -179,10 +160,6 @@ impl FanoutCommand for LabelProfileFanoutCommand {
             self.merged.merge(LabelProfile::from(resp));
         }
         Ok(())
-    }
-
-    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
-        log_fanout_failure(Self::name(), target, &error);
     }
 }
 
@@ -204,7 +181,7 @@ mod tests {
     }
 
     fn command(max_series: u64) -> LabelProfileFanoutCommand {
-        LabelProfileFanoutCommand::new(Matchers::empty(), None, max_series, Duration::from_secs(1))
+        LabelProfileFanoutCommand::new(Matchers::empty(), None, max_series)
     }
 
     #[test]
@@ -313,7 +290,7 @@ mod tests {
             "us",
         )]);
         let window = ProfileWindow::new(-5, 1_000);
-        let cmd = LabelProfileFanoutCommand::new(matchers, Some(window), 7, Duration::from_secs(1));
+        let cmd = LabelProfileFanoutCommand::new(matchers, Some(window), 7);
         let req = cmd.generate_request();
         assert_eq!(req.max_series, 7);
         assert_eq!(window_from_wire(&req), Some(window));

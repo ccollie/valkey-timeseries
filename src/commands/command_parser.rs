@@ -2124,6 +2124,17 @@ mod tests {
     use super::*;
     use strum::IntoEnumIterator;
 
+    #[test]
+    fn reducers_exclude_order_and_time_dependent_aggregators() {
+        use AggregationType::*;
+        for rejected in [First, Last, Rate, IRate, Increase] {
+            assert!(!is_valid_reducer(&rejected), "{rejected:?}");
+        }
+        for accepted in [Sum, Avg, Min, Max, Count, Range, StdP, CountIf, Share, All] {
+            assert!(is_valid_reducer(&accepted), "{accepted:?}");
+        }
+    }
+
     fn statement(query: &str) -> PromqlStatement {
         PromqlStatement {
             query: query.to_string(),
@@ -2250,17 +2261,6 @@ mod tests {
         assert_eq!(stmt.lookback_delta, expected.lookback_delta);
         assert_eq!(stmt.expr.to_string(), "rate(up[5m])");
         assert_eq!(expected.start(), expected.start);
-    }
-
-    #[test]
-    fn reducers_exclude_order_and_time_dependent_aggregators() {
-        use AggregationType::*;
-        for rejected in [First, Last, Rate, IRate, Increase] {
-            assert!(!is_valid_reducer(&rejected), "{rejected:?}");
-        }
-        for accepted in [Sum, Avg, Min, Max, Count, Range, StdP, CountIf, Share, All] {
-            assert!(is_valid_reducer(&accepted), "{accepted:?}");
-        }
     }
 
     #[test]
