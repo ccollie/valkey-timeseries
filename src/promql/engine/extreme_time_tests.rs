@@ -47,7 +47,6 @@ fn at(ms: i64) -> SystemTime {
 
 fn options() -> QueryOptions {
     QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     }

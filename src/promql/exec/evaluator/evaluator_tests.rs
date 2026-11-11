@@ -1003,13 +1003,7 @@ mod tests {
         #[case] expected_samples: Vec<(f64, Vec<(&str, &str)>)>,
     ) {
         let (reader, end_time) = setup_mock_reader(test_data);
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let lookback_delta = Duration::from_secs(300); // 5 minutes
 
         let result = parse_and_evaluate(&evaluator, query, end_time, lookback_delta)
@@ -1184,13 +1178,7 @@ mod tests {
         };
         builder.add_sample(&labels, sample);
         let reader = builder.build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate the same query multiple times
         let end_time = UNIX_EPOCH + Duration::from_millis(300002);
@@ -1241,13 +1229,7 @@ mod tests {
             r#"sum(cpu_usage + {env="prod"})"#,
         ] {
             let (reader, end_time) = setup_mock_reader(data.clone());
-            let evaluator = Evaluator::new(
-                &reader,
-                QueryOptions {
-                    timeout: None,
-                    ..QueryOptions::default()
-                },
-            );
+            let evaluator = Evaluator::new(&reader, QueryOptions::default());
             let err = parse_and_evaluate(&evaluator, query, end_time, lookback_delta)
                 .expect_err("ambiguous one-to-one match must error");
             assert!(
@@ -1262,13 +1244,7 @@ mod tests {
     fn should_evaluate_number_literal() {
         // given: create an empty mock reader
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a number literal (should return scalar, which is unsupported)
         let end_time = UNIX_EPOCH + Duration::from_millis(1_000);
@@ -1295,13 +1271,7 @@ mod tests {
     fn should_evaluate_time_function_as_scalar() {
         // given
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_millis(1);
 
         // when
@@ -1327,13 +1297,7 @@ mod tests {
     fn should_evaluate_pi_function_as_scalar() {
         // given
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(2_000);
 
         // when
@@ -1359,13 +1323,7 @@ mod tests {
     fn should_evaluate_scalar_function_as_scalar() {
         // given
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(2_000);
 
         // when
@@ -1391,13 +1349,7 @@ mod tests {
     fn should_allow_scalar_function_results_as_vector_arguments() {
         // given
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(5);
 
         // when
@@ -1422,13 +1374,7 @@ mod tests {
     fn should_handle_string_literal() {
         // given: create an empty mock reader
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a string literal
         let end_time = UNIX_EPOCH + Duration::from_millis(2_000);
@@ -1455,13 +1401,7 @@ mod tests {
     fn should_evaluate_label_replace_with_raw_string_arguments() {
         // given: create an empty mock reader
         let reader = MockQueryReaderBuilder::new().build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a function call with a string literal argument
         let end_time = UNIX_EPOCH + Duration::from_millis(2_000);
@@ -1591,13 +1531,7 @@ mod tests {
         }
 
         let reader = builder.build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate vector selector
         let selector = VectorSelector {
@@ -1753,13 +1687,7 @@ mod tests {
             builder.add_sample(&labels, Sample { timestamp, value });
         }
         let reader = builder.build();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate matrix selector
         let metric_name = match expected.first() {
@@ -1879,13 +1807,7 @@ mod tests {
     #[test]
     fn test_evaluate_call_scalar_argument() {
         let (reader, end_time) = setup_mock_reader(vec![]);
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         let call = Call {
             func: Function::new(
@@ -1928,13 +1850,7 @@ mod tests {
     #[test]
     fn test_evaluate_call_scalar_expression_argument() {
         let (reader, end_time) = setup_mock_reader(vec![]);
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let call = Call {
             func: Function::new(
                 "vector",
@@ -4223,13 +4139,7 @@ mod tests {
 
     fn evaluate_with_pushdown(query: &str) -> (Vec<EvalSample>, Vec<OfferedAggregation>) {
         let (reader, end_time) = pushdown_reader();
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let result = parse_and_evaluate(&evaluator, query, end_time, Duration::from_secs(300))
             .expect("query should evaluate");
         (result, reader.offered())
@@ -4331,7 +4241,6 @@ mod tests {
     /// `mad_over_time`), which are off by default as in Prometheus.
     fn rollup_test_options() -> QueryOptions {
         QueryOptions {
-            timeout: None,
             enable_experimental_functions: true,
             ..QueryOptions::default()
         }
@@ -4418,7 +4327,6 @@ mod tests {
     fn extension_functions_are_experimental() {
         let reader = rollup_reader();
         let options = QueryOptions {
-            timeout: None,
             enable_experimental_functions: false,
             ..QueryOptions::default()
         };
@@ -4449,7 +4357,6 @@ mod tests {
     fn only_histogram_quantiles_is_gated_as_experimental() {
         let reader = rollup_reader();
         let options = QueryOptions {
-            timeout: None,
             enable_experimental_functions: false,
             ..QueryOptions::default()
         };
@@ -4883,13 +4790,7 @@ mod tests {
     #[test]
     fn should_accept_a_scalar_parameter_on_either_side_of_the_matrix() {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Evaluated);
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let ctx = crate::promql::EvalContext::for_vector_selector(120_000, 300_000);
 
         for (query, want_param) in [
@@ -5059,13 +4960,7 @@ mod tests {
     #[test]
     fn should_not_push_down_rollups_in_range_queries() {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Evaluated);
-        let evaluator = Evaluator::new(
-            &reader,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         let expr = parse_registered("sum_over_time(metric[1m])").unwrap();
         let ctx = crate::promql::EvalContext {
@@ -6848,13 +6743,7 @@ mod tests {
         for query in ["metric", "sum(metric)"] {
             for answer in [GridAnswer::Evaluated, GridAnswer::Raw, GridAnswer::Local] {
                 let reader = GridPushdownReader::new(gappy_rollup_reader(), answer);
-                let mut evaluator = Evaluator::new(
-                    &reader,
-                    QueryOptions {
-                        timeout: None,
-                        ..QueryOptions::default()
-                    },
-                );
+                let mut evaluator = Evaluator::new(&reader, QueryOptions::default());
                 let expr = parse_registered(query).unwrap();
                 let base = crate::promql::EvalContext {
                     query_start: 60_000,
