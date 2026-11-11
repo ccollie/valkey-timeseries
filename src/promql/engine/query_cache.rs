@@ -338,25 +338,35 @@ fn evict_least_recent(inner: &mut Inner, max_entries: usize, max_bytes: usize) -
     if inner.entries.len() <= max_entries && inner.bytes <= max_bytes {
         return Vec::new();
     }
-    let mut by_age: Vec<(u64, &Box<str>)> = inner
+    // Recency stamps are unique (the clock advances on every use), so the
+    // newest entry to evict is one stamp: find it from the stamps and charges
+    // alone, then drop everything up to it, without copying a query text.
+    let mut by_age: Vec<(u64, usize)> = inner
         .entries
-        .iter()
-        .map(|(query, entry)| (entry.last_used, query))
+        .values()
+        .map(|entry| (entry.last_used, entry.charge))
         .collect();
-    by_age.sort_unstable_by_key(|(last_used, _)| *last_used);
-    let oldest: Vec<Box<str>> = by_age.into_iter().map(|(_, query)| query.clone()).collect();
-
-    let mut evicted = Vec::new();
-    for query in oldest {
-        if inner.entries.len() <= max_entries && inner.bytes <= max_bytes {
+    by_age.sort_unstable_by_key(|&(last_used, _)| last_used);
+    let (mut entries, mut bytes) = (inner.entries.len(), inner.bytes);
+    let mut cutoff = None;
+    for (last_used, charge) in by_age {
+        if entries <= max_entries && bytes <= max_bytes {
             break;
         }
-        if let Some(entry) = inner.entries.remove(&query) {
-            inner.bytes -= entry.charge;
-            evicted.push(entry.expr);
-        }
+        entries -= 1;
+        bytes -= charge;
+        cutoff = Some(last_used);
     }
-    evicted
+    let Some(cutoff) = cutoff else {
+        return Vec::new();
+    };
+
+    inner.bytes = bytes;
+    inner
+        .entries
+        .extract_if(|_, entry| entry.last_used <= cutoff)
+        .map(|(_, entry)| entry.expr)
+        .collect()
 }
 
 /// What one regex program is charged beyond its own [`meta::Regex::memory_usage`] and its
@@ -394,8 +404,8 @@ impl Charge {
         self.add(capacity.checked_mul(size_of::<T>())?)
     }
 
-    fn string(&mut self, value: &str, capacity: usize) -> Option<()> {
-        debug_assert!(capacity >= value.len());
+    /// A string's heap buffer, of `capacity` bytes (not its length).
+    fn string(&mut self, capacity: usize) -> Option<()> {
         self.add(capacity)
     }
 
@@ -429,7 +439,7 @@ impl Charge {
             Expr::Paren(paren) => self.boxed(&paren.expr),
             Expr::Subquery(subquery) => self.boxed(&subquery.expr),
             Expr::NumberLiteral(_) => Some(()),
-            Expr::StringLiteral(literal) => self.string(&literal.val, literal.val.capacity()),
+            Expr::StringLiteral(literal) => self.string(literal.val.capacity()),
             Expr::VectorSelector(selector) => self.vector_selector(selector),
             Expr::MatrixSelector(matrix) => self.vector_selector(&matrix.vs),
             Expr::Call(call) => {
@@ -446,7 +456,7 @@ impl Charge {
 
     fn vector_selector(&mut self, selector: &VectorSelector) -> Option<()> {
         if let Some(name) = &selector.name {
-            self.string(name, name.capacity())?;
+            self.string(name.capacity())?;
         }
         self.matchers(&selector.matchers)
     }
@@ -463,8 +473,8 @@ impl Charge {
     fn matcher_list(&mut self, list: &Vec<Matcher>) -> Option<()> {
         self.vec::<Matcher>(list.capacity())?;
         list.iter().try_for_each(|matcher| {
-            self.string(&matcher.name, matcher.name.capacity())?;
-            self.string(&matcher.value, matcher.value.capacity())?;
+            self.string(matcher.name.capacity())?;
+            self.string(matcher.value.capacity())?;
             match &matcher.op {
                 MatchOp::Re(regex) | MatchOp::NotRe(regex) => {
                     self.add(regex_charge(regex.as_str())?)
@@ -495,7 +505,7 @@ impl Charge {
         self.vec::<String>(labels.capacity())?;
         labels
             .iter()
-            .try_for_each(|label| self.string(label, label.capacity()))
+            .try_for_each(|label| self.string(label.capacity()))
     }
 }
 
