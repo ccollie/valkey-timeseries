@@ -213,7 +213,7 @@ struct SelectorTask {
     /// The client identity captured before PromQL evaluation moved onto a
     /// background thread. It must accompany every selector read, including
     /// reads that start a cluster fanout.
-    caller_user: Option<String>,
+    caller_user: Option<Arc<str>>,
     /// The command's `HASHTAG` routing scope, empty when none was requested.
     /// A field on the task rather than on each kind: every selector in one
     /// expression shares the same scope regardless of which task kind carries
@@ -366,7 +366,7 @@ impl SelectorBatchExecutor {
         matchers: Matchers,
         timestamp: Timestamp,
         options: QueryOptions,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
         let command = SelectorTaskKind::Vector(InstantVectorSelectorCommand {
@@ -384,7 +384,7 @@ impl SelectorBatchExecutor {
         start: Timestamp,
         end: Timestamp,
         options: QueryOptions,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
         let command = SelectorTaskKind::Range(RangeSelectorCommand {
@@ -411,7 +411,7 @@ impl SelectorBatchExecutor {
         timestamp: Timestamp,
         aggregation: AggregationRequest,
         options: QueryOptions,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<AggregationOutcome> {
         let command = SelectorTaskKind::Aggregation(AggregationSelectorCommand {
@@ -436,7 +436,7 @@ impl SelectorBatchExecutor {
         matchers: Matchers,
         request: GridRequest,
         options: QueryOptions,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<GridOutcome> {
         let command = SelectorTaskKind::Grid(GridSelectorCommand {
@@ -458,7 +458,7 @@ impl SelectorBatchExecutor {
         matchers: Matchers,
         window: Option<ProfileWindow>,
         options: QueryOptions,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<Option<LabelProfile>> {
         let command = SelectorTaskKind::Profile(ProfileSelectorCommand {
@@ -473,7 +473,7 @@ impl SelectorBatchExecutor {
     fn submit_selector_task(
         &self,
         command: SelectorTaskKind,
-        caller_user: Option<String>,
+        caller_user: Option<Arc<str>>,
         hash_tags: Arc<[String]>,
     ) -> QueryResult<SelectorOutput> {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
@@ -1053,7 +1053,7 @@ type CopiedSnapshots = Vec<(EvalLabels, RangeSnapshot)>;
 /// One single-node task's read in progress.
 struct LocalRead {
     cursor: SeriesCursor,
-    caller_user: Option<String>,
+    caller_user: Option<Arc<str>>,
     options: QueryOptions,
     responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
     state: ReadState,
