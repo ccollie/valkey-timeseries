@@ -38,9 +38,7 @@ use crate::promql::time::duration_ms;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count, selector_bounds, step_times};
 use crate::promql::types::{PreloadedInstantData, PreloadedInstantSeries};
 use crate::promql::utils::{check_subquery_steps, subquery_step_ms};
-use crate::promql::{
-    EvalResult, EvalSample, EvalSamples, EvaluationError, ExprResult, InstantSample, PreloadMap,
-};
+use crate::promql::{EvalResult, EvalSample, EvalSamples, EvaluationError, ExprResult, PreloadMap};
 use ahash::AHashSet;
 use orx_parallel::Par;
 use orx_parallel::ParResult;

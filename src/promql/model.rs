@@ -237,6 +237,18 @@ impl From<EvalSample> for InstantSample<EvalLabels> {
     }
 }
 
+/// A sample read for evaluation: no `__name__` drop is pending on it yet.
+impl From<InstantSample<EvalLabels>> for EvalSample {
+    fn from(sample: InstantSample<EvalLabels>) -> Self {
+        Self {
+            timestamp_ms: sample.timestamp_ms,
+            value: sample.value,
+            labels: sample.labels,
+            drop_name: false,
+        }
+    }
+}
+
 impl From<InstantSample<EvalLabels>> for InstantSample {
     fn from(sample: InstantSample<EvalLabels>) -> Self {
         Self {

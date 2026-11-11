@@ -171,14 +171,16 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         let samples = match outcome {
             AggregationOutcome::Unsupported => return Ok(None),
-            AggregationOutcome::Aggregated(samples) => to_eval_samples(samples),
+            AggregationOutcome::Aggregated(samples) => {
+                samples.into_iter().map(EvalSample::from).collect()
+            }
             AggregationOutcome::Raw(samples) => {
                 // The source selected but did not aggregate; finish the job.
                 apply_aggregation(
                     kind,
                     request.modifier.as_ref(),
                     request.param.as_ref().map(AggregationParam::to_expr_result),
-                    to_eval_samples(samples),
+                    samples.into_iter().map(EvalSample::from).collect(),
                     ctx.evaluation_ts,
                     &ctx.deadline,
                 )?
@@ -503,16 +505,4 @@ pub(super) fn stepped_aggregation_key(aggregate: &AggregateExpr) -> Option<GridP
         vs,
         AggregationKey::of(&aggregation),
     ))
-}
-
-pub(super) fn to_eval_samples(samples: Vec<InstantSample<EvalLabels>>) -> Vec<EvalSample> {
-    samples
-        .into_iter()
-        .map(|s| EvalSample {
-            timestamp_ms: s.timestamp_ms,
-            value: s.value,
-            labels: s.labels,
-            drop_name: false,
-        })
-        .collect()
 }
