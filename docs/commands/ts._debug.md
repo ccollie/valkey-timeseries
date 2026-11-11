@@ -767,6 +767,7 @@ TS._DEBUG LIST_CONFIGS [VERBOSE]
 | `ts-num-threads`               | integer  | 8               | Number of worker threads for parallel query processing                                  |
 | `ts-fanout-command-timeout`    | duration | —               | Timeout (ms) for fanout (cluster scatter/gather) commands                               |
 | `ts-cluster-map-expiration-ms` | duration | —               | How long (ms) cluster slot-map entries are cached; `0` disables caching                 |
+| `ts-fanout-rollup-pushdown`    | boolean  | `yes`           | Shard-side grid evaluation for clustered TS.QUERY/TS.QUERYRANGE: stepped selection of bare selectors over a range query's step grid, PromQL range-vector functions (`rate`, `*_over_time`, …), and either fused with a reducing aggregation. Not a compatibility knob; disable only as a diagnostic revert to coordinator-side evaluation over the raw span |
 
 ### Examples
 

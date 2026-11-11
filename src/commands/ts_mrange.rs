@@ -155,9 +155,8 @@ fn mrange_deferred(
     slot.spawn(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
         // A client that disconnects stops the decode: nobody would read the reply.
-        let gone = thread_ctx.disconnected();
-        let rows = match decode_snapshot_series(series, &options, &|| gone.load(Ordering::Relaxed))
-        {
+        let gone = thread_ctx.cancel_token();
+        let rows = match decode_snapshot_series(series, &options, &|| gone.is_cancelled()) {
             Ok(rows) => rows,
             Err(err) => {
                 let _ = thread_ctx.reply(Err(err));

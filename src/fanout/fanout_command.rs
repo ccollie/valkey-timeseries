@@ -588,7 +588,10 @@ where
             Ok(())
         };
 
-        let operation = std::mem::take(&mut self.operation);
+        let operation = self
+            .operation
+            .take()
+            .expect("BUG: a fan-out completes once, and only then gives up its operation");
         self.ready = Some(Completion {
             callback,
             operation,

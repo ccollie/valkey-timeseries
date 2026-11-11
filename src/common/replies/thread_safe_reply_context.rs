@@ -1,11 +1,8 @@
-use crate::common::replies::{IntoRawCtx, ReplyContext};
-use crate::common::sync::lock;
+use super::client_cancellation::{CancelToken, Registration, mark_disconnected};
+use crate::common::replies::{IntoRawCtx, ReplyContext, reply};
 use crate::error_consts;
-use std::collections::HashMap;
 use std::cell::Cell;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
 use valkey_module::{Context, ValkeyError, ValkeyResult, raw};
 
 /// The disconnect flag of every watched blocked client ([`DisconnectWatch`]), by its handle.
@@ -137,6 +134,26 @@ pub struct BlockedClient {
 // We need to be able to send the inner pointer to another thread
 unsafe impl Send for BlockedClient {}
 
+impl BlockedClient {
+    /// The token that reports this client's disconnect: nobody will read the reply, so the
+    /// work answering it can stop.
+    pub(crate) fn cancel_token(&self) -> CancelToken {
+        self.cancellation
+            .as_ref()
+            .map(Registration::token)
+            .unwrap_or_default()
+    }
+}
+
+/// The server's disconnect callback: runs on the main thread while `bc` is still blocked (the
+/// peer went away, or `CLIENT KILL`), never for a client unblocked normally.
+extern "C" fn on_disconnect(
+    _ctx: *mut raw::RedisModuleCtx,
+    bc: *mut raw::RedisModuleBlockedClient,
+) {
+    mark_disconnected(bc as u64);
+}
+
 impl Drop for BlockedClient {
     fn drop(&mut self) {
         // Before the unblock below: once unblocked the server may reuse the handle's address
@@ -158,14 +175,10 @@ impl Drop for BlockedClient {
     }
 }
 
-/// Answers a blocked client whose worker never wrote a reply.
-fn reply_no_reply_written(ctx: *mut raw::RedisModuleCtx) {
-    let _ = Context::new(ctx).reply(Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)));
-}
-
 /// Blocks the client of `ctx` until the returned handle is dropped, with no timeout: the work
 /// answering it runs to the end unless the client disconnects first, which
-/// [`ThreadSafeReplyContext::disconnected`] reports. Main thread only.
+/// [`BlockedClient::cancel_token`] reports. Main thread only: the disconnect callback is
+/// installed on the handle here, and the server only calls it from the main thread.
 pub(crate) fn block_client(ctx: &Context) -> BlockedClient {
     let inner = unsafe {
         raw::RedisModule_BlockClient.unwrap()(

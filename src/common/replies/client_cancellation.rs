@@ -1,13 +1,13 @@
 //! Telling a blocked client's background work that the client has gone.
 //!
 //! A command that blocks its client and answers from another thread (`TS.QUERY`,
-//! `TS.QUERYRANGE`) would otherwise run to completion after its client disconnected,
-//! holding a worker for up to its whole `TIMEOUT` for a reply the server discards.
+//! `TS.QUERYRANGE`, a deferred `TS.MRANGE`) would otherwise run to completion after its
+//! client disconnected, holding a worker for a reply the server discards.
 //!
-//! The server reports the disconnect through a callback on the blocked-client handle
-//! ([`BlockedClient::cancel_on_disconnect`](super::BlockedClient::cancel_on_disconnect)). The
-//! callback runs on the main thread and only sets a flag here; the work reads it through a
-//! [`CancelToken`] wherever it already checks its deadline, and stops there.
+//! [`block_client`](super::block_client) installs a disconnect callback on every handle it
+//! blocks. The callback runs on the main thread and only sets a flag here; the work reads it
+//! through a [`CancelToken`] ([`BlockedClient::cancel_token`](super::BlockedClient::cancel_token))
+//! wherever it already checks its deadline, and stops there.
 //!
 //! The flag is keyed by the handle's address, which the server may reuse for a later blocked
 //! client once this one is unblocked. So the callback only ever *sets* a registered flag,

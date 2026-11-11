@@ -198,8 +198,9 @@ impl TimeSeriesIndex {
     }
 
     /// The series matching `selector`. Production reads go through `label_querier` and the
-    /// selector planner directly; this and the two lookups below serve tests.
-    #[cfg(test)]
+    /// selector planner directly; this and the two lookups below serve tests (and this one the
+    /// `literal_set_filter` bench).
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn postings_for_selector(&self, selector: &SeriesSelector) -> ValkeyResult<PostingsBitmap> {
         let inner = read_lock(&self.inner);
         Ok(inner.postings_for_selector(selector)?.into_owned())

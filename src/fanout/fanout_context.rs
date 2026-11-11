@@ -69,19 +69,6 @@ impl FanoutContext {
         self.local_share
     }
 
-    /// The request reached this node at `received`, earlier than it was picked up: a
-    /// peer's request waits in the fan-out lane's queue, and that wait counts against
-    /// its time budget.
-    pub fn received_at(mut self, received: Instant) -> Self {
-        self.received = received;
-        self
-    }
-
-    /// When the request reached this node.
-    pub fn received(&self) -> Instant {
-        self.received
-    }
-
     /// Record when the requester stops waiting for this answer. Reads walking the
     /// keyspace for it stop between batches from then on ([`Self::expired`]). Only the
     /// first call counts.

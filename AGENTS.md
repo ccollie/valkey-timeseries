@@ -49,14 +49,14 @@ tools/fleet_loader.sh [-p PORT] [--preset small|medium|large] [--flush]      # f
 # Compatibility fuzzer (needs Docker; strict mode required for a soak — see Warnings below)
 ./fuzz.sh --examples 20000 --duration 20m --stats
 
-# Comparative server benchmarks vs the pinned RedisTimeSeries reference (needs Docker)
-tools/server_bench.sh --profile smoke --dry-run   # counts and budget, no servers
-tools/server_bench.sh --profile smoke --self-check # two subject builds: harness check only
-
 # Docker
 make docker-build && make docker-up      # standalone
 make docker-up-cluster                    # 3-node cluster
 make docker-test / make docker-down
+
+# Comparative server benchmarks vs the pinned RedisTimeSeries reference (needs Docker)
+tools/server_bench.sh --profile smoke --dry-run   # counts and budget, no servers
+tools/server_bench.sh --profile smoke --self-check # two subject builds: harness check only
 ```
 
 Key `./build.sh` env vars: `SERVER_VERSION` (`unstable` (default) or `8.1`, the versions CI tests), `ASAN_BUILD`,

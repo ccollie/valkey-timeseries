@@ -401,8 +401,8 @@ protocol, and the coordinator merges the shard responses. In a range query every
 selector is read over the whole step grid in one request, and the shard ships one point
 per series per step rather than the raw span; decomposable aggregations can be partially
 reduced on shards; operations that require the complete value set, such as `quantile`,
-remain coordinator-side. Cluster fan-out settings are controlled separately by
-`ts-fanout-aggregation-pushdown` and `ts-fanout-rollup-pushdown`.
+remain coordinator-side. Grid push-down is controlled separately by
+`ts-fanout-rollup-pushdown`.
 
 By default the coordinator contacts every shard, preferring replicas when the client is
 allowed to read from them. A `HASHTAG` clause narrows that shard set without changing the
@@ -439,9 +439,8 @@ Optimization is a performance choice, not a requirement for PromQL support. It c
 improve broad or repeated-selector queries, but optimized expressions can use more
 temporary memory and can be slower for small or already selective queries. If a query
 shows unexpected performance or behavior, compare it with
-`ts-promql-optimize-queries` disabled. Cluster aggregation and grid push-down are
-separate controls: `ts-fanout-aggregation-pushdown` and
-`ts-fanout-rollup-pushdown` govern where supported work is performed after the query is
+`ts-promql-optimize-queries` disabled. Grid push-down is a separate control:
+`ts-fanout-rollup-pushdown` governs where supported work is performed after the query is
 planned.
 
 ### Filter push-down across binary operations

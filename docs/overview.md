@@ -240,3 +240,60 @@ Push-down is always on, with no config to turn it off: the coordinator never agg
 it, since how far a series fills depends on what it holds outside the query window, which only its shard can see. A
 shard answers with exactly the work it was asked for, and the coordinator rejects a share of the wrong shape rather
 than repairing it.
+
+PromQL range queries have their own push-down, controlled by `ts-fanout-rollup-pushdown` (default `yes`). Every
+read of a vector selector over a range query's step grid — a bare `cpu`, a `rate(cpu[5m])`, or either directly under
+a reducing aggregation such as `avg(cpu)` or `sum by (job) (rate(cpu[5m]))` — is one *grid* request per selector:
+the shard runs the per-step stage (the last sample inside the lookback, or the window's reduction) and ships one
+point per series per step, or one partial per group per step, instead of every raw sample in the span. A PromQL
+series is owned entirely by one shard, so the per-series output needs no cross-shard merge; the coordinator
+concatenates it, and merges the fused partials. A series whose raw span is smaller than its grid output (a step finer
+than the sample cadence) travels raw and is stepped on the coordinator — except under a fused reduction, where the
+unit of that decision is the group rather than the series: partials are one per `(group, step)` however many series
+fed the group, so a group of sparse series is folded on the shard when its partials are the smaller form, and only a
+group whose raw spans are smaller still (a lone sparse series) travels raw. Flipping the toggle off routes the raw
+span back through the ordinary range fanout and evaluates it on the coordinator — the same answer, at the transfer
+the push-down saves.
+
+A range query resolves its rollups *once, for the whole step grid*, before the step loop runs — so `rate(m[5m])` at
+a 15s step over six hours is one fan-out rather than 1440, each of which would have shipped a five-minute window
+that its twenty neighbours also shipped. `@` and `offset` are resolved coordinator-side into window ends, so a shard
+is told which windows to reduce and never a modifier to re-derive; `@` collapses the grid onto a single window whose
+value the coordinator broadcasts to every step. Transport is sparse: a step whose window held no samples is absent
+from the response rather than carrying a NaN, because NaN is a legitimate rolled-up value.
+
+Pushed down: the `*_over_time` family (`sum`, `count`, `avg`, `min`, `max`, `range`, `stddev`, `stdvar`, `mad`,
+`present`, `first`, `last`, `quantile`), `ts_of_{first,last,min,max}_over_time`, `rate`, `increase`, `delta`, `irate`, `idelta`,
+`deriv`, `resets`, `changes`, `integral`, `state_count_over_time` and `state_duration_over_time` (its `unit` travels resolved to milliseconds; a call
+whose state or unit the function would reject stays on the coordinator, which reports the error). Three are evaluated coordinator-side by construction: `absent_over_time` (its answer
+depends on absence across the whole cluster, which no shard can observe), `predict_linear` (it predicts relative to
+the query's evaluation timestamp, which `@`/`offset` divorce from the window end a shard is told), and
+`double_exponential_smoothing` (two scalar parameters; the request carries one).
+
+A rollup directly under a reducing aggregation is fused into the same request: `sum by (job) (rate(m[5m]))` has the
+shard reduce each series' windows *and* accumulate them into per-`(group, step)` partials, so a job with a thousand
+pods ships one value per step rather than a thousand. The selecting and counting operators — `topk`, `bottomk`,
+`limitk`, `limit_ratio`, `count_values` — fuse too, over a bare selector or a rollup: each shard runs the operator per
+step over its own series and ships its picks (or per-value counts) as candidates, and the coordinator selects across
+them (the top-k of a union lies within the union of the parts' top-k's; counts add). `topk(5, cpu)` over 500 series at
+240 steps thus ships 15 series' worth of points per step instead of 500. Only `quantile` has no such form and stays
+on the coordinator, as does a selection the query reads with `timestamp()`, whose picks keep their own timestamps.
+The trade is CPU for bytes: the shard's per-step selection is sequential (fanning the steps out to a pool measured
+several times slower), so on a single-machine loopback cluster the fused shapes cost 1–3 ms more per query while
+moving 97 % less data; over a real link the transfer saved dominates.
+
+Only the coordinator consults the toggle, and only for the range-query shapes above. An instant vector's aggregation
+pushes down whenever its operator has a decomposable form, with no toggle, like MRANGE's.
+
+A third push-down narrows what those grid requests *ask for*. A range query's binary operation —
+`cpu{region="us"} - cpu offset 5m`, `a * on(uid) group_left info` — would otherwise read the wide operand in full and
+discard the series that could never match. With `ts-promql-derived-filter-pushdown` (default `yes`) the coordinator
+first asks every shard, per selector under such an operation, which labels every one of its series carries and with
+which values (a `label-profile` fan-out: labels only, no samples), counting only the series with a sample in the span
+that selector reads, so series that stopped reporting before the query do not widen the answer. It then adds those as matchers to the other operand's
+selectors wherever they provably exclude series, and plans the narrowed tree. Operands with the same label values —
+`cpu - cpu offset 5m` — are left untouched, as are `or`, fill modifiers and label-less aggregations; an operand whose
+selector matches nothing empties the result and spares the other operand's read entirely. Instant queries keep their
+own, evaluation-time version of the same narrowing (a profile round trip is too large a share of a millisecond-scale
+query to pay up front). Measured on the three-node harness, the filtered binop
+above at 60 steps went from ≈18 to ≈11 ms.

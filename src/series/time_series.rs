@@ -2,7 +2,9 @@ use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::rounding::RoundingStrategy;
-use crate::common::threads::{IntoParRayon, ParMutRayon, ParRayon, request_par_threads};
+use crate::common::threads::{
+    IntoParRayon, ParMutRayon, ParRayon, on_pool_worker, request_par_threads,
+};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -872,8 +874,7 @@ impl TimeSeries {
     }
 
     /// Copy the chunks `[start, end]` touches, for decoding after this series
-    /// is no longer borrowed. See [`RangeSnapshot`]. Ported from the promql
-    /// branch (9c845860e) for the deferred TS.MRANGE experiment.
+    /// is no longer borrowed. See [`RangeSnapshot`].
     pub fn snapshot_range(&self, start: Timestamp, end: Timestamp) -> RangeSnapshot {
         self.snapshot_range_keeping(start, end, SnapshotKeep::All)
     }
@@ -887,33 +888,14 @@ impl TimeSeries {
         end: Timestamp,
         keep: SnapshotKeep,
     ) -> RangeSnapshot {
-        let start = start.max(self.get_min_timestamp());
-        let chunks = if start > end || self.is_empty() || !self.overlaps(start, end) {
-            Vec::new()
-        } else {
-            match self.get_chunk_index_bounds(start, end) {
-                Some((first, last)) => keep.trim(&self.chunks[first..=last], start, end).to_vec(),
-                None => Vec::new(),
-            }
-        };
-        RangeSnapshot {
-            start,
-            end,
-            chunks,
-            series_extent: (!self.is_empty())
-                .then(|| (self.first_timestamp, self.last_timestamp())),
-            series_total_samples: self.total_samples,
-        }
-    }
-
-    /// Copy the chunks `[start, end]` touches, for decoding after this series
-    /// is no longer borrowed. See [`RangeSnapshot`].
-    pub fn snapshot_range(&self, start: Timestamp, end: Timestamp) -> RangeSnapshot {
         let (start, chunks) = self.range_chunks(start, end);
         RangeSnapshot {
             start,
             end,
-            chunks: chunks.to_vec(),
+            chunks: keep.trim(chunks, start, end).to_vec(),
+            series_extent: (!self.is_empty())
+                .then(|| (self.first_timestamp, self.last_timestamp())),
+            series_total_samples: self.total_samples,
         }
     }
 
@@ -1580,27 +1562,80 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
     }
 }
 
-/// Sample-equivalents a chunk split is worth in the dispatch decision: both
-/// halves are re-encoded, so it is roughly one chunk's worth of samples.
-const SPLIT_WORK: usize = 2048;
-
 /// Below this many chunks, `get_range` decodes on the calling thread even
 /// when it is free to fan out.
 const PARALLEL_RANGE_MIN_CHUNKS: usize = 4;
 
+/// See [`RangeSnapshot::copied_bytes`].
+fn chunk_copy_bytes(chunks: &[TimeSeriesChunk]) -> usize {
+    chunks
+        .iter()
+        .map(|chunk| size_of::<TimeSeriesChunk>() + chunk.size())
+        .sum()
+}
+
+/// How many of `chunk`'s samples `[start, end]` is likely to cover, from the
+/// fraction of the chunk's time span it overlaps. Sizes the buffer a range read
+/// decodes into: exact for a fully covered chunk, and a proportional guess for
+/// a boundary chunk, where `chunk.len()` would over-reserve for every series a
+/// narrow window touches.
+fn estimate_range_len(chunk: &TimeSeriesChunk, start: Timestamp, end: Timestamp) -> usize {
+    let len = chunk.len();
+    let (first, last) = (chunk.first_timestamp(), chunk.last_timestamp());
+    if start <= first && end >= last {
+        return len;
+    }
+    let span = (last - first).max(1) as f64;
+    let overlap = (end.min(last) - start.max(first)).max(0) as f64;
+    // Round up, and keep a floor: an exact or tiny estimate that lands one
+    // short forces a doubling of the whole buffer.
+    ((len as f64 * overlap / span).ceil() as usize)
+        .saturating_add(8)
+        .min(len)
+}
+
+/// Sample-equivalents a chunk split is worth in the dispatch decision: both
+/// halves are re-encoded, so it is roughly one chunk's worth of samples.
+const SPLIT_WORK: usize = 2048;
+
+fn get_range_parallel(
+    chunks: &[TimeSeriesChunk],
+    start: Timestamp,
+    end: Timestamp,
+) -> TsdbResult<Vec<Sample>> {
+    match chunks {
+        [] => Ok(vec![]),
+        [chunk] => chunk.get_range(start, end),
+        _ => chunks
+            .into_par_rayon()
+            .num_threads(request_par_threads(
+                chunks.len(),
+                chunks.iter().map(|c| c.len()).sum(),
+            ))
+            .map(|chunk| chunk.get_range(start, end))
+            .into_fallible()
+            .flat_map(|x| x)
+            .collect(),
+    }
+}
+
 /// The compressed chunks a range read needs, copied out of a series so they
-/// can be decoded after the series — and the module lock guarding it — are
-/// released.
+/// can be decoded after the series — and whatever guards it — are released.
 ///
 /// A chunk is a few KB of compressed bytes; its decoded samples are several
-/// times that. Copying chunks under the lock and decoding outside it turns a
-/// lock hold proportional to the decode into one proportional to the memcpy.
-/// Only the chunks overlapping the range are copied.
+/// times that. Copying chunks on the main thread and decoding elsewhere turns
+/// main-thread time proportional to the decode into time proportional to the
+/// memcpy. Only the chunks overlapping the range are copied.
 pub struct RangeSnapshot {
-    /// Already clamped to the series' retention floor, as `range_iter` would.
+    /// Already clamped to the series' retention floor, as a live range read would.
     start: Timestamp,
     end: Timestamp,
     chunks: Vec<TimeSeriesChunk>,
+    /// The series' first and last stored timestamps when it was copied; `None` for an
+    /// empty series.
+    series_extent: Option<(Timestamp, Timestamp)>,
+    /// Samples the series stored when it was copied.
+    series_total_samples: usize,
 }
 
 impl RangeSnapshot {
@@ -1647,77 +1682,7 @@ impl RangeSnapshot {
             .iter()
             .flat_map(|chunk| chunk.range_iter(self.start, self.end))
     }
-}
 
-/// See [`RangeSnapshot::copied_bytes`].
-fn chunk_copy_bytes(chunks: &[TimeSeriesChunk]) -> usize {
-    chunks
-        .iter()
-        .map(|chunk| size_of::<TimeSeriesChunk>() + chunk.size())
-        .sum()
-}
-
-/// How many of `chunk`'s samples `[start, end]` is likely to cover, from the
-/// fraction of the chunk's time span it overlaps. Sizes the buffer a range read
-/// decodes into: exact for a fully covered chunk, and a proportional guess for
-/// a boundary chunk, where `chunk.len()` would over-reserve for every series a
-/// narrow window touches.
-fn estimate_range_len(chunk: &TimeSeriesChunk, start: Timestamp, end: Timestamp) -> usize {
-    let len = chunk.len();
-    let (first, last) = (chunk.first_timestamp(), chunk.last_timestamp());
-    if start <= first && end >= last {
-        return len;
-    }
-    let span = (last - first).max(1) as f64;
-    let overlap = (end.min(last) - start.max(first)).max(0) as f64;
-    // Round up, and keep a floor: an exact or tiny estimate that lands one
-    // short forces a doubling of the whole buffer.
-    ((len as f64 * overlap / span).ceil() as usize)
-        .saturating_add(8)
-        .min(len)
-}
-
-fn get_range_parallel(
-    chunks: &[TimeSeriesChunk],
-    start: Timestamp,
-    end: Timestamp,
-) -> TsdbResult<Vec<Sample>> {
-    match chunks {
-        [] => Ok(vec![]),
-        [chunk] => chunk.get_range(start, end),
-        _ => chunks
-            .into_par_rayon()
-            .num_threads(request_par_threads(
-                chunks.len(),
-                chunks.iter().map(|c| c.len()).sum(),
-            ))
-            .map(|chunk| chunk.get_range(start, end))
-            .into_fallible()
-            .flat_map(|x| x)
-            .collect(),
-    }
-}
-
-/// The compressed chunks a range read needs, copied out of a series so they
-/// can be decoded after the series — and whatever guards it — are released.
-///
-/// A chunk is a few KB of compressed bytes; its decoded samples are several
-/// times that. Copying chunks on the main thread and decoding elsewhere turns
-/// main-thread time proportional to the decode into time proportional to the
-/// memcpy. Only the chunks overlapping the range are copied.
-pub struct RangeSnapshot {
-    /// Already clamped to the series' retention floor, as a live range read would.
-    start: Timestamp,
-    end: Timestamp,
-    chunks: Vec<TimeSeriesChunk>,
-    /// The series' first and last stored timestamps when it was copied; `None` for an
-    /// empty series.
-    series_extent: Option<(Timestamp, Timestamp)>,
-    /// Samples the series stored when it was copied.
-    series_total_samples: usize,
-}
-
-impl RangeSnapshot {
     /// Samples in the copied chunks — an upper bound on the range's samples,
     /// since the edge chunks may reach past it.
     pub fn estimated_samples(&self) -> usize {
