@@ -146,7 +146,7 @@ pub fn evaluate_instant(
     optimize_statement(&mut stmt, &opts, true)?;
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = Deadline::from_options(&opts);
-    let evaluator = Evaluator::new(&reader, opts);
+    let evaluator = Evaluator::new(reader.as_ref(), opts);
 
     // Before and after the evaluation: the deadline, the client, and memory.
     deadline.check()?;

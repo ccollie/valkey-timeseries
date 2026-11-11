@@ -14,7 +14,6 @@ use crate::promql::{
 };
 use orx_parallel::Par;
 use promql_parser::parser::{LabelModifier, VectorSelector};
-use std::sync::Arc;
 
 /// The parameter of an aggregation operator, already evaluated to a literal:
 /// `topk(5, …)`'s K, `count_values("le", …)`'s destination label.
@@ -754,61 +753,6 @@ pub trait QueryReader: Send + Sync {
         _options: QueryOptions,
     ) -> QueryResult<Option<LabelProfile>> {
         Ok(None)
-    }
-}
-
-impl QueryReader for Arc<dyn QueryReader> {
-    fn query(
-        &self,
-        selector: &VectorSelector,
-        timestamp: i64,
-        options: QueryOptions,
-    ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
-        self.as_ref().query(selector, timestamp, options)
-    }
-
-    fn query_range(
-        &self,
-        selector: &VectorSelector,
-        start_ms: i64,
-        end_ms: i64,
-        options: QueryOptions,
-    ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
-        self.as_ref()
-            .query_range(selector, start_ms, end_ms, options)
-    }
-
-    fn query_aggregation(
-        &self,
-        selector: &VectorSelector,
-        timestamp: i64,
-        aggregation: &AggregationRequest,
-        options: QueryOptions,
-    ) -> QueryResult<AggregationOutcome> {
-        self.as_ref()
-            .query_aggregation(selector, timestamp, aggregation, options)
-    }
-
-    fn query_grid(
-        &self,
-        selector: &VectorSelector,
-        request: &GridRequest,
-        options: QueryOptions,
-    ) -> QueryResult<GridOutcome> {
-        self.as_ref().query_grid(selector, request, options)
-    }
-
-    fn answers_grids_raw(&self) -> bool {
-        self.as_ref().answers_grids_raw()
-    }
-
-    fn label_profile(
-        &self,
-        selector: &VectorSelector,
-        window: Option<ProfileWindow>,
-        options: QueryOptions,
-    ) -> QueryResult<Option<LabelProfile>> {
-        self.as_ref().label_profile(selector, window, options)
     }
 }
 

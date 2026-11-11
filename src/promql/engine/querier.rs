@@ -20,8 +20,8 @@ pub static SERIES_SELECTOR: LazyLock<SelectorBatchExecutor> =
 pub struct ValkeySeriesQuerier {
     /// Identity captured while handling the client command. Selector work runs
     /// later, often on another thread, where Valkey's context no longer carries
-    /// the original client user.
-    caller_user: Option<String>,
+    /// the original client user. Shared: every selector read carries it.
+    caller_user: Option<Arc<str>>,
     /// Cluster routing scope requested with `HASHTAG`, empty when the command
     /// did not supply one. One expression can contain many selectors and can
     /// retry a push-down as an ordinary selector read, and every one of those
@@ -194,125 +194,20 @@ fn normalize_selector(selector: &VectorSelector) -> Matchers {
     }
 }
 
-/// A concrete implementation of QueryReader that can be either a ValkeySeriesQuerier or a MemorySeriesQuerier.
-/// Use this enum to create a concrete series querier that can be used in the PromQL engine irrespective of
-/// whether we are in a test or production environment.
-pub(crate) enum ConcreteSeriesQuerier {
-    #[cfg_attr(
-        test,
-        expect(
-            dead_code,
-            reason = "unit tests have no server, so they always get Mock"
-        )
-    )]
-    Actual(ValkeySeriesQuerier),
-    #[cfg(test)]
-    Mock(MemorySeriesQuerier),
-}
-
-impl ConcreteSeriesQuerier {
-    /// A querier scoped to the shards owning `hash_tags`, for command handlers
-    /// that parsed a `HASHTAG` clause. An empty list reads the whole keyspace
-    /// the caller can see.
-    pub fn create_with_hash_tags(_ctx: &Context, _hash_tags: Arc<[String]>) -> Self {
-        cfg_select! {
-            test => { ConcreteSeriesQuerier::Mock(MemorySeriesQuerier::new()) }
-            _ => {
-                let user = _ctx.get_current_user().to_string();
-                let caller_user = (!user.is_empty()).then_some(user);
-                ConcreteSeriesQuerier::Actual(ValkeySeriesQuerier {
-                    caller_user,
-                    hash_tags: _hash_tags,
-                    clustered: crate::fanout::is_clustered(_ctx),
-                })
-            }
-        }
-    }
-}
-
-impl QueryReader for ConcreteSeriesQuerier {
-    fn query(
-        &self,
-        selector: &VectorSelector,
-        timestamp: i64,
-        options: QueryOptions,
-    ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => local.query(selector, timestamp, options),
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => mock.query(selector, timestamp, options),
-        }
-    }
-
-    fn query_range(
-        &self,
-        selector: &VectorSelector,
-        start_ms: i64,
-        end_ms: i64,
-        options: QueryOptions,
-    ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => {
-                local.query_range(selector, start_ms, end_ms, options)
-            }
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => {
-                mock.query_range(selector, start_ms, end_ms, options)
-            }
-        }
-    }
-
-    fn query_aggregation(
-        &self,
-        selector: &VectorSelector,
-        timestamp: i64,
-        aggregation: &AggregationRequest,
-        options: QueryOptions,
-    ) -> QueryResult<AggregationOutcome> {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => {
-                local.query_aggregation(selector, timestamp, aggregation, options)
-            }
-            // The in-memory querier has no shards to push to; the evaluator
-            // aggregates the vector it selects.
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => {
-                mock.query_aggregation(selector, timestamp, aggregation, options)
-            }
-        }
-    }
-
-    fn query_grid(
-        &self,
-        selector: &VectorSelector,
-        request: &GridRequest,
-        options: QueryOptions,
-    ) -> QueryResult<GridOutcome> {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => local.query_grid(selector, request, options),
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => mock.query_grid(selector, request, options),
-        }
-    }
-
-    fn answers_grids_raw(&self) -> bool {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => local.answers_grids_raw(),
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => mock.answers_grids_raw(),
-        }
-    }
-
-    fn label_profile(
-        &self,
-        selector: &VectorSelector,
-        window: Option<ProfileWindow>,
-        options: QueryOptions,
-    ) -> QueryResult<Option<LabelProfile>> {
-        match self {
-            ConcreteSeriesQuerier::Actual(local) => local.label_profile(selector, window, options),
-            #[cfg(test)]
-            ConcreteSeriesQuerier::Mock(mock) => mock.label_profile(selector, window, options),
+/// The reader that serves one PromQL command, scoped to the shards owning
+/// `hash_tags` for a command that parsed a `HASHTAG` clause; an empty list
+/// reads the whole keyspace the caller can see. Unit tests have no server, so
+/// they get the in-memory querier.
+pub(crate) fn series_querier(_ctx: &Context, _hash_tags: Arc<[String]>) -> Arc<dyn QueryReader> {
+    cfg_select! {
+        test => { Arc::new(MemorySeriesQuerier::new()) }
+        _ => {
+            let user = _ctx.get_current_user().to_string();
+            Arc::new(ValkeySeriesQuerier {
+                caller_user: (!user.is_empty()).then(|| Arc::from(user)),
+                hash_tags: _hash_tags,
+                clustered: crate::fanout::is_clustered(_ctx),
+            })
         }
     }
 }

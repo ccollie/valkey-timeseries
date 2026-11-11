@@ -1,7 +1,7 @@
 use crate::common::replies::ReplyContext;
 use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
-use crate::promql::engine::{ConcreteSeriesQuerier, QueryReader};
+use crate::promql::engine::{QueryReader, series_querier};
 use crate::promql::{EvalLabels, QueryValue};
 use std::sync::Arc;
 use valkey_module::{Context, Status};
@@ -10,8 +10,7 @@ use valkey_module::{Context, Status};
 /// `hash_tags` (empty for an unscoped query). One reader serves every selector
 /// in the expression, so the whole expression is evaluated over one shard set.
 pub(super) fn get_promql_querier(ctx: &Context, hash_tags: Vec<String>) -> Arc<dyn QueryReader> {
-    let querier = ConcreteSeriesQuerier::create_with_hash_tags(ctx, Arc::from(hash_tags));
-    Arc::new(querier)
+    series_querier(ctx, Arc::from(hash_tags))
 }
 
 /// A label set the reply writer can walk without caring how it is stored:
