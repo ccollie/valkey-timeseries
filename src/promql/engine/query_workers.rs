@@ -122,8 +122,8 @@ where
     let slot = QUERY_WORKERS
         .try_reserve()
         .map_err(|rejected| ValkeyError::String(format!("TSDB: {}", rejection(rejected))))?;
-    let mut blocked_client = block_client(ctx);
-    let cancel = blocked_client.cancel_on_disconnect();
+    let blocked_client = block_client(ctx);
+    let cancel = blocked_client.cancel_token();
 
     slot.spawn(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);

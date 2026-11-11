@@ -147,6 +147,26 @@ pub struct BlockedClient {
 // We need to be able to send the inner pointer to another thread
 unsafe impl Send for BlockedClient {}
 
+impl BlockedClient {
+    /// The token that reports this client's disconnect: nobody will read the reply, so the
+    /// work answering it can stop.
+    pub(crate) fn cancel_token(&self) -> CancelToken {
+        self.cancellation
+            .as_ref()
+            .map(Registration::token)
+            .unwrap_or_default()
+    }
+}
+
+/// The server's disconnect callback: runs on the main thread while `bc` is still blocked (the
+/// peer went away, or `CLIENT KILL`), never for a client unblocked normally.
+extern "C" fn on_disconnect(
+    _ctx: *mut raw::RedisModuleCtx,
+    bc: *mut raw::RedisModuleBlockedClient,
+) {
+    mark_disconnected(bc as u64);
+}
+
 impl Drop for BlockedClient {
     fn drop(&mut self) {
         // Before the unblock, after which the server may free the handle and reuse its address.
@@ -160,11 +180,6 @@ impl Drop for BlockedClient {
             raw::RedisModule_UnblockClient.unwrap()(self.inner, ptr::null_mut());
         }
     }
-}
-
-/// Answers a blocked client whose worker never wrote a reply.
-fn reply_no_reply_written(ctx: *mut raw::RedisModuleCtx) {
-    let _ = Context::new(ctx).reply(Err(ValkeyError::Str(error_consts::NO_REPLY_WRITTEN)));
 }
 
 /// Blocks the client of `ctx` until the returned handle is dropped, with no timeout: the work

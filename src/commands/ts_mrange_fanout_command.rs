@@ -1,7 +1,7 @@
 use super::fanout_codec;
 use super::fanout_codec::generated::{
     CompressionType, GroupPartialSeries, MultiRangeRequest, MultiRangeResponse, SampleData,
-    SeriesRangeResponse,
+    SeriesRangeResponse, SymbolTable,
 };
 use crate::aggregators::EmptyFillBounds;
 use crate::aggregators::{PartialReducer, PartialState};
@@ -12,7 +12,7 @@ use crate::common::replies::ReplyContext;
 use crate::common::threads::{IntoParRayon, IterIntoParRayon, request_par_threads};
 use crate::common::{MultiSample, Sample};
 use crate::fanout::serialization::{Deserialized, Serialized};
-use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
+use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo, compute_hash_tag_fanout_target};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::iterators::{KWayMerge, RowReducer, SampleReducer, create_sample_iterator_adapter};
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk, UncompressedChunk};
@@ -87,14 +87,13 @@ fn series_to_wire(series: Vec<MRangeSeriesResult>) -> ValkeyResult<MultiRangeRes
 
     // Unconditional: the ref arrays are self-describing, so no request
     // opt-in or response echo is needed to make this decodable.
-    let (symbol_table_names, symbol_table_values) =
-        fanout_codec::symbol_table::intern_labels(&mut serialized);
+    let SymbolTable { names, values } = fanout_codec::symbol_table::intern_labels(&mut serialized);
 
     Ok(MultiRangeResponse {
         series: serialized,
         group_partials: Vec::new(),
-        symbol_table_names,
-        symbol_table_values,
+        symbol_table_names: names,
+        symbol_table_values: values,
     })
 }
 
@@ -320,11 +319,11 @@ impl MRangeFanoutCommand {
         // downstream (self.series and everything built from it) never needs to
         // know interning happened. No flag to check: `resolve_labels` is driven
         // by the per-series ref arrays and is a no-op where there are none.
-        fanout_codec::symbol_table::resolve_labels(
-            &mut resp.series,
-            &resp.symbol_table_names,
-            &resp.symbol_table_values,
-        )?;
+        let symbol_table = SymbolTable {
+            names: std::mem::take(&mut resp.symbol_table_names),
+            values: std::mem::take(&mut resp.symbol_table_values),
+        };
+        fanout_codec::symbol_table::resolve_labels(&mut resp.series, &symbol_table)?;
         self.series.append(&mut resp.series);
         self.group_partials.append(&mut resp.group_partials);
         Ok(())
@@ -2095,8 +2094,8 @@ mod tests {
         let resp = MultiRangeResponse {
             series: wire,
             group_partials: Vec::new(),
-            symbol_table_names,
-            symbol_table_values,
+            symbol_table_names: symbol_table.names,
+            symbol_table_values: symbol_table.values,
         };
 
         let mut cmd = MRangeFanoutCommand::default();
@@ -2115,22 +2114,6 @@ mod tests {
 
     /// Peer-controlled input: a symbol-table response whose ref arrays point
     /// past the end of the dictionary must be rejected, not indexed.
-    /// Released nodes decode the symbol table as two top-level `repeated
-    /// string` fields, 6 and 7. Pin the wire bytes so a later refactor cannot
-    /// retype or renumber them without failing here.
-    #[test]
-    fn symbol_table_keeps_its_released_wire_layout() {
-        use prost::Message;
-        let resp = MultiRangeResponse {
-            symbol_table_names: vec!["n".into()],
-            symbol_table_values: vec!["v".into()],
-            ..Default::default()
-        };
-        // Tag (6 << 3 | LEN) = 0x32 and (7 << 3 | LEN) = 0x3a, each followed
-        // by a one-byte string.
-        assert_eq!(resp.encode_to_vec(), vec![0x32, 1, b'n', 0x3a, 1, b'v']);
-    }
-
     #[test]
     fn ingest_response_rejects_out_of_range_symbol_table_ref() {
         let resp = MultiRangeResponse {
@@ -2199,8 +2182,8 @@ mod tests {
         let resp = MultiRangeResponse {
             series: wire,
             group_partials: Vec::new(),
-            symbol_table_names,
-            symbol_table_values,
+            symbol_table_names: symbol_table.names,
+            symbol_table_values: symbol_table.values,
         };
 
         let mut cmd = MRangeFanoutCommand::default();

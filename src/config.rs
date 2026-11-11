@@ -566,6 +566,52 @@ pub fn is_debug_mode_enabled() -> bool {
     IS_DEBUG_MODE.load(Ordering::Relaxed)
 }
 
+/// Runtime toggle for pushing PromQL *grid* evaluation down to the shards
+/// (`ts-fanout-rollup-pushdown`, default **on**): the per-step stage of every
+/// range-query selector read — stepped instant selection, range-vector
+/// functions, and either fused with a reducing aggregation.
+///
+/// This is NOT a mixed-version safety mechanism and not a semantic one: off,
+/// the coordinator reads the raw span through the ordinary range fanout and
+/// runs the same kernels itself. It is the diagnostic escape hatch for the
+/// grid push-down path.
+pub static FANOUT_ROLLUP_PUSHDOWN: AtomicBool = AtomicBool::new(true);
+
+pub fn is_fanout_rollup_pushdown_enabled() -> bool {
+    FANOUT_ROLLUP_PUSHDOWN.load(Ordering::Relaxed)
+}
+
+// Stores for the PromQL engine parameters. The three duration-valued parameters keep the
+// resolved millisecond value beside the raw string the server holds, exactly as
+// `ts-cluster-map-expiration-ms` does: the string cell is what the server writes, and `apply`
+// is the only place the text is parsed and range-checked.
+static PROMQL_MAX_QUERY_LEN: AtomicI64 = AtomicI64::new(PROMQL_MAX_QUERY_LEN_DEFAULT);
+static PROMQL_MAX_RESPONSE_SERIES: AtomicI64 = AtomicI64::new(PROMQL_MAX_RESPONSE_SERIES_DEFAULT);
+static PROMQL_MAX_POINTS_PER_TIMESERIES: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT);
+static PROMQL_MAX_SAMPLES_PER_QUERY: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT);
+static PROMQL_MAX_SAMPLES_IN_FLIGHT: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_SAMPLES_IN_FLIGHT_DEFAULT);
+static PROMQL_MAX_MEMORY_PERCENT: AtomicI64 = AtomicI64::new(PROMQL_MAX_MEMORY_PERCENT_DEFAULT);
+static PROMQL_MAX_REPLY_BYTES: AtomicI64 = AtomicI64::new(PROMQL_MAX_REPLY_BYTES_DEFAULT);
+static PROMQL_MAX_SUBQUERY_STEPS: AtomicI64 = AtomicI64::new(PROMQL_MAX_SUBQUERY_STEPS_DEFAULT);
+static PROMQL_SET_LOOKBACK_TO_STEP: AtomicBool = AtomicBool::new(false);
+static PROMQL_OPTIMIZE_QUERIES: AtomicBool = AtomicBool::new(false);
+static PROMQL_DERIVED_FILTER_PUSHDOWN: AtomicBool = AtomicBool::new(true);
+static PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS: AtomicBool = AtomicBool::new(false);
+static PROMQL_LOOKBACK_DELTA_MS: AtomicI64 = AtomicI64::new(PROMQL_LOOKBACK_DELTA_DEFAULT_MS);
+static PROMQL_MAX_LOOKBACK_MS: AtomicI64 = AtomicI64::new(PROMQL_MAX_LOOKBACK_DEFAULT_MS);
+static PROMQL_MAX_QUERY_DURATION_MS: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_QUERY_DURATION_DEFAULT_MS);
+
+static PROMQL_LOOKBACK_DELTA_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| default_string_cell("ts-promql-lookback-delta"));
+static PROMQL_MAX_LOOKBACK_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| default_string_cell("ts-promql-max-lookback"));
+static PROMQL_MAX_QUERY_DURATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| default_string_cell("ts-promql-max-query-duration"));
+
 /// Runtime toggle for persisting the postings index as an RDB aux field
 /// (`ts-index-persist`, default on; see docs/postings-index-persistence.md).
 /// Gates both save and load: with it off, BGSAVE writes no aux payload and

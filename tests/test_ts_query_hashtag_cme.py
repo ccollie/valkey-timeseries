@@ -34,7 +34,6 @@ from query_result import QueryResult
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
 # Full config names for CONFIG SET (module prefix `ts` + config name).
-AGGREGATION_PUSHDOWN_CONFIG = 'ts.ts-fanout-aggregation-pushdown'
 ROLLUP_PUSHDOWN_CONFIG = 'ts.ts-fanout-rollup-pushdown'
 
 # The harness splits the 16384 slots evenly across three primaries, at
@@ -147,12 +146,6 @@ class TestPromQLHashTagCluster(ValkeyTimeSeriesClusterTestCase):
         """Set a config on every primary — the coordinator consults its own."""
         for i in range(self.CLUSTER_SIZE):
             self.new_client_for_primary(i).execute_command('CONFIG', 'SET', name, value)
-
-    @pytest.fixture(params=['yes', 'no'], ids=['pushdown-on', 'pushdown-off'])
-    def aggregation_pushdown(self, request):
-        self.set_config(AGGREGATION_PUSHDOWN_CONFIG, request.param)
-        yield request.param
-        self.set_config(AGGREGATION_PUSHDOWN_CONFIG, 'yes')
 
     @pytest.fixture(params=['yes', 'no'], ids=['pushdown-on', 'pushdown-off'])
     def rollup_pushdown(self, request):
@@ -332,9 +325,9 @@ class TestPromQLHashTagCluster(ValkeyTimeSeriesClusterTestCase):
         result = self.instant_query('http_requests_total', tags='h1')
         assert set(self.instants_by_instance(result)) == self.instances_on('h1') | {'alias'}
 
-    # ── 7: scoped aggregation, push-down on and off ───────────────────
+    # ── 7: scoped aggregation ───────────────────
 
-    def test_scoped_aggregation_sums_only_selected_shards(self, aggregation_pushdown):
+    def test_scoped_aggregation_sums_only_selected_shards(self):
         """A scoped `sum(...)` is the sum over the selected shards — not the
         cluster-wide sum with a filter applied afterwards."""
         self.setup_fleet()
@@ -350,16 +343,15 @@ class TestPromQLHashTagCluster(ValkeyTimeSeriesClusterTestCase):
             ('h0,h1,h2', SUM_ALL),
         ):
             got = self.single_value(self.instant_query('sum(http_requests_total)', tags=tags))
-            assert got == expected, (aggregation_pushdown, tags, got)
+            assert got == expected, (tags, got)
 
-    def test_scoped_grouped_aggregation(self, aggregation_pushdown):
+    def test_scoped_grouped_aggregation(self):
         """`sum by (shard)` scoped to two shards yields exactly two groups."""
         self.setup_fleet()
 
         result = self.instant_query('sum by (shard) (http_requests_total)', tags='h0,h2')
         by_shard = {s.metric['shard']: s.value.value for s in result.result}
-        assert by_shard == {'h0': SUM_BY_TAG['h0'], 'h2': SUM_BY_TAG['h2']}, \
-            aggregation_pushdown
+        assert by_shard == {'h0': SUM_BY_TAG['h0'], 'h2': SUM_BY_TAG['h2']}
 
     # ── 8: scoped rollup, push-down on and off ────────────────────────
 

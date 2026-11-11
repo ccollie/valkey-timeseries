@@ -79,9 +79,7 @@ impl QueryReader for ValkeySeriesQuerier {
     ) -> QueryResult<AggregationOutcome> {
         // Only operators with a decomposable form can be evaluated at the
         // shards; the rest need the whole input on one node.
-        if aggregation.kind.pushdown_strategy().is_none()
-            || !crate::config::is_fanout_aggregation_pushdown_enabled()
-        {
+        if aggregation.kind.pushdown_strategy().is_none() {
             return Ok(AggregationOutcome::Unsupported);
         }
         let matchers: Matchers = normalize_selector(selector);
