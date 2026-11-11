@@ -1,5 +1,5 @@
 use crate::common::threads::IntoParRayon;
-use crate::common::time::{current_time_millis, system_time_to_millis};
+use crate::common::time::system_time_to_millis;
 use crate::common::{Sample, Timestamp};
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::admission::{check_reply_size, range_reply_bytes_floor};
@@ -63,20 +63,6 @@ fn optimize_statement(
 /// map per batch. Bounds peak intermediate memory to this many step results
 /// rather than materializing every step at once (see `evaluate_range`).
 const STEP_MERGE_CHUNK_SIZE: usize = 64;
-
-/// `opts` with its deadline resolved: a `timeout` given without a `deadline`
-/// becomes one, counted from now. Done once, at the top of an evaluation, so
-/// every check below it — the step loop's, the evaluator's, the kernels' and
-/// the selector reads' — reads the same deadline from the options. (The
-/// command handlers always set `deadline`; a caller passing only `timeout` is
-/// an embedding or a test.)
-fn with_resolved_deadline(opts: QueryOptions) -> QueryOptions {
-    let deadline = opts.deadline.or_else(|| {
-        opts.timeout
-            .map(|timeout| current_time_millis().saturating_add(duration_ms(timeout)))
-    });
-    QueryOptions { deadline, ..opts }
-}
 
 #[cfg(test)]
 pub(crate) trait PromqlEngine: Send + Sync {
@@ -142,7 +128,6 @@ pub fn evaluate_instant(
     query_time: SystemTime,
     opts: QueryOptions,
 ) -> Result<QueryValue, QueryError> {
-    let opts = with_resolved_deadline(opts);
     optimize_statement(&mut stmt, &opts, true)?;
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = Deadline::from_options(&opts);
@@ -228,7 +213,6 @@ pub fn evaluate_range(
     )
     .map_err(QueryError::from)?;
 
-    let opts = with_resolved_deadline(opts);
     let deadline = Deadline::from_options(&opts);
 
     let step_ms = duration_ms(step);

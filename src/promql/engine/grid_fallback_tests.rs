@@ -89,7 +89,6 @@ fn data() -> Arc<dyn QueryReader> {
 
 fn options() -> QueryOptions {
     QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     }

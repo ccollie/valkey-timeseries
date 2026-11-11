@@ -46,11 +46,9 @@ pub struct QueryOptions {
     ///
     /// Defaults to 5 minutes (the Prometheus staleness delta).
     pub lookback_delta: Duration,
-    /// Optional per-query timeout. If set, the engine will attempt to abort long-running
-    /// evaluations and return a `QueryError::Timeout` when the deadline elapses.
-    /// NOTE: this timeout is best-effort at the moment;
-    pub timeout: Option<Duration>,
-    /// Query deadline in epoch milliseconds
+    /// When the query must stop, in epoch milliseconds: every check reads it,
+    /// and each fan-out is armed with what is left of it. `None` for no limit,
+    /// where a fan-out gets the cluster command timeout.
     pub deadline: Option<Timestamp>,
     /// The maximum number of series to return from instant or range queries. This option allows limiting memory usage.
     pub max_series: usize,
@@ -88,6 +86,33 @@ pub struct QueryOptions {
 }
 
 impl QueryOptions {
+    /// The options a query starts with under `config`: its limits and toggles,
+    /// and a deadline `max_query_duration` after `now_ms`.
+    pub fn from_config(config: &PromqlConfig, now_ms: Timestamp) -> Self {
+        Self {
+            lookback_delta: config.lookback_delta,
+            deadline: Some(now_ms.saturating_add(duration_ms(config.max_query_duration))),
+            max_series: config.max_response_series,
+            max_points_per_series: if config.max_points_per_timeseries > 0
+                && config.max_points_per_timeseries != usize::MAX
+            {
+                Some(config.max_points_per_timeseries)
+            } else {
+                None
+            },
+            max_samples: config.max_samples_per_query,
+            enable_experimental_functions: config.enable_experimental_functions,
+            optimize_queries: config.optimize_queries,
+            derived_filter_pushdown: config.derived_filter_pushdown,
+            db: 0,
+            cancel: CancelToken::default(),
+            max_samples_in_flight: config.max_samples_in_flight,
+            max_memory_percent: config.max_memory_percent,
+            max_subquery_steps: config.max_subquery_steps,
+            max_reply_bytes: config.max_reply_bytes,
+        }
+    }
+
     /// These options with the lookback a plan or grid resolved, in
     /// milliseconds: what a read is handed so the source applies the same
     /// staleness window the evaluator does.
@@ -98,33 +123,8 @@ impl QueryOptions {
 }
 
 impl Default for QueryOptions {
+    /// [`QueryOptions::from_config`] under the live configuration, from now.
     fn default() -> Self {
-        let config = promql_config();
-        let timeout = config.max_query_duration;
-        let deadline = current_time_millis().saturating_add(duration_ms(timeout));
-        let enable_experimental_functions = config.enable_experimental_functions;
-        Self {
-            lookback_delta: config.lookback_delta,
-            timeout: Some(config.max_query_duration),
-            deadline: Some(deadline),
-            max_series: config.max_response_series,
-            max_points_per_series: if config.max_points_per_timeseries > 0
-                && config.max_points_per_timeseries != usize::MAX
-            {
-                Some(config.max_points_per_timeseries)
-            } else {
-                None
-            },
-            max_samples: config.max_samples_per_query,
-            enable_experimental_functions,
-            optimize_queries: config.optimize_queries,
-            derived_filter_pushdown: config.derived_filter_pushdown,
-            db: 0,
-            cancel: CancelToken::default(),
-            max_samples_in_flight: config.max_samples_in_flight,
-            max_memory_percent: config.max_memory_percent,
-            max_subquery_steps: config.max_subquery_steps,
-            max_reply_bytes: config.max_reply_bytes,
-        }
+        Self::from_config(&promql_config(), current_time_millis())
     }
 }

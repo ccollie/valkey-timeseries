@@ -79,7 +79,6 @@ fn build_reader(
 fn bench_evaluate_instant(c: &mut Criterion) {
     let reader = build_reader(64, 300, 4_000_000, 1_000);
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     };
@@ -299,7 +298,6 @@ fn bench_range_query(c: &mut Criterion) {
     }
 
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         enable_experimental_functions: true,
         // These measure evaluation, not the limits: `count_values` returns
@@ -410,7 +408,6 @@ fn bench_join_query(c: &mut Criterion) {
     ];
 
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     };
@@ -531,7 +528,6 @@ fn bench_churn_join(c: &mut Criterion) {
 
     for (name, query, derived) in cases {
         let opts = QueryOptions {
-            timeout: None,
             deadline: None,
             derived_filter_pushdown: derived,
             ..QueryOptions::default()
@@ -599,7 +595,6 @@ fn bench_phase0_baseline(c: &mut Criterion) {
     ];
 
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     };
@@ -669,7 +664,6 @@ fn bench_subquery_twins(c: &mut Criterion) {
     ];
 
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         ..QueryOptions::default()
     };
@@ -738,7 +732,6 @@ fn bench_group_samples(c: &mut Criterion) {
     let reader: Arc<dyn QueryReader> = Arc::new(querier);
 
     let opts = QueryOptions {
-        timeout: None,
         deadline: None,
         enable_experimental_functions: true,
         // These measure grouping, not the limits: `without (le)` over g_large

@@ -638,7 +638,6 @@ mod tests {
 
     fn options() -> QueryOptions {
         QueryOptions {
-            timeout: None,
             deadline: None,
             ..QueryOptions::default()
         }

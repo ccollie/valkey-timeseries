@@ -1897,9 +1897,7 @@ fn set_query_timeout(
     } else {
         requested_timeout.min(config.max_query_duration)
     };
-    let deadline = current_time_millis().saturating_add(timeout.as_millis() as i64);
-    options.timeout = Some(timeout);
-    options.deadline = Some(deadline);
+    options.deadline = Some(current_time_millis().saturating_add(timeout.as_millis() as i64));
 }
 
 pub(super) fn parse_query_range_command_args(
@@ -1912,7 +1910,7 @@ pub(super) fn parse_query_range_command_args(
     let mut lookback_delta: Option<Duration> = None;
     let mut step: Option<Duration> = None;
     let mut hash_tags: Vec<String> = Vec::new();
-    let mut options = crate::promql::QueryOptions::default();
+    let mut options = crate::promql::QueryOptions::from_config(config, current_time_millis());
 
     check_promql_query_text(&query, config)?;
 
@@ -2069,7 +2067,7 @@ pub(super) fn parse_query_command_args(
     let mut evaluation_ts: TimestampValue = TimestampValue::Now;
     let mut lookback_delta: Duration = config.lookback_delta;
     let mut hash_tags: Vec<String> = Vec::new();
-    let mut options = crate::promql::QueryOptions::default();
+    let mut options = crate::promql::QueryOptions::from_config(config, current_time_millis());
 
     check_promql_query_text(&query, config)?;
 
@@ -2270,7 +2268,6 @@ mod tests {
             ..Default::default()
         };
         let mut options = crate::promql::QueryOptions {
-            timeout: Some(Duration::from_secs(30)),
             deadline: Some(i64::MAX),
             ..Default::default()
         };
@@ -2280,7 +2277,6 @@ mod tests {
         set_query_timeout(&config, &mut options, requested);
 
         let after = current_time_millis();
-        assert_eq!(options.timeout, Some(requested));
         let deadline = options.deadline.expect("TIMEOUT must set a deadline");
         assert!(deadline >= before.saturating_add(requested.as_millis() as i64));
         assert!(deadline <= after.saturating_add(requested.as_millis() as i64));
@@ -2293,10 +2289,13 @@ mod tests {
             ..Default::default()
         };
         let mut options = crate::promql::QueryOptions::default();
+        let before = current_time_millis();
 
         set_query_timeout(&config, &mut options, Duration::from_secs(1));
 
-        assert_eq!(options.timeout, Some(Duration::from_millis(5)));
+        let deadline = options.deadline.expect("TIMEOUT must set a deadline");
+        assert!(deadline <= current_time_millis().saturating_add(5));
+        assert!(deadline >= before.saturating_add(5));
     }
 
     /// DIV-0014. Built directly rather than through `RepeatedOptions::new()` so

@@ -210,7 +210,6 @@ mod tests {
 
     fn options() -> QueryOptions {
         QueryOptions {
-            timeout: None,
             deadline: None,
             ..QueryOptions::default()
         }
@@ -367,7 +366,6 @@ mod tests {
         // of the allocation, which is the whole point of wiring it in here.
         let (counting, reader) = build_reader();
         let opts = QueryOptions {
-            timeout: None,
             deadline: None,
             max_points_per_series: Some(100_000),
             ..QueryOptions::default()
@@ -406,7 +404,6 @@ mod tests {
             let start = start.clone();
             callers.push(thread::spawn(move || {
                 let opts = QueryOptions {
-                    timeout: None,
                     deadline: None,
                     max_points_per_series: Some(100_000),
                     ..QueryOptions::default()
