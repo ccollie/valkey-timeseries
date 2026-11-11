@@ -58,13 +58,11 @@ pub(in crate::promql) fn get_snapshot_range(
         Some(count) if count > 0 => count,
         _ => return Ok(snapshot.get_range()),
     };
-    let mut samples = Vec::new();
-    for sample in snapshot.range_iter() {
-        if samples.len() >= points_count {
-            validate_max_points(points_count.saturating_add(1), max_points_per_series)?;
-        }
-        samples.push(sample);
-    }
+    let samples: Vec<Sample> = snapshot
+        .range_iter()
+        .take(points_count.saturating_add(1))
+        .collect();
+    validate_max_points(samples.len(), max_points_per_series)?;
     Ok(samples)
 }
 
