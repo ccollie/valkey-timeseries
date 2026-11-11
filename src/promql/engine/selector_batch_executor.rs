@@ -48,13 +48,13 @@ use valkey_module::{Context, MODULE_CONTEXT};
 const MAX_BATCH_SIZE: usize = 4;
 
 struct InstantVectorSelectorCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     timestamp: Timestamp,
     options: QueryOptions,
 }
 
 struct RangeSelectorCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     start_timestamp: Timestamp,
     end_timestamp: Timestamp,
     options: QueryOptions,
@@ -63,7 +63,7 @@ struct RangeSelectorCommand {
 /// An instant vector to select *and* the aggregation to apply to it, so that in
 /// cluster mode both can be pushed to the shards that hold the data.
 struct AggregationSelectorCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     timestamp: Timestamp,
     aggregation: AggregationRequest,
     options: QueryOptions,
@@ -73,7 +73,7 @@ struct AggregationSelectorCommand {
 /// selection, a rollup, or either fused with an aggregation — so that in
 /// cluster mode both can be pushed to the shards that hold the data.
 struct GridSelectorCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     request: GridRequest,
     options: QueryOptions,
 }
@@ -81,7 +81,7 @@ struct GridSelectorCommand {
 /// The labels of the series a selector matches, from the index alone: what
 /// the derived filter push-down narrows a range query's operands with.
 struct ProfileSelectorCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     window: Option<ProfileWindow>,
     options: QueryOptions,
 }
@@ -363,7 +363,7 @@ impl SelectorBatchExecutor {
 
     pub fn query(
         &self,
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         timestamp: Timestamp,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
@@ -380,7 +380,7 @@ impl SelectorBatchExecutor {
 
     pub fn query_range(
         &self,
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         start: Timestamp,
         end: Timestamp,
         options: QueryOptions,
@@ -407,7 +407,7 @@ impl SelectorBatchExecutor {
     /// the aggregation.
     pub fn query_aggregation(
         &self,
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         timestamp: Timestamp,
         aggregation: AggregationRequest,
         options: QueryOptions,
@@ -433,7 +433,7 @@ impl SelectorBatchExecutor {
     /// hold the module lock for the length of the evaluation.
     pub fn query_grid(
         &self,
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         request: GridRequest,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
@@ -455,7 +455,7 @@ impl SelectorBatchExecutor {
     /// only the series with a retained sample in it count.
     pub fn label_profile(
         &self,
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         window: Option<ProfileWindow>,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
@@ -1195,7 +1195,7 @@ impl LocalRead {
             deliver_task_result(&responder, Err(QueryError::Timeout));
             return None;
         }
-        let selector = SeriesSelector::from(&matchers);
+        let selector = SeriesSelector::from(&*matchers);
         match SeriesCursor::plan(db, SeriesSelection::Matching(&[selector]), None) {
             Ok(cursor) => Some(Self {
                 cursor,

@@ -58,6 +58,7 @@ use crate::promql::{EvalLabels, QueryError, QueryResult};
 use crate::series::chunks::ChunkOps;
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
+use std::sync::Arc;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 mod columns;
@@ -69,7 +70,7 @@ use columns::{columnar_series, columnar_series_from, decode_columns};
 use transport::ships_raw;
 
 pub(in crate::promql) struct GridFanoutCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     request: GridRequest,
     /// The request's window ends, which the columnar responses index into.
     window_ends: Vec<i64>,
@@ -103,7 +104,7 @@ pub(in crate::promql) struct GridFanoutCommand {
 
 impl GridFanoutCommand {
     pub fn new(
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         request: GridRequest,
         max_series: u64,
         max_points_per_series: u64,
@@ -218,7 +219,7 @@ impl FanoutCommand for GridFanoutCommand {
 
     fn generate_request(&self) -> GridQuery {
         GridQuery {
-            selector: Some(ProtoSeriesSelector::from(&self.matchers)),
+            selector: Some(ProtoSeriesSelector::from(&*self.matchers)),
             query_start: self.request.query_start,
             query_end: self.request.query_end,
             step_ms: self.request.step_ms,
