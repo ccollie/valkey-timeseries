@@ -849,21 +849,25 @@ fn execute_cluster_grid(
                     // The grid output, not the input, is what these bound: one
                     // entry per series (or group), one point per step that produced
                     // one.
-                    let points: Vec<usize> = match &outcome {
+                    let check = |series: usize, points: &mut dyn Iterator<Item = usize>| {
+                        validate_max_series(series, max_series)?;
+                        for count in points {
+                            validate_max_points(count, max_points_per_series)?;
+                        }
+                        Ok(())
+                    };
+                    match &outcome {
                         GridOutcome::Stepped(series) => {
-                            series.iter().map(|s| s.points.len()).collect()
+                            check(series.len(), &mut series.iter().map(|s| s.points.len()))
                         }
                         GridOutcome::Rolled(series)
                         | GridOutcome::Reduced(series)
                         | GridOutcome::Raw(series) => {
-                            series.iter().map(|s| s.samples.len()).collect()
+                            check(series.len(), &mut series.iter().map(|s| s.samples.len()))
                         }
-                        GridOutcome::Unsupported => Vec::new(),
-                    };
-                    validate_max_series(points.len(), max_series).map_err(warned)?;
-                    for count in points {
-                        validate_max_points(count, max_points_per_series).map_err(warned)?;
+                        GridOutcome::Unsupported => Ok(()),
                     }
+                    .map_err(warned)?;
                     Ok(SelectorOutput::Grid(outcome))
                 }),
                 Err(e) if peer_unsupported => {
@@ -1024,22 +1028,24 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
             }
         }
 
-        reads.retain_mut(|read| {
+        let mut pending = Vec::with_capacity(reads.len());
+        for mut read in reads {
             if read.failed {
-                return false;
+                continue;
             }
             if read.cursor.is_done() {
                 read.finish();
-                return false;
+                continue;
             }
             // Past its deadline, its client gone, or memory past the limit: the
             // next hold would take the lock for nobody, or add to the pressure.
             if let Err(err) = Deadline::from_options(&read.options).check() {
                 read.fail(err);
-                return false;
+                continue;
             }
-            true
-        });
+            pending.push(read);
+        }
+        reads = pending;
         if !reads.is_empty() {
             // As between a fan-out share's batches: let a waiting main thread in.
             std::thread::yield_now();
@@ -1370,16 +1376,8 @@ impl LocalRead {
     }
 
     /// Every series is read: apply the series-count limit and answer.
-    fn finish(&mut self) {
-        let result = match std::mem::replace(
-            &mut self.state,
-            ReadState::Instant {
-                start: 0,
-                end: 0,
-                aggregation: false,
-                samples: Vec::new(),
-            },
-        ) {
+    fn finish(self) {
+        let result = match self.state {
             ReadState::Instant {
                 samples,
                 aggregation,
