@@ -35,7 +35,6 @@ fn query_time() -> SystemTime {
 
 fn options(deadline_in_ms: Option<i64>) -> QueryOptions {
     QueryOptions {
-        timeout: None,
         deadline: deadline_in_ms.map(|ms| current_time_millis() + ms),
         ..QueryOptions::default()
     }

@@ -565,18 +565,19 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
     }
 }
 
-/// How long a fan-out for this query may take: its timeout, but never past the query's
-/// deadline. A query's fan-outs run one after another (a preload, then the reads the step
-/// loop falls back to), and arming each with the whole timeout let the last of them outlive
-/// the query by up to a full timeout, and its shards with it. What is left of it when the
-/// request is sent also travels as its time budget, so the shards stop when the coordinator
-/// does.
+/// How long a fan-out for this query may take: what is left before the query's deadline,
+/// or the cluster command timeout for a query without one. A query's fan-outs run one after
+/// another (a preload, then the reads the step loop falls back to), and arming each with the
+/// query's whole timeout let the last of them outlive the query by up to a full timeout, and
+/// its shards with it. The same figure travels as the request's time budget, so the shards
+/// stop when the coordinator does.
 fn calculate_timeout(opts: &QueryOptions) -> Duration {
-    remaining_budget(
-        opts.timeout.unwrap_or_else(get_cluster_command_timeout),
-        opts.deadline,
-        current_time_millis(),
-    )
+    let without_deadline = if opts.deadline.is_some_and(|d| d > 0) {
+        Duration::MAX
+    } else {
+        get_cluster_command_timeout()
+    };
+    remaining_budget(without_deadline, opts.deadline, current_time_millis())
 }
 
 /// `timeout`, cut to what is left before `deadline` (epoch ms) at `now`. At least 1 ms,
@@ -1553,6 +1554,32 @@ mod selector_batch_executor_tests {
             remaining_budget(thirty, Some(1_000), 2_000),
             Duration::from_millis(1)
         );
+    }
+
+    /// A query's fan-out gets all that is left of the query, however long the
+    /// cluster command timeout is; only a query without a deadline falls back to it.
+    #[test]
+    fn a_fan_out_gets_what_is_left_of_its_query() {
+        use super::{
+            QueryOptions, calculate_timeout, current_time_millis, get_cluster_command_timeout,
+        };
+        let hour = 3_600_000;
+        let options = QueryOptions {
+            deadline: Some(current_time_millis() + hour),
+            ..QueryOptions::default()
+        };
+        let timeout = calculate_timeout(&options);
+        assert!(
+            timeout > Duration::from_millis(hour as u64 - 60_000),
+            "{timeout:?}"
+        );
+        assert!(timeout <= Duration::from_millis(hour as u64));
+
+        let options = QueryOptions {
+            deadline: None,
+            ..QueryOptions::default()
+        };
+        assert_eq!(calculate_timeout(&options), get_cluster_command_timeout());
     }
 
     #[test]
