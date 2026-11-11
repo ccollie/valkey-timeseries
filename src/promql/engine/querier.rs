@@ -10,7 +10,7 @@ use crate::promql::engine::selector_batch_executor::SelectorBatchExecutor;
 use crate::promql::{InstantSample, QueryOptions, QueryResult, RangeSample};
 use promql_parser::label::{METRIC_NAME, MatchOp, Matcher, Matchers};
 use promql_parser::parser::VectorSelector;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use valkey_module::Context;
 
 pub static SERIES_SELECTOR: LazyLock<SelectorBatchExecutor> =
@@ -33,6 +33,52 @@ pub struct ValkeySeriesQuerier {
     /// thread: the cluster-only pushdown toggles apply to a fanout, not to the
     /// same request answered locally.
     clustered: bool,
+    /// Each selector's normalized matchers, built on its first read and shared
+    /// by the rest: a range query's per-step reads ask for the same selector
+    /// at every step.
+    normalized: NormalizedSelectors,
+}
+
+/// The normalized matchers of the selectors one command has read, by content.
+///
+/// By content, not by node address: the instant push-down reads selectors it
+/// built for one evaluation and then dropped, and an address can come back as
+/// another selector. Linear and capped: a query names a handful of selectors,
+/// and past the cap a read normalizes its selector as if there were no cache.
+#[derive(Default)]
+struct NormalizedSelectors {
+    entries: Mutex<Vec<NormalizedSelector>>,
+}
+
+/// One selector, as written, and its normalized matchers.
+struct NormalizedSelector {
+    name: Option<String>,
+    matchers: Matchers,
+    normalized: Arc<Matchers>,
+}
+
+impl NormalizedSelectors {
+    /// How many selectors one command keeps normalized.
+    const CAPACITY: usize = 32;
+
+    fn get(&self, selector: &VectorSelector) -> Arc<Matchers> {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = entries
+            .iter()
+            .find(|e| e.name == selector.name && e.matchers == selector.matchers)
+        {
+            return Arc::clone(&entry.normalized);
+        }
+        let normalized = Arc::new(normalize_selector(selector));
+        if entries.len() < Self::CAPACITY {
+            entries.push(NormalizedSelector {
+                name: selector.name.clone(),
+                matchers: selector.matchers.clone(),
+                normalized: Arc::clone(&normalized),
+            });
+        }
+        normalized
+    }
 }
 
 impl QueryReader for ValkeySeriesQuerier {
@@ -42,7 +88,7 @@ impl QueryReader for ValkeySeriesQuerier {
         timestamp: i64,
         options: QueryOptions,
     ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
-        let matchers: Matchers = normalize_selector(selector);
+        let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.query(
             matchers,
             timestamp,
@@ -59,7 +105,7 @@ impl QueryReader for ValkeySeriesQuerier {
         end_ms: i64,
         options: QueryOptions,
     ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
-        let matchers: Matchers = normalize_selector(selector);
+        let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.query_range(
             matchers,
             start_ms,
@@ -82,7 +128,7 @@ impl QueryReader for ValkeySeriesQuerier {
         if aggregation.kind.pushdown_strategy().is_none() {
             return Ok(AggregationOutcome::Unsupported);
         }
-        let matchers: Matchers = normalize_selector(selector);
+        let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.query_aggregation(
             matchers,
             timestamp,
@@ -108,7 +154,7 @@ impl QueryReader for ValkeySeriesQuerier {
         if self.clustered && !crate::config::is_fanout_rollup_pushdown_enabled() {
             return raw_grid_read(self, selector, request, options);
         }
-        let matchers: Matchers = normalize_selector(selector);
+        let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.query_grid(
             matchers,
             request.clone(),
@@ -130,7 +176,7 @@ impl QueryReader for ValkeySeriesQuerier {
         window: Option<ProfileWindow>,
         options: QueryOptions,
     ) -> QueryResult<Option<LabelProfile>> {
-        let matchers: Matchers = normalize_selector(selector);
+        let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.label_profile(
             matchers,
             window,
@@ -207,7 +253,59 @@ pub(crate) fn series_querier(_ctx: &Context, _hash_tags: Arc<[String]>) -> Arc<d
                 caller_user: (!user.is_empty()).then(|| Arc::from(user)),
                 hash_tags: _hash_tags,
                 clustered: crate::fanout::is_clustered(_ctx),
+                normalized: NormalizedSelectors::default(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NormalizedSelectors, normalize_selector};
+    use promql_parser::parser::{Expr, VectorSelector, parse};
+    use std::sync::Arc;
+
+    fn selector(q: &str) -> VectorSelector {
+        match parse(q).unwrap() {
+            Expr::VectorSelector(vs) => vs,
+            other => panic!("not a selector: {other}"),
+        }
+    }
+
+    #[test]
+    fn a_selector_read_again_shares_its_normalized_matchers() {
+        let cache = NormalizedSelectors::default();
+        let vs = selector(r#"up{job="api"}"#);
+        let first = cache.get(&vs);
+        assert_eq!(*first, normalize_selector(&vs));
+        // A copy is the same selector: equal content, wherever it lives.
+        assert!(Arc::ptr_eq(&first, &cache.get(&vs.clone())));
+    }
+
+    #[test]
+    fn selectors_differing_in_name_or_matchers_are_kept_apart() {
+        let cache = NormalizedSelectors::default();
+        for q in [
+            r#"up{job="api"}"#,
+            r#"down{job="api"}"#,
+            r#"up{job="web"}"#,
+            r#"up{job=~"api"}"#,
+            r#"{__name__="up", job="api"}"#,
+        ] {
+            let vs = selector(q);
+            assert_eq!(*cache.get(&vs), normalize_selector(&vs), "{q}");
+        }
+    }
+
+    #[test]
+    fn past_the_capacity_a_selector_is_normalized_uncached() {
+        let cache = NormalizedSelectors::default();
+        for i in 0..NormalizedSelectors::CAPACITY {
+            cache.get(&selector(&format!("m{i}")));
+        }
+        let vs = selector("overflow");
+        let (a, b) = (cache.get(&vs), cache.get(&vs));
+        assert_eq!(*a, normalize_selector(&vs));
+        assert!(!Arc::ptr_eq(&a, &b));
     }
 }

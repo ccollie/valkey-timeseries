@@ -6,10 +6,11 @@ use crate::promql::generated::{
     RangeQuery, RangeQueryResponse, SeriesSelector as ProtoSeriesSelector,
 };
 use promql_parser::label::Matchers;
+use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
 pub struct RangeVectorSelectorFanoutCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     start_time: i64,
     end_time: i64,
     max_series: u64,
@@ -22,7 +23,7 @@ pub struct RangeVectorSelectorFanoutCommand {
 
 impl RangeVectorSelectorFanoutCommand {
     pub fn new(
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         start_time: Timestamp,
         end_time: Timestamp,
         max_series: u64,
@@ -72,7 +73,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
     }
 
     fn generate_request(&self) -> RangeQuery {
-        let selector = ProtoSeriesSelector::from(&self.matchers);
+        let selector = ProtoSeriesSelector::from(&*self.matchers);
         RangeQuery {
             selector: Some(selector),
             start_time: self.start_time,

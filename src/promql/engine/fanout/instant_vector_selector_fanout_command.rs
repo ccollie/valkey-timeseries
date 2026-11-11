@@ -10,10 +10,11 @@ use crate::promql::generated::{
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalLabels, InstantSample};
 use promql_parser::label::Matchers;
+use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
 pub struct InstantVectorSelectorFanoutCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     timestamp: i64,
     lookback_delta: u64,
     max_series: u64,
@@ -25,7 +26,7 @@ pub struct InstantVectorSelectorFanoutCommand {
 
 impl InstantVectorSelectorFanoutCommand {
     pub fn new(
-        matchers: Matchers,
+        matchers: Arc<Matchers>,
         timestamp: Timestamp,
         lookback_delta: u64,
         max_series: u64,
@@ -74,7 +75,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
     }
 
     fn generate_request(&self) -> InstantQuery {
-        let selector = ProtoSeriesSelector::from(&self.matchers);
+        let selector = ProtoSeriesSelector::from(&*self.matchers);
         InstantQuery {
             selector: Some(selector),
             timestamp: self.timestamp,

@@ -27,10 +27,11 @@ use crate::promql::generated::{
     SeriesSelector as ProtoSeriesSelector,
 };
 use promql_parser::label::Matchers;
+use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
 pub struct LabelProfileFanoutCommand {
-    matchers: Matchers,
+    matchers: Arc<Matchers>,
     window: Option<ProfileWindow>,
     max_series: u64,
     merged: LabelProfileBuilder,
@@ -40,7 +41,7 @@ pub struct LabelProfileFanoutCommand {
 }
 
 impl LabelProfileFanoutCommand {
-    pub fn new(matchers: Matchers, window: Option<ProfileWindow>, max_series: u64) -> Self {
+    pub fn new(matchers: Arc<Matchers>, window: Option<ProfileWindow>, max_series: u64) -> Self {
         Self {
             matchers,
             window,
@@ -143,7 +144,7 @@ impl FanoutCommand for LabelProfileFanoutCommand {
 
     fn generate_request(&self) -> LabelProfileQuery {
         LabelProfileQuery {
-            selector: Some(ProtoSeriesSelector::from(&self.matchers)),
+            selector: Some(ProtoSeriesSelector::from(&*self.matchers)),
             max_series: self.max_series,
             start_ms: self.window.map(|w| w.start_ms),
             end_ms: self.window.map(|w| w.end_ms),
@@ -181,7 +182,7 @@ mod tests {
     }
 
     fn command(max_series: u64) -> LabelProfileFanoutCommand {
-        LabelProfileFanoutCommand::new(Matchers::empty(), None, max_series)
+        LabelProfileFanoutCommand::new(Arc::new(Matchers::empty()), None, max_series)
     }
 
     #[test]
@@ -290,7 +291,7 @@ mod tests {
             "us",
         )]);
         let window = ProfileWindow::new(-5, 1_000);
-        let cmd = LabelProfileFanoutCommand::new(matchers, Some(window), 7);
+        let cmd = LabelProfileFanoutCommand::new(Arc::new(matchers), Some(window), 7);
         let req = cmd.generate_request();
         assert_eq!(req.max_series, 7);
         assert_eq!(window_from_wire(&req), Some(window));

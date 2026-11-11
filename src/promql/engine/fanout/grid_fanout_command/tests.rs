@@ -108,7 +108,7 @@ fn command(request: GridRequest) -> GridFanoutCommand {
 
 fn command_limited(request: GridRequest, max_samples: usize) -> GridFanoutCommand {
     GridFanoutCommand::new(
-        Matchers::empty(),
+        std::sync::Arc::new(Matchers::empty()),
         request,
         0,
         0,
@@ -118,7 +118,14 @@ fn command_limited(request: GridRequest, max_samples: usize) -> GridFanoutComman
 }
 
 fn command_until(request: GridRequest, deadline: Deadline) -> GridFanoutCommand {
-    GridFanoutCommand::new(Matchers::empty(), request, 0, 0, 0, deadline)
+    GridFanoutCommand::new(
+        std::sync::Arc::new(Matchers::empty()),
+        request,
+        0,
+        0,
+        0,
+        deadline,
+    )
 }
 
 fn node(port: u16) -> NodeInfo {
@@ -1627,7 +1634,7 @@ fn test_request_round_trip() {
         )
     };
     let cmd = GridFanoutCommand::new(
-        Matchers::empty(),
+        std::sync::Arc::new(Matchers::empty()),
         request,
         1_000,
         11_000,
