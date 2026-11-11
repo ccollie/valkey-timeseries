@@ -1,3 +1,4 @@
+use crate::common::logging::log_debug;
 use crate::promql::binops::can_push_down_common_filters;
 use crate::promql::functions::{PromqlFunctionKind, resolve_function};
 use ahash::AHashSet;
@@ -9,6 +10,7 @@ use promql_parser::parser::{
     AggregateExpr, BinaryExpr, Call, Expr, LabelModifier, VectorMatchCardinality, VectorSelector,
 };
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::vec::Vec;
 
 /// What the filter push-down knows about a selector's series.
@@ -49,6 +51,70 @@ impl LeafFilters for WrittenFilters {
     /// label-carrying vectors.
     fn narrows(&self, be: &BinaryExpr) -> bool {
         can_push_down_common_filters(be)
+    }
+}
+
+/// How much work the push-down may do on one expression: one unit per node
+/// visited and per matcher copied, compared or hashed.
+///
+/// Each binary operation pushes its filters through its whole subtree, so the
+/// work grows with the subtree times the filter count, at every level. A
+/// left-deep chain whose terms each bring a new label costs the cube of its
+/// length: 400 terms, which fit the default query length, took over five
+/// seconds. Typical queries spend a few hundred units. The pass is an
+/// optimization, and every filter it pushes is sound on its own, so a spent
+/// budget leaves the pushes made so far and skips the rest.
+pub(super) const PUSHDOWN_WORK_BUDGET: usize = 200_000;
+
+/// One run of the push-down: the leaf rule and the budget left.
+struct Pass<'a> {
+    leaves: &'a dyn LeafFilters,
+    remaining: Cell<usize>,
+}
+
+impl<'a> Pass<'a> {
+    fn new(leaves: &'a dyn LeafFilters, budget: usize) -> Self {
+        Self {
+            leaves,
+            remaining: Cell::new(budget),
+        }
+    }
+
+    /// Take `units` from the budget. False once it is spent, and from then
+    /// on: every caller then derives no filters, which pushes nothing more.
+    fn spend(&self, units: usize) -> bool {
+        let remaining = self.remaining.get();
+        if remaining == 0 || remaining < units {
+            self.remaining.set(0);
+            return false;
+        }
+        self.remaining.set(remaining - units);
+        true
+    }
+
+    /// The leaf rule's filters for `vs`; none once the budget is spent.
+    fn common_filters(&self, vs: &VectorSelector) -> Vec<Matcher> {
+        if !self.spend(1) {
+            return vec![];
+        }
+        let filters = self.leaves.common_filters(vs);
+        if !self.spend(filters.len()) {
+            return vec![];
+        }
+        filters
+    }
+
+    /// [`binary_filters`], charged for the operand lists it combines.
+    fn binary_filters(
+        &self,
+        be: &BinaryExpr,
+        lhs: Vec<Matcher>,
+        rhs: Vec<Matcher>,
+    ) -> Vec<Matcher> {
+        if !self.spend(1 + lhs.len() + rhs.len()) {
+            return vec![];
+        }
+        binary_filters(be, lhs, rhs)
     }
 }
 
@@ -108,7 +174,24 @@ pub fn pushdown_filters_in_place(expr: &mut Expr) {
 
 /// [`pushdown_filters_in_place`] with the leaf rule supplied by `leaves`.
 pub fn pushdown_filters_in_place_with(expr: &mut Expr, leaves: &dyn LeafFilters) {
-    rewrite(expr, leaves);
+    let spent = pushdown_filters_within(expr, leaves, PUSHDOWN_WORK_BUDGET);
+    if spent >= PUSHDOWN_WORK_BUDGET {
+        log_debug(format!(
+            "promql filter push-down stopped after its work budget of {PUSHDOWN_WORK_BUDGET} units"
+        ));
+    }
+}
+
+/// [`pushdown_filters_in_place_with`] with `budget` units of work, returning
+/// how many it spent (all of them when it stopped short).
+pub(super) fn pushdown_filters_within(
+    expr: &mut Expr,
+    leaves: &dyn LeafFilters,
+    budget: usize,
+) -> usize {
+    let cx = Pass::new(leaves, budget);
+    rewrite(expr, &cx);
+    budget - cx.remaining.get()
 }
 
 /// Narrow every binary operation in `expr`, innermost first, and return the
@@ -120,7 +203,7 @@ pub fn pushdown_filters_in_place_with(expr: &mut Expr, leaves: &dyn LeafFilters)
 /// that operand's series too. So each step hands its parent the filters of
 /// what it left behind, and the parent combines them instead of re-deriving
 /// them from the leaves.
-fn rewrite(expr: &mut Expr, leaves: &dyn LeafFilters) -> Vec<Matcher> {
+fn rewrite(expr: &mut Expr, cx: &Pass) -> Vec<Matcher> {
     match expr {
         Expr::VectorSelector(vs) => {
             if vs.name.is_none()
@@ -131,37 +214,37 @@ fn rewrite(expr: &mut Expr, leaves: &dyn LeafFilters) -> Vec<Matcher> {
                 let m = vs.matchers.matchers.remove(pos);
                 vs.name = Some(m.value);
             }
-            leaves.common_filters(vs)
+            cx.common_filters(vs)
         }
-        Expr::MatrixSelector(ms) => leaves.common_filters(&ms.vs),
+        Expr::MatrixSelector(ms) => cx.common_filters(&ms.vs),
         Expr::Call(fe) => {
             let mut arg_filters: Vec<Vec<Matcher>> = fe
                 .args
                 .args
                 .iter_mut()
-                .map(|arg| rewrite(arg, leaves))
+                .map(|arg| rewrite(arg, cx))
                 .collect();
             call_filters(fe, |i| std::mem::take(&mut arg_filters[i]))
         }
         Expr::Aggregate(agg) => {
-            let filters = rewrite(&mut agg.expr, leaves);
+            let filters = rewrite(&mut agg.expr, cx);
             if let Some(param) = agg.param.as_mut() {
-                rewrite(param, leaves);
+                rewrite(param, cx);
             }
             aggregate_filters(agg, filters)
         }
         Expr::Binary(be) => {
-            let lhs = rewrite(&mut be.lhs, leaves);
-            let rhs = rewrite(&mut be.rhs, leaves);
-            let common = binary_filters(be, lhs, rhs);
-            if common.is_empty() || !leaves.narrows(be) {
+            let lhs = rewrite(&mut be.lhs, cx);
+            let rhs = rewrite(&mut be.rhs, cx);
+            let common = cx.binary_filters(be, lhs, rhs);
+            if common.is_empty() || !cx.leaves.narrows(be) {
                 return common;
             }
-            push_into_binary(be, &common, leaves)
+            push_into_binary(be, &common, cx)
         }
-        Expr::Unary(unary) => rewrite(&mut unary.expr, leaves),
-        Expr::Paren(p) => rewrite(&mut p.expr, leaves),
-        Expr::Subquery(s) => rewrite(&mut s.expr, leaves),
+        Expr::Unary(unary) => rewrite(&mut unary.expr, cx),
+        Expr::Paren(p) => rewrite(&mut p.expr, cx),
+        Expr::Subquery(s) => rewrite(&mut s.expr, cx),
         Expr::NumberLiteral(_) | Expr::StringLiteral(_) | Expr::Extension(_) => vec![],
     }
 }
@@ -169,23 +252,26 @@ fn rewrite(expr: &mut Expr, leaves: &dyn LeafFilters) -> Vec<Matcher> {
 /// The label filters every series of `e`'s result satisfies, with the leaf
 /// rule supplied by `leaves`.
 pub fn get_common_label_filters_with(e: &Expr, leaves: &dyn LeafFilters) -> Vec<Matcher> {
+    common_filters_of(e, &Pass::new(leaves, PUSHDOWN_WORK_BUDGET))
+}
+
+fn common_filters_of(e: &Expr, cx: &Pass) -> Vec<Matcher> {
+    if !cx.spend(1) {
+        return vec![];
+    }
     match e {
-        Expr::VectorSelector(vs) => leaves.common_filters(vs),
-        Expr::MatrixSelector(ms) => leaves.common_filters(&ms.vs),
-        Expr::Call(fe) => call_filters(fe, |i| {
-            get_common_label_filters_with(&fe.args.args[i], leaves)
-        }),
-        Expr::Aggregate(agg) => {
-            aggregate_filters(agg, get_common_label_filters_with(&agg.expr, leaves))
-        }
-        Expr::Binary(be) => binary_filters(
+        Expr::VectorSelector(vs) => cx.common_filters(vs),
+        Expr::MatrixSelector(ms) => cx.common_filters(&ms.vs),
+        Expr::Call(fe) => call_filters(fe, |i| common_filters_of(&fe.args.args[i], cx)),
+        Expr::Aggregate(agg) => aggregate_filters(agg, common_filters_of(&agg.expr, cx)),
+        Expr::Binary(be) => cx.binary_filters(
             be,
-            get_common_label_filters_with(&be.lhs, leaves),
-            get_common_label_filters_with(&be.rhs, leaves),
+            common_filters_of(&be.lhs, cx),
+            common_filters_of(&be.rhs, cx),
         ),
-        Expr::Unary(unary) => get_common_label_filters_with(&unary.expr, leaves),
-        Expr::Paren(p) => get_common_label_filters_with(&p.expr, leaves),
-        Expr::Subquery(s) => get_common_label_filters_with(&s.expr, leaves),
+        Expr::Unary(unary) => common_filters_of(&unary.expr, cx),
+        Expr::Paren(p) => common_filters_of(&p.expr, cx),
+        Expr::Subquery(s) => common_filters_of(&s.expr, cx),
         Expr::NumberLiteral(_) | Expr::StringLiteral(_) | Expr::Extension(_) => vec![],
     }
 }
@@ -421,17 +507,18 @@ fn label_filters_without_metric_name(lfs: &[Matcher]) -> Vec<Matcher> {
         .collect()
 }
 
-/// Append `common_filters` to the selector `vs`, less those `leaves` knows
-/// would prune nothing there.
-fn push_filters_to_selector(
-    vs: &mut VectorSelector,
-    common_filters: &[Matcher],
-    leaves: &dyn LeafFilters,
-) {
+/// Append `common_filters` to the selector `vs`, less those the leaf rule
+/// knows would prune nothing there.
+fn push_filters_to_selector(vs: &mut VectorSelector, common_filters: &[Matcher], cx: &Pass) {
+    let written =
+        vs.matchers.matchers.len() + vs.matchers.or_matchers.iter().map(Vec::len).sum::<usize>();
+    if !cx.spend(common_filters.len() + written) {
+        return;
+    }
     // Owned: the retained set is this selector's, not the sibling's the
     // caller's list goes on to.
     let mut filters = common_filters.to_vec();
-    leaves.retain_pruning(vs, &mut filters);
+    cx.leaves.retain_pruning(vs, &mut filters);
     if !filters.is_empty() {
         push_filters_to_matchers(&mut vs.matchers, &filters);
     }
@@ -456,36 +543,44 @@ fn push_filters_to_matchers(matchers: &mut Matchers, common_filters: &[Matcher])
 }
 
 pub fn push_down_binary_op_filters_in_place(e: &mut Expr, common_filters: &[Matcher]) {
-    push_down(e, common_filters, &WrittenFilters);
+    push_down(
+        e,
+        common_filters,
+        &Pass::new(&WrittenFilters, PUSHDOWN_WORK_BUDGET),
+    );
 }
 
-/// Push `common_filters` into `e`, with `leaves` deciding, at each selector,
-/// which of them are worth adding, and return the common filters of the
-/// rewritten `e` (see [`rewrite`]).
+/// Push `common_filters` into `e`, with the leaf rule deciding, at each
+/// selector, which of them are worth adding, and return the common filters of
+/// the rewritten `e` (see [`rewrite`]).
 ///
 /// `common_filters` is read-only: a node that narrows the set for its own
 /// subtree (a matching modifier, an aggregation's grouping, a relabeling
 /// function) trims a copy. The operands of a binary operation are siblings
 /// and must each see the set as their parent left it — when they shared one
 /// list, whatever the left operand trimmed for itself was lost to the right.
-fn push_down(e: &mut Expr, common_filters: &[Matcher], leaves: &dyn LeafFilters) -> Vec<Matcher> {
+fn push_down(e: &mut Expr, common_filters: &[Matcher], cx: &Pass) -> Vec<Matcher> {
     if common_filters.is_empty() {
-        return get_common_label_filters_with(e, leaves);
+        return common_filters_of(e, cx);
+    }
+    // A node may copy the list once or twice for its subtrees.
+    if !cx.spend(1 + common_filters.len()) {
+        return vec![];
     }
 
     match e {
         Expr::VectorSelector(vs) => {
-            push_filters_to_selector(vs, common_filters, leaves);
-            leaves.common_filters(vs)
+            push_filters_to_selector(vs, common_filters, cx);
+            cx.common_filters(vs)
         }
         Expr::MatrixSelector(ms) => {
-            push_filters_to_selector(&mut ms.vs, common_filters, leaves);
-            leaves.common_filters(&ms.vs)
+            push_filters_to_selector(&mut ms.vs, common_filters, cx);
+            cx.common_filters(&ms.vs)
         }
-        Expr::Subquery(s) => push_down(&mut s.expr, common_filters, leaves),
-        Expr::Call(fe) => push_into_call(fe, common_filters, leaves),
-        Expr::Unary(unary) => push_down(&mut unary.expr, common_filters, leaves),
-        Expr::Binary(be) => push_into_binary(be, common_filters, leaves),
+        Expr::Subquery(s) => push_down(&mut s.expr, common_filters, cx),
+        Expr::Call(fe) => push_into_call(fe, common_filters, cx),
+        Expr::Unary(unary) => push_down(&mut unary.expr, common_filters, cx),
+        Expr::Binary(be) => push_into_binary(be, common_filters, cx),
         Expr::Aggregate(aggr) => {
             // Grouping labels pass through an aggregation unchanged, so a filter
             // on one is equally true of the input series. A label the aggregation
@@ -503,19 +598,15 @@ fn push_down(e: &mut Expr, common_filters: &[Matcher], leaves: &dyn LeafFilters)
             // the count_values label) — never an operand of the binary op's label
             // matching. Rewriting a selector under it, as in `topk(scalar(x), y)`,
             // would change the parameter's value rather than prune series.
-            let filters = push_down(&mut aggr.expr, &filters, leaves);
+            let filters = push_down(&mut aggr.expr, &filters, cx);
             aggregate_filters(aggr, filters)
         }
-        Expr::Paren(p) => push_down(&mut p.expr, common_filters, leaves),
+        Expr::Paren(p) => push_down(&mut p.expr, common_filters, cx),
         Expr::NumberLiteral(_) | Expr::StringLiteral(_) | Expr::Extension(_) => vec![],
     }
 }
 
-fn push_into_call(
-    fe: &mut Call,
-    common_filters: &[Matcher],
-    leaves: &dyn LeafFilters,
-) -> Vec<Matcher> {
+fn push_into_call(fe: &mut Call, common_filters: &[Matcher], cx: &Pass) -> Vec<Matcher> {
     if !call_carries_labels(fe) {
         return vec![];
     }
@@ -542,24 +633,20 @@ fn push_into_call(
             (index, filters)
         }),
     };
-    let pushed = target
-        .map(|(index, filters)| (index, push_down(&mut fe.args.args[index], &filters, leaves)));
+    let pushed =
+        target.map(|(index, filters)| (index, push_down(&mut fe.args.args[index], &filters, cx)));
     let fe = &*fe;
     call_filters(fe, |i| match pushed {
         Some((index, filters)) if index == i => filters,
-        _ => get_common_label_filters_with(&fe.args.args[i], leaves),
+        _ => common_filters_of(&fe.args.args[i], cx),
     })
 }
 
-fn push_into_binary(
-    bo: &mut BinaryExpr,
-    common_filters: &[Matcher],
-    leaves: &dyn LeafFilters,
-) -> Vec<Matcher> {
+fn push_into_binary(bo: &mut BinaryExpr, common_filters: &[Matcher], cx: &Pass) -> Vec<Matcher> {
     let (lhs, rhs) = match &bo.modifier {
         None => (
-            push_down(&mut bo.lhs, common_filters, leaves),
-            push_down(&mut bo.rhs, common_filters, leaves),
+            push_down(&mut bo.lhs, common_filters, cx),
+            push_down(&mut bo.rhs, common_filters, cx),
         ),
         Some(modifier) => {
             // A grouped join's result carries the many side's labels and the
@@ -586,12 +673,12 @@ fn push_into_binary(
                 }
             }
             (
-                push_down(&mut bo.lhs, &lhs_filters, leaves),
-                push_down(&mut bo.rhs, &rhs_filters, leaves),
+                push_down(&mut bo.lhs, &lhs_filters, cx),
+                push_down(&mut bo.rhs, &rhs_filters, cx),
             )
         }
     };
-    binary_filters(bo, lhs, rhs)
+    cx.binary_filters(bo, lhs, rhs)
 }
 
 fn intersect_label_filters(first: Vec<Matcher>, second: Vec<Matcher>) -> Vec<Matcher> {

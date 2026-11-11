@@ -476,7 +476,10 @@ Both are exact: a filter only ever removes series that could not have matched at
 step. A selector matching more than 50 000 series (or the query's
 `ts-promql-max-response-series`, whichever is lower) is left as written, as is one
 matching more than four times that many series in total, counting those that stopped
-reporting before the query, and a label with more than 60 distinct values.
+reporting before the query, and a label with more than 60 distinct values. Either pass
+also stops after a fixed amount of work on one query — a long chain of binary operations
+whose operands each bring new labels is the case that reaches it — and keeps the filters
+it pushed until then.
 
 ## Configuration and safeguards
 
