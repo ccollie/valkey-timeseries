@@ -5,12 +5,12 @@
 //!
 //! 1. **Plan** – compute concrete time bounds and path-specific parameters
 //! 2. **LoadSamples** – read the selected series over those bounds
-//! 3. **ShapeSamples** – merge/filter/dedup into evaluator-ready per-series structures
+//! 3. **ShapeSamples** – turn each series' samples into the evaluator's per-series form
 //! 4. **Evaluate** – run PromQL expression semantics on prepared in-memory inputs
 //!
 //! The types in this module represent the intermediate artifacts produced by each phase.
 
-use crate::common::threads::IntoParRayon;
+use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::promql::engine::QueryReader;
 use crate::promql::exec::types::EvalLabels;
@@ -25,11 +25,13 @@ use promql_parser::parser::VectorSelector;
 
 /// Path-specific execution parameters.
 pub(crate) enum QueryPathKind {
-    /// Instant vector selector. Buckets newest-first, fingerprint dedup.
+    /// Instant vector selector: the reader returns each series' latest sample
+    /// within the lookback window.
     InstantVector { lookback_delta_ms: i64 },
-    /// Matrix selector. Buckets chronological, merge all samples per label set.
+    /// Matrix selector: each series' samples in `(start, end]`, as read.
     Matrix,
-    /// Subquery vector-selector fast path. Merge, sort/dedup, step-bucket.
+    /// Subquery vector-selector fast path: each series' samples, reduced to
+    /// the latest one at each subquery step.
     SubqueryVectorSelector {
         range_ms: i64,
         aligned_start_ms: i64,
@@ -41,7 +43,8 @@ pub(crate) enum QueryPathKind {
 
 /// Computed execution plan for a query path.
 pub(crate) struct QueryPlan {
-    /// Exclusive lower bound for sample filtering (timestamp > start).
+    /// Exclusive lower bound for sample filtering (timestamp > start). The
+    /// instant path does not read it: the reader applies the lookback itself.
     pub sample_start_ms: Timestamp,
     /// Inclusive upper bound for sample filtering (timestamp <= end).
     pub sample_end_ms: Timestamp,
@@ -69,10 +72,8 @@ impl QueryPlan {
         }
     }
 
-    /// Construct a plan for a matrix selector.
-    ///
-    /// Buckets sorted chronologically and filtered to only those overlapping
-    /// with `[start_ms, end_ms]`. All samples are merged per label set.
+    /// Construct a plan for a matrix selector: the range ending at the
+    /// (modifier-adjusted) evaluation timestamp.
     pub(crate) fn for_matrix(adjusted_eval_ts_ms: Timestamp, range_ms: Timestamp) -> Self {
         let end_ms = adjusted_eval_ts_ms;
         let start_ms = end_ms.saturating_sub(range_ms);
@@ -86,8 +87,7 @@ impl QueryPlan {
     /// Construct a plan for a subquery vector-selector fast path.
     ///
     /// Computes step alignment and extends the sample range backward by
-    /// `lookback_delta_ms` so the first step has data. Buckets sorted
-    /// newest-first (matching existing `fetch_series_samples` behavior).
+    /// `lookback_delta_ms` so the first step has data.
     pub(crate) fn for_subquery_vector_selector(
         subquery_start_ms: Timestamp,
         subquery_end_ms: Timestamp,
@@ -179,10 +179,12 @@ pub(crate) fn for_each_step_sample<I, F>(
     }
 }
 
-/// Shape loaded data for the subquery vector-selector fast path.
+/// Shape loaded data for the subquery vector-selector fast path: reduce each
+/// series to its latest sample at every subquery step, within the lookback
+/// window, dropping series left with no step.
 ///
-/// Merges by fingerprint across series, sorts/deduplicates, then applies
-/// the sliding-window step-bucketing algorithm.
+/// Series are independent; a few short ones are shaped on the caller's
+/// thread, since a pool round trip would cost more than the work.
 fn shape_subquery_results(
     series_data: Vec<RangeSample<EvalLabels>>,
     plan: &QueryPlan,
@@ -207,8 +209,12 @@ fn shape_subquery_results(
 
     let subquery_end_ms = plan.sample_end_ms;
 
+    let work = series_data.iter().map(|s| s.samples.len()).sum::<usize>()
+        + expected_steps * series_data.len();
+    let threads = request_par_threads(series_data.len(), work);
     let range_vector: Vec<EvalSamples> = series_data
         .into_par_rayon()
+        .num_threads(threads)
         .filter_map(|sample| {
             if sample.samples.is_empty() {
                 return None;
