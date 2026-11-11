@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::promql::optimizer::filter_pushdown::{
-        WrittenFilters, get_common_label_filters_with, push_down_binary_op_filters_in_place,
+        PUSHDOWN_WORK_BUDGET, WrittenFilters, get_common_label_filters_with,
+        push_down_binary_op_filters_in_place, pushdown_filters_within,
     };
     use crate::promql::optimizer::optimize_expr;
     use promql_parser::label::{Matcher, Matchers};
@@ -843,6 +844,52 @@ mod tests {
     ) {
         validate_optimized(q, result_expected);
         assert!(get_common_label_filters(&parse_selector("month()")).is_empty());
+    }
+
+    #[test]
+    fn a_spent_budget_still_normalizes_names_but_pushes_nothing() {
+        let mut e = parse_selector(r#"{__name__="a", x="1"} + b"#);
+        pushdown_filters_within(&mut e, &WrittenFilters, 0);
+        assert_eq!(e, parse_selector(r#"a{x="1"} + b"#));
+    }
+
+    /// A chain whose terms each bring a label no other term has: unbounded,
+    /// every level pushes a longer list into every selector below it, and 400
+    /// terms took seconds. The budget stops it with the inner pushes made.
+    #[test]
+    fn a_chain_of_new_labels_stops_at_the_budget() {
+        fn selector(e: &Expr) -> &promql_parser::parser::VectorSelector {
+            match e {
+                Expr::VectorSelector(vs) => vs,
+                other => panic!("not a selector: {other}"),
+            }
+        }
+        let q = (0..400)
+            .map(|i| format!(r#"m{i}{{l{i}="v"}}"#))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let mut e = parse_selector(&q);
+        let spent = pushdown_filters_within(&mut e, &WrittenFilters, PUSHDOWN_WORK_BUDGET);
+        assert_eq!(spent, PUSHDOWN_WORK_BUDGET);
+
+        let Expr::Binary(outer) = &e else {
+            panic!("not a binary operation")
+        };
+        assert_eq!(
+            selector(&outer.rhs).matchers.matchers.len(),
+            1,
+            "outermost was narrowed"
+        );
+        let mut innermost = outer;
+        while let Expr::Binary(inner) = &*innermost.lhs {
+            innermost = inner;
+        }
+        // Narrowed by its own operation and by each enclosing one that ran
+        // before the budget was spent, not by all 400.
+        for operand in [&innermost.lhs, &innermost.rhs] {
+            let pushed = selector(operand).matchers.matchers.len();
+            assert!((2..400).contains(&pushed), "{pushed} matchers");
+        }
     }
 
     fn validate_optimized(q: &str, expected: &str) {
