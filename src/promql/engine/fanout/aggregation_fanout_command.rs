@@ -239,6 +239,11 @@ impl FanoutCommand for AggregationFanoutCommand {
             query.max_series,
             &read,
         )?;
+        // This shard's half of the duplicate-label rule: the coordinator sees only
+        // groups, so only here can two series with the same labels be caught (see
+        // `execute_cluster_aggregation` for the cross-shard case).
+        super::check_unique_series(samples.iter().map(|s| &s.labels))
+            .map_err(|e| super::shard_error(QueryError::Execution(e)))?;
 
         // An unrecognized operator means the coordinator is newer than this
         // node. Ship the raw instant vector and let it aggregate: correct, at

@@ -94,13 +94,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
                 .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
             let fingerprint = labels.fingerprint();
             if !self.seen.insert(fingerprint) {
-                // error. we have a duplicate
-                // Using prometheus semantics, series should have unique label-value pairs..
-                return Err(format!(
-                    "TSDB: received duplicate sample with labels {} in instant query response",
-                    labels
-                )
-                .into());
+                return Err(super::duplicate_series_error(&labels).into());
             }
             self.results.push(InstantSample {
                 labels,
