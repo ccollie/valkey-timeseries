@@ -55,14 +55,6 @@ impl HasFingerprint for VectorSelector {
     }
 }
 
-impl HasFingerprint for Matcher {
-    fn fingerprint(&self) -> SeriesFingerprint {
-        let mut hasher = create_hasher();
-        update_hash_for_matcher(self, &mut hasher);
-        hasher.finish_128()
-    }
-}
-
 fn update_hasher_for_vector_selector(vs: &VectorSelector, hasher: &mut LabelHasher) {
     fn update_list(list: &Vec<Matcher>, hasher: &mut LabelHasher) {
         let mut keys: SmallVec<[&Matcher; 6]> = smallvec![];
