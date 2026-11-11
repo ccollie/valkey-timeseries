@@ -13,10 +13,9 @@
 use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
 use crate::promql::engine::QueryReader;
-#[cfg(test)]
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::time::{grid_step_count, step_times};
-use crate::promql::{EvalResult, EvalSample, EvalSamples, ExprResult, QueryOptions};
+use crate::promql::{EvalResult, EvalSample, EvalSamples, ExprResult, QueryOptions, RangeSample};
 use orx_parallel::Par;
 use promql_parser::parser::VectorSelector;
 
@@ -184,7 +183,10 @@ pub(crate) fn for_each_step_sample<I, F>(
 ///
 /// Merges by fingerprint across series, sorts/deduplicates, then applies
 /// the sliding-window step-bucketing algorithm.
-fn shape_subquery_results(series_data: Vec<EvalSamples>, plan: &QueryPlan) -> Vec<EvalSamples> {
+fn shape_subquery_results(
+    series_data: Vec<RangeSample<EvalLabels>>,
+    plan: &QueryPlan,
+) -> Vec<EvalSamples> {
     let (range_ms, aligned_start_ms, step_ms, lookback_delta_ms, expected_steps) =
         match &plan.path_kind {
             QueryPathKind::SubqueryVectorSelector {
@@ -208,14 +210,14 @@ fn shape_subquery_results(series_data: Vec<EvalSamples>, plan: &QueryPlan) -> Ve
     let range_vector: Vec<EvalSamples> = series_data
         .into_par_rayon()
         .filter_map(|sample| {
-            if sample.values.is_empty() {
+            if sample.samples.is_empty() {
                 return None;
             }
 
             let mut step_samples = Vec::with_capacity(expected_steps);
             let steps = step_times(aligned_start_ms, subquery_end_ms, step_ms);
             for_each_step_sample(
-                &sample.values,
+                &sample.samples,
                 steps,
                 lookback_delta_ms,
                 |current_step_ms, latest| {
@@ -269,12 +271,7 @@ pub(crate) fn execute_selector_pipeline<R: QueryReader + ?Sized>(
         let series_data = reader
             .query(selector, plan.sample_end_ms, options)?
             .into_iter()
-            .map(|is| EvalSample {
-                timestamp_ms: is.timestamp_ms,
-                value: is.value,
-                labels: is.labels,
-                drop_name: false,
-            })
+            .map(EvalSample::from)
             .collect::<Vec<_>>();
 
         let result = ExprResult::InstantVector(series_data);
@@ -302,18 +299,7 @@ pub(crate) fn execute_selector_pipeline<R: QueryReader + ?Sized>(
             //   1. Only the sample most-recently-seen at each step is kept.
             //   2. `range_ms` on the returned `EvalSamples` reflects the
             //      actual subquery range (not the extended fetch range).
-            let series: Vec<EvalSamples> = raw_range_samples
-                .into_iter()
-                .map(|s| EvalSamples {
-                    labels: s.labels,
-                    drop_name: false,
-                    range_ms: 0, // overwritten by shape_subquery_results
-                    values: s.samples.into(),
-                    range_end_ms: plan.sample_end_ms,
-                })
-                .collect();
-            let shaped = shape_subquery_results(series, plan);
-            ExprResult::RangeVector(shaped)
+            ExprResult::RangeVector(shape_subquery_results(raw_range_samples, plan))
         }
         _ => {
             // Matrix selector: the fetch range equals the declared query range,
@@ -349,13 +335,10 @@ mod tests {
         Sample::new(ts, val)
     }
 
-    fn make_loaded(labels: Vec<Label>, samples: Vec<Sample>) -> EvalSamples {
-        EvalSamples {
+    fn make_loaded(labels: Vec<Label>, samples: Vec<Sample>) -> RangeSample<EvalLabels> {
+        RangeSample {
             labels: EvalLabels::from(crate::labels::Labels::new(labels)),
-            drop_name: false,
-            range_ms: 0,
-            values: samples.into(),
-            range_end_ms: 0,
+            samples,
         }
     }
 
