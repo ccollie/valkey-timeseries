@@ -39,12 +39,13 @@ use crate::promql::generated::{
 use crate::promql::{EvalResult, EvalSample, QueryError};
 use promql_parser::label::Matchers;
 use promql_parser::parser::LabelModifier;
+use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
 /// The instant-vector half of the request: what to select, and when.
 #[derive(Debug, Clone)]
 pub(in crate::promql) struct InstantVectorParams {
-    pub matchers: Matchers,
+    pub matchers: Arc<Matchers>,
     pub timestamp: Timestamp,
     pub lookback_delta: u64,
     pub max_series: u64,
@@ -281,7 +282,7 @@ impl FanoutCommand for AggregationFanoutCommand {
 
     fn generate_request(&self) -> AggregationQuery {
         let query = InstantQuery {
-            selector: Some(ProtoSeriesSelector::from(&self.vector.matchers)),
+            selector: Some(ProtoSeriesSelector::from(&*self.vector.matchers)),
             timestamp: self.vector.timestamp,
             lookback_delta: self.vector.lookback_delta,
             max_series: self.vector.max_series,
@@ -454,7 +455,7 @@ mod tests {
         deadline: Deadline,
     ) -> AggregationFanoutCommand {
         let vector = InstantVectorParams {
-            matchers: Matchers::empty(),
+            matchers: Arc::new(Matchers::empty()),
             timestamp: EVAL_TS,
             lookback_delta: 300_000,
             max_series: 0,
@@ -675,7 +676,7 @@ mod tests {
             timestamp: EVAL_TS,
             lookback_delta: 300_000,
             max_series: 1_000,
-            matchers: Matchers::empty(),
+            matchers: Arc::new(Matchers::empty()),
         };
         let aggregation = AggregationRequest {
             kind: AggregationKind::Topk,
