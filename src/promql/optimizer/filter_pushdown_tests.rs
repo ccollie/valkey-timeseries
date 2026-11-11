@@ -1,12 +1,38 @@
 #[cfg(test)]
 mod tests {
     use crate::promql::optimizer::filter_pushdown::{
-        get_common_label_filters, pushdown_binary_op_filters,
+        WrittenFilters, get_common_label_filters_with, push_down_binary_op_filters_in_place,
     };
     use crate::promql::optimizer::optimize_expr;
-    use promql_parser::label::Matchers;
+    use promql_parser::label::{Matcher, Matchers};
     use promql_parser::parser::{Expr, parse};
     use rstest::rstest;
+    use std::borrow::Cow;
+
+    fn get_common_label_filters(e: &Expr) -> Vec<Matcher> {
+        get_common_label_filters_with(e, &WrittenFilters)
+    }
+
+    /// Push `common_filters` into a copy of `expr`, which stands for one
+    /// operand of a binary operation. A bare selector is left alone: the
+    /// push-down only ever reaches one through an enclosing node.
+    fn pushdown_binary_op_filters(expr: &Expr, common_filters: Vec<Matcher>) -> Cow<'_, Expr> {
+        let pushable = matches!(
+            expr,
+            Expr::Call(_)
+                | Expr::Binary(_)
+                | Expr::Aggregate(_)
+                | Expr::Paren(_)
+                | Expr::Subquery(_)
+                | Expr::Unary(_)
+        );
+        if common_filters.is_empty() || !pushable {
+            return Cow::Borrowed(expr);
+        }
+        let mut copy = expr.clone();
+        push_down_binary_op_filters_in_place(&mut copy, &common_filters);
+        Cow::Owned(copy)
+    }
 
     fn parse_selector(q: &str) -> Expr {
         parse(q).unwrap_or_else(|e| panic!("unexpected error in parse({}): {:?}", q, e))
@@ -777,6 +803,31 @@ mod tests {
     #[case(r#"a + fill(0) b{x="1"}"#, r#"a + fill(0) b{x="1"}"#)]
     fn test_optimize_binop_with_consts_or_scalars(#[case] q: &str, #[case] result_expected: &str) {
         validate_optimized(q, result_expected);
+    }
+
+    // A date function written without its optional argument has a vector
+    // argument type but no argument: it contributes no filters and takes
+    // none, where indexing the missing argument used to panic.
+    #[rstest]
+    #[case(r#"hour() + a{x="1"}"#, r#"hour() + a{x="1"}"#)]
+    #[case(
+        r#"a{x="1"} > bool on(x) minute()"#,
+        r#"a{x="1"} > bool on(x) minute()"#
+    )]
+    #[case(
+        r#"sum by (x) (a{x="1"}) - year()"#,
+        r#"sum by (x) (a{x="1"}) - year()"#
+    )]
+    #[case(
+        r#"day_of_week() * b{y="2"} + c"#,
+        r#"day_of_week() * b{y="2"} + c{y="2"}"#
+    )]
+    fn test_optimize_call_without_its_optional_argument(
+        #[case] q: &str,
+        #[case] result_expected: &str,
+    ) {
+        validate_optimized(q, result_expected);
+        assert!(get_common_label_filters(&parse_selector("month()")).is_empty());
     }
 
     fn validate_optimized(q: &str, expected: &str) {
