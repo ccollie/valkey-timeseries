@@ -4,6 +4,7 @@ use crate::common::threads::GilSource;
 use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::FanoutContext;
+use crate::labels::HasFingerprint;
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::label_profile::{
@@ -19,6 +20,7 @@ use crate::promql::engine::{
 use crate::promql::generated::{
     InstantQueryResponse, InstantSample, RangeQueryResponse, RangeSample,
 };
+use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalLabels, EvalSample, QueryError, QueryResult};
 use crate::series::chunks::samples_to_chunk_lossless;
 use crate::series::index::{
@@ -389,6 +391,10 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
 
     let budget = &read.budget;
     let mut bounds = WindowBounds::new(max_series, max_points_per_series);
+    // Two series with the same labels are refused here, before any of them is
+    // reduced: a fused request returns groups, which the coordinator cannot check
+    // (see `execute_cluster_aggregation`).
+    let mut seen = FingerprintHashSet::default();
     for_each_snapshot_batch(
         src,
         selector,
@@ -414,6 +420,14 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
                 .collect::<Vec<_>>()
                 .map_err(super::shard_error)?;
             let windows = bounds.admit(candidates);
+            if let Some(dup) = windows
+                .iter()
+                .find(|w| !seen.insert(w.labels.fingerprint()))
+            {
+                return Err(super::shard_error(QueryError::Execution(
+                    super::duplicate_series_error(&dup.labels),
+                )));
+            }
             if bounds.over_series() {
                 // `finish` refuses the read whatever the rest holds.
                 return Ok(ControlFlow::Break(()));

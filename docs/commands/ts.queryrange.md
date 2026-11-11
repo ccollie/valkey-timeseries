@@ -203,6 +203,7 @@ query that would load more than `ts-promql-max-samples-per-query` samples (defau
 | `HASHTAG` is missing or has an empty tag | `TSDB: missing HASHTAG argument` |
 | Called inside `MULTI`, a script, or a context that cannot block | `TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context` |
 | More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>`, where `<n>` is the count at which the read stopped, not the total the selector matches |
+| Two keys the query reads carry the same labels (see [Series identity](../topics/promql.md#series-identity)) | `execution error: TSDB: more than one series has the labels <labels>; PromQL identifies a series by its label set` |
 | The query ran past its `TIMEOUT` | `query timed out` |
 | The running sample totals of all running queries would together pass `ts-promql-max-samples-in-flight` | `PromQL query refused while the node is overloaded: running PromQL queries would have charged <n> > <limit> samples (ts-promql-max-samples-in-flight)` |
 | Memory use is at or past `ts-promql-max-memory-percent` of `maxmemory` | `PromQL query refused while the node is overloaded: memory use is <n>% of maxmemory, at or past ts-promql-max-memory-percent (<limit>%)` |

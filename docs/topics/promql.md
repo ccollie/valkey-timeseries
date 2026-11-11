@@ -36,6 +36,32 @@ sum by (region) (rate(http_requests_total[5m]))
 cpu_usage{host=~"web-[0-9]+"} > 0.8
 ```
 
+### Series identity
+
+PromQL identifies a series by its label set, `__name__` included. **No two keys a PromQL
+query reads may carry the same labels.** The `TS.*` commands keep series apart by key
+(`TS.MRANGE` returns every matching key), but PromQL has no key to tell them apart by.
+
+Two keys can still end up with the same labels. [`TS.CREATE`](../commands/ts.create.md)
+refuses a second key whose labels include `__name__` and equal another key's, but it checks
+only the node it runs on, and only when `__name__` is present. So two keys with identical
+labels can exist when they live on different shards of a cluster, or when their labels have
+no `__name__` (as `{job="api", host="a"}`). A query whose selector matches two such keys fails
+with:
+
+```text
+TSDB: more than one series has the labels <labels>; PromQL identifies a series by its label set
+```
+
+This holds on a single node and in a cluster, wherever the two keys live, with one
+exception. When a cluster pushes an aggregation down to the shards (any aggregation operator
+but `quantile` can be, as in `sum by (job) (rate(x[5m]))`), the coordinator receives each
+shard's partial result per group, not its series. Each shard still refuses two such keys of
+its own, but two on different shards are aggregated as two separate series rather than
+refused. Detecting them would take every shard sending an identifier for every series it
+aggregated, which costs more than the push-down saves. Give every key a distinct label set
+(for example, a label naming its source) so that PromQL never has to choose between them.
+
 ## Query types
 
 ### Instant queries

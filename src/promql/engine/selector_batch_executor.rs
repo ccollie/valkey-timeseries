@@ -591,6 +591,12 @@ fn remaining_budget(timeout: Duration, deadline: Option<Timestamp>, now: Timesta
     timeout.min(left)
 }
 
+/// [`check_unique_series`] as a query error: a PromQL series is its label set,
+/// so a read may not return two with the same labels.
+fn unique_series<'a>(labels: impl IntoIterator<Item = &'a EvalLabels>) -> QueryResult<()> {
+    check_unique_series(labels).map_err(QueryError::Execution)
+}
+
 /// A limit refusal, logged on its way out: the one place a read's limit
 /// errors are reported to the server log.
 fn warned(err: QueryError) -> QueryError {
@@ -780,6 +786,16 @@ fn execute_cluster_aggregation(
                     .into_result()
                     .map_err(QueryError::from)
                     .and_then(|samples| {
+                        // Two series with the same labels on *different* shards are not
+                        // refused here, unlike everywhere else a PromQL read sees series:
+                        // each shard refused the duplicates among its own input, but sent
+                        // only per-group partials, which name no series. Catching the
+                        // cross-shard case would take every shard sending an identity for
+                        // each series it aggregated (8 bytes or more per series, per
+                        // request), which for a high-cardinality `sum by` outweighs the
+                        // partials the push-down exists to send instead. Accepted and
+                        // documented: such a pair is aggregated as two series.
+                        //
                         // The aggregated vector, not the input, is what this bounds:
                         // one sample per group.
                         validate_max_series(samples.len(), max_series).map_err(warned)?;
@@ -869,6 +885,20 @@ fn execute_cluster_grid(
                         GridOutcome::Unsupported => Ok(()),
                     }
                     .map_err(warned)?;
+                    // Series from every shard meet here, so two with the same labels
+                    // are refused wherever they live. Reduced entries are groups: as
+                    // for a pushed-down aggregation (see `execute_cluster_aggregation`),
+                    // each shard refused the duplicates among its own input, and two
+                    // on different shards were folded into the group like any two series.
+                    match &outcome {
+                        GridOutcome::Stepped(series) => {
+                            unique_series(series.iter().map(|s| &s.labels))
+                        }
+                        GridOutcome::Rolled(series) | GridOutcome::Raw(series) => {
+                            unique_series(series.iter().map(|s| &s.labels))
+                        }
+                        GridOutcome::Reduced(_) | GridOutcome::Unsupported => Ok(()),
+                    }?;
                     Ok(SelectorOutput::Grid(outcome))
                 }),
                 Err(e) if peer_unsupported => {
@@ -1391,6 +1421,7 @@ impl LocalRead {
                 // per-series point limit: an instant read yields one sample.
                 validate_max_series(samples.len(), self.options.max_series)
                     .map_err(warned)
+                    .and_then(|()| unique_series(samples.iter().map(|s| &s.labels)))
                     .map(|()| {
                         if aggregation {
                             SelectorOutput::Aggregation(AggregationOutcome::Raw(samples))
@@ -1405,6 +1436,7 @@ impl LocalRead {
                 // pushed-down one about which queries `max_series` rejects.
                 validate_max_series(ranges.len(), self.options.max_series)
                     .map_err(warned)
+                    .and_then(|()| unique_series(ranges.iter().map(|s| &s.labels)))
                     .map(|()| {
                         if grid {
                             SelectorOutput::Grid(GridOutcome::Raw(ranges))

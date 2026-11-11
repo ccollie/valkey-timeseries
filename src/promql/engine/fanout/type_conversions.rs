@@ -100,16 +100,29 @@ impl WireRangeResponse {
     }
 }
 
-/// Reject a range read in which two series carry the same labels — across
-/// shards or within one. Prometheus requires label sets to be unique, and a
-/// series answered by two nodes (a slot mid-migration) would be counted twice.
+/// The refusal of a read that found two series with the same labels.
+///
+/// A PromQL series is identified by its label set, `__name__` included, as in
+/// Prometheus, whose storage cannot hold two. Here two keys can carry the same
+/// labels, and `TS.*` commands keep them apart by key; PromQL has no key to
+/// tell them apart by, so every read that sees series refuses them rather than
+/// answer for one, the other or both.
+pub(in crate::promql) fn duplicate_series_error(labels: &EvalLabels) -> String {
+    format!(
+        "TSDB: more than one series has the labels {labels}; \
+         PromQL identifies a series by its label set"
+    )
+}
+
+/// Reject a read in which two series carry the same labels, across shards or
+/// within one (see [`duplicate_series_error`]).
 pub(in crate::promql) fn check_unique_series<'a>(
     labels: impl IntoIterator<Item = &'a EvalLabels>,
 ) -> Result<(), String> {
     let mut seen = FingerprintHashSet::default();
     for labels in labels {
         if !seen.insert(labels.fingerprint()) {
-            return Err(format!("Duplicate series found with labels {labels}"));
+            return Err(duplicate_series_error(labels));
         }
     }
     Ok(())

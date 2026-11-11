@@ -175,6 +175,7 @@ query that would load more than `ts-promql-max-samples-per-query` samples (defau
 | `HASHTAG` is missing or has an empty tag | `TSDB: missing HASHTAG argument` |
 | Called inside `MULTI`, a script, or a context that cannot block | `TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context` |
 | More series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>`, where `<n>` is the count at which the read stopped, not the total the selector matches |
+| Two keys the query reads carry the same labels (see [Series identity](../topics/promql.md#series-identity)) | `execution error: TSDB: more than one series has the labels <labels>; PromQL identifies a series by its label set` |
 | A subquery grid with more than 1,000,000 steps | `execution error: PromQL argument error: subquery has too many steps: ...` |
 | All subqueries together would evaluate more than `ts-promql-max-subquery-steps` steps | `execution error: PromQL argument error: subqueries would evaluate more than <limit> steps (ts-promql-max-subquery-steps); ...` |
 | The query ran past its `TIMEOUT` | `query timed out` |

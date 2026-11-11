@@ -14,7 +14,7 @@ pub(in crate::promql) use instant_vector_selector_fanout_command::InstantVectorS
 pub(in crate::promql) use label_profile_fanout_command::LabelProfileFanoutCommand;
 pub(in crate::promql) use range_vector_selector_fanout_command::RangeVectorSelectorFanoutCommand;
 pub(in crate::promql) use type_conversions::{
-    WireRangeResponse, check_unique_series, decode_range_series,
+    WireRangeResponse, check_unique_series, decode_range_series, duplicate_series_error,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
