@@ -26,7 +26,6 @@ from valkeytestframework.conftest import resource_port_tracker
 from query_result import QueryResult
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
-AGGREGATION_PUSHDOWN_CONFIG = 'ts.ts-fanout-aggregation-pushdown'
 ROLLUP_PUSHDOWN_CONFIG = 'ts.ts-fanout-rollup-pushdown'
 MAX_RESPONSE_SERIES_CONFIG = 'ts.ts-promql-max-response-series'
 
@@ -120,12 +119,6 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
             self.new_client_for_primary(i).execute_command('CONFIG', 'SET', name, value)
 
     @pytest.fixture(params=['yes', 'no'], ids=['pushdown-on', 'pushdown-off'])
-    def aggregation_pushdown(self, request):
-        self.set_config(AGGREGATION_PUSHDOWN_CONFIG, request.param)
-        yield request.param
-        self.set_config(AGGREGATION_PUSHDOWN_CONFIG, 'yes')
-
-    @pytest.fixture(params=['yes', 'no'], ids=['pushdown-on', 'pushdown-off'])
     def rollup_pushdown(self, request):
         self.set_config(ROLLUP_PUSHDOWN_CONFIG, request.param)
         yield request.param
@@ -171,14 +164,14 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
 
         assert got == {str(i): _value(i, 2) for i in _wide_ids()}
 
-    def test_instant_aggregation_sums_across_batches(self, aggregation_pushdown):
+    def test_instant_aggregation_sums_across_batches(self):
         self.setup_fleet()
 
         got = self.instants_by(self.instant_query('sum by (g) (wide)'), 'g')
 
         assert got == self.expected_group_sums(2)
 
-    def test_instant_count_sees_every_batch(self, aggregation_pushdown):
+    def test_instant_count_sees_every_batch(self):
         self.setup_fleet()
 
         result = self.instant_query('count(wide)')
@@ -277,7 +270,7 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
         finally:
             self.set_config(MAX_SAMPLES_CONFIG, '50000000')
 
-    def test_series_limit_stops_the_shard_walk(self, aggregation_pushdown, rollup_pushdown):
+    def test_series_limit_stops_the_shard_walk(self, rollup_pushdown):
         """A shard refusing its share for `ts-promql-max-response-series` stops walking at
         the series that takes it over the limit, or for a range read at the end of that
         batch, instead of opening all 1,300 of its matched series first. The refusal

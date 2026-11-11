@@ -85,21 +85,14 @@ wrong function.
 
 ## 3. The handshakes in use
 
-Three commands push work down today. Each response echoes which parts of the
-request the shard actually honored.
+The PromQL commands push work down with a handshake: each response echoes which parts of
+the request the shard actually honored.
 
 ### TS.MRANGE / TS.MREVRANGE
 
-`MultiRangeResponse` in `src/commands/fanout.response.proto`:
-
-| Flag | `true` means | `false` means |
-|---|---|---|
-| `applied_aggregation` | `series` holds aggregated buckets | `series` holds raw samples |
-| `applied_group_reduce` | `group_partials` holds mergeable partial states | nothing was pre-reduced |
-| `applied_count` | `COUNT` was used as a head/tail pre-filter | full result set |
-
-The coordinator always re-applies `COUNT` as the final authority, so
-`applied_count` is a transfer optimization rather than a semantic claim.
+No handshake: a shard always aggregates and pre-applies `COUNT`, and the coordinator rejects a
+share of any other shape. See [the fan-out compatibility
+document](topics/fanout-compatibility-handshake.md).
 
 ### TS.QUERY — PromQL aggregation
 
@@ -237,10 +230,10 @@ applied" cannot drift into two different answers for the same window.
 
 ## 6. What the toggles are not
 
-`ts-fanout-aggregation-pushdown` (default `yes`), `ts-fanout-rollup-pushdown`
-(default `yes`; it governs the whole grid push-down, stepped selectors included)
-and `ts-promql-derived-filter-pushdown` (default `yes`; the label-profile round
-before planning) are read **only by the coordinator**. Shards obey whatever the
+`ts-fanout-rollup-pushdown` (default `yes`; it governs the whole grid push-down,
+stepped selectors included) and `ts-promql-derived-filter-pushdown` (default
+`yes`; the label-profile round before planning) are read **only by the
+coordinator**. Shards obey whatever the
 request asks for.
 
 They are not mixed-version safety knobs. Version skew is already correct by the

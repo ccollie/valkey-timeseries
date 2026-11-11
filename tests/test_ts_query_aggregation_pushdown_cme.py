@@ -18,13 +18,10 @@ three push-down strategies:
 
 `quantile` has no decomposable form and must stay on the coordinator.
 
-Every assertion is the answer a single node would give for the same input;
-`test_pushdown_on_off_equivalence` checks that directly by re-running the
-queries with the push-down toggled off.
+Every assertion is the answer a single node would give for the same input.
 """
 
 import math
-from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from valkey import ValkeyCluster
@@ -32,9 +29,6 @@ from valkeytestframework.conftest import resource_port_tracker
 
 from query_result import QueryResult
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
-
-# Full config name for CONFIG SET (module prefix `ts` + config name).
-PUSHDOWN_CONFIG = 'ts.ts-fanout-aggregation-pushdown'
 
 # Hash tags landing on distinct primaries of the 3-node cluster the harness
 # builds: it splits the 16384 slots evenly, so {h2} -> node 0, {h1} -> node 1,
@@ -109,20 +103,6 @@ class TestPromQLAggregationPushdownCluster(ValkeyTimeSeriesClusterTestCase):
         raw = self.coordinator().execute_command(
             'TS.QUERYRANGE', query, 'STEP', step, 'START', start, 'END', end)
         return QueryResult.from_raw(raw)
-
-    def set_pushdown(self, value):
-        """Toggle push-down on every primary (the coordinator consults it)."""
-        for i in range(self.CLUSTER_SIZE):
-            self.new_client_for_primary(i).execute_command(
-                'CONFIG', 'SET', PUSHDOWN_CONFIG, value)
-
-    @contextmanager
-    def pushdown_disabled(self):
-        self.set_pushdown('no')
-        try:
-            yield
-        finally:
-            self.set_pushdown('yes')
 
     @staticmethod
     def values_by_label(result: QueryResult, label: str) -> dict[str, float]:
@@ -456,45 +436,3 @@ class TestPromQLAggregationPushdownCluster(ValkeyTimeSeriesClusterTestCase):
         result = self.instant_query('sum by (job) (http_requests_total)',
                                     _epoch_seconds(T0) - 3600)
         assert result.result == []
-
-    # ── the push-down must not change the answer ──────────────────────
-
-    def test_pushdown_on_off_equivalence(self):
-        """Toggling the coordinator config off restores the flow where the raw
-        instant vector is shipped and the coordinator aggregates. Both flows
-        must produce the same groups and the same values."""
-        self.setup_fleet()
-
-        queries = [
-            'sum by (job) (http_requests_total)',
-            'avg by (job) (http_requests_total)',
-            'min by (job) (http_requests_total)',
-            'max by (job) (http_requests_total)',
-            'count by (job) (http_requests_total)',
-            'group by (job) (http_requests_total)',
-            'stddev by (job) (http_requests_total)',
-            'stdvar by (job) (http_requests_total)',
-            'sum(http_requests_total)',
-            'sum without (instance) (http_requests_total)',
-            'sum by (job) (http_requests_total offset 1m)',
-            'topk(2, http_requests_total)',
-            'bottomk(2, http_requests_total)',
-            'topk by (job) (1, http_requests_total)',
-            'limitk(2, http_requests_total)',
-            'limit_ratio(0.5, http_requests_total)',
-            'count_values("code", http_response_code)',
-            'count_values by (job) ("code", http_response_code)',
-            'quantile by (job) (0.5, http_requests_total)',
-            'sum by (job) (http_requests_total{region="eu"})',
-            'sum by (job) (http_requests_total{job="nope"})',
-        ]
-
-        with_pushdown = [self.instant_query(q) for q in queries]
-        with self.pushdown_disabled():
-            without_pushdown = [self.instant_query(q) for q in queries]
-
-        for query, on, off in zip(queries, with_pushdown, without_pushdown):
-            self.assert_values_close(
-                self.values_by_labelset(on),
-                self.values_by_labelset(off),
-                context=f'push-down mismatch for `{query}`')
