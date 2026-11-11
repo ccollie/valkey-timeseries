@@ -805,6 +805,21 @@ mod tests {
         validate_optimized(q, result_expected);
     }
 
+    // `count_over_time` keeps its input's labels, so their filters cross it
+    // in both directions like any other rollup's.
+    #[rstest]
+    #[case(
+        r#"count_over_time(x{a="b"}[5m]) + y"#,
+        r#"count_over_time(x{a="b"}[5m]) + y{a="b"}"#
+    )]
+    #[case(
+        r#"y{a="b"} / count_over_time(x[5m])"#,
+        r#"y{a="b"} / count_over_time(x{a="b"}[5m])"#
+    )]
+    fn test_optimize_count_over_time(#[case] q: &str, #[case] result_expected: &str) {
+        validate_optimized(q, result_expected);
+    }
+
     // A date function written without its optional argument has a vector
     // argument type but no argument: it contributes no filters and takes
     // none, where indexing the missing argument used to panic.

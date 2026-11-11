@@ -207,12 +207,6 @@ fn call_filters(fe: &Call, arg_filters: impl FnOnce(usize) -> Vec<Matcher>) -> V
             }
             drop_label_filters_for_label_name(&arg_filters(0), &args[1])
         }
-        PromqlFunctionKind::CountOverTime => {
-            if args.len() != 2 {
-                return vec![];
-            }
-            drop_label_filters_for_label_name(&arg_filters(1), &args[0])
-        }
         _ => {
             let Some(index) = series_arg_index(fe) else {
                 return vec![];
