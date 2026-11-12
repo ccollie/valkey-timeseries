@@ -821,6 +821,26 @@ mod tests {
         validate_optimized(q, result_expected);
     }
 
+    // A selector with `or` matchers offers only the filters every group shares,
+    // and a filter pushed into one is added to every group.
+    #[rstest]
+    #[case(
+        r#"foo{a="1" or b="2"} + bar{c="3"}"#,
+        r#"foo{a="1",c="3" or b="2",c="3"} + bar{c="3"}"#
+    )]
+    #[case(
+        r#"foo{a="1",z="9" or b="2",z="9"} * bar"#,
+        r#"foo{a="1",z="9" or b="2",z="9"} * bar{z="9"}"#
+    )]
+    #[case(
+        r#"sum by (z) (foo{a="1",z="9" or b="2",z="9"}) + bar"#,
+        r#"sum by (z) (foo{a="1",z="9" or b="2",z="9"}) + bar{z="9"}"#
+    )]
+    #[case(r#"foo{a="1" or b="2"} + bar"#, r#"foo{a="1" or b="2"} + bar"#)]
+    fn test_optimize_or_matchers(#[case] q: &str, #[case] result_expected: &str) {
+        validate_optimized(q, result_expected);
+    }
+
     // A date function written without its optional argument has a vector
     // argument type but no argument: it contributes no filters and takes
     // none, where indexing the missing argument used to panic.

@@ -644,76 +644,72 @@ mod tests {
         assert!(!result[0].labels.contains("dst"));
     }
 
-    // #[test]
-    // fn should_error_when_label_join_destination_label_is_empty() {
-    //     let registry = FunctionRegistry::new();
-    //     let func = registry.get("label_join").unwrap();
-    //     let raw_args = box_exprs(label_join_raw_args("", "-", &["src"]));
-    //     let ctx = FunctionCallContext {
-    //         eval_timestamp_ms: 1000,
-    //         raw_args: &raw_args,
-    //     };
-    //
-    //     let err = func
-    //         .apply_call(
-    //             vec![
-    //                 PromQLArg::InstantVector(vec![create_sample_with_labels(
-    //                     1.0,
-    //                     &[(METRIC_NAME, "test_metric"), ("src", "a")],
-    //                 )]),
-    //                 None,
-    //                 None,
-    //                 None,
-    //             ],
-    //             &ctx,
-    //         )
-    //         .unwrap_err();
-    //
-    //     assert!(
-    //         err.to_string().contains("invalid label name"),
-    //         "unexpected error: {}",
-    //         err
-    //     );
-    // }
+    #[test]
+    fn should_error_when_label_join_destination_label_is_empty() {
+        let func = resolve_function("label_join").unwrap();
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
+        };
 
-    // #[test]
-    // fn should_error_when_label_join_produces_duplicate_output_labelsets() {
-    //     let registry = FunctionRegistry::new();
-    //     let func = registry.get("label_join").unwrap();
-    //     let raw_args = box_exprs(label_join_raw_args("label", "", &["this"]));
-    //     let ctx = FunctionCallContext {
-    //         eval_timestamp_ms: 1000,
-    //         raw_args: &raw_args,
-    //     };
-    //
-    //     let err = func
-    //         .apply_call(
-    //             vec![
-    //                 PromQLArg::InstantVector(vec![
-    //                     create_sample_with_labels(
-    //                         1.0,
-    //                         &[(METRIC_NAME, "dup"), ("label", "a"), ("this", "a")],
-    //                     ),
-    //                     create_sample_with_labels(
-    //                         2.0,
-    //                         &[(METRIC_NAME, "dup"), ("label", "b"), ("this", "a")],
-    //                     ),
-    //                 ]),
-    //                 None,
-    //                 None,
-    //                 None,
-    //             ],
-    //             &ctx,
-    //         )
-    //         .unwrap_err();
-    //
-    //     assert!(
-    //         err.to_string()
-    //             .contains("vector cannot contain metrics with the same labelset"),
-    //         "unexpected error: {}",
-    //         err
-    //     );
-    // }
+        let err = func
+            .apply_call(
+                vec![
+                    PromQLArg::InstantVector(vec![create_sample_with_labels(
+                        1.0,
+                        &[(METRIC_NAME, "test_metric"), ("src", "a")],
+                    )]),
+                    "".into(),
+                    "-".into(),
+                    "src".into(),
+                ],
+                &no_raw_args(&ctx),
+            )
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("invalid label name"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn should_error_when_label_join_produces_duplicate_output_labelsets() {
+        let func = resolve_function("label_join").unwrap();
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
+        };
+
+        let err = func
+            .apply_call(
+                vec![
+                    PromQLArg::InstantVector(vec![
+                        create_sample_with_labels(
+                            1.0,
+                            &[(METRIC_NAME, "dup"), ("label", "a"), ("this", "a")],
+                        ),
+                        create_sample_with_labels(
+                            2.0,
+                            &[(METRIC_NAME, "dup"), ("label", "b"), ("this", "a")],
+                        ),
+                    ]),
+                    "label".into(),
+                    "".into(),
+                    "this".into(),
+                ],
+                &no_raw_args(&ctx),
+            )
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("vector cannot contain metrics with the same labelset"),
+            "unexpected error: {}",
+            err
+        );
+    }
 
     #[test]
     fn should_preserve_metric_name_when_label_replace_writes_name_label() {
@@ -749,35 +745,37 @@ mod tests {
         assert!(!result[0].drop_name);
     }
 
-    // #[test]
-    // fn should_preserve_metric_name_when_label_join_writes_name_label() {
-    //     let registry = FunctionRegistry::new();
-    //     let func = registry.get("label_join").unwrap();
-    //     let raw_args = box_exprs(label_join_raw_args("__name__", "_", &["__name__", "env"]));
-    //     let ctx = FunctionCallContext {
-    //         eval_timestamp_ms: 1000,
-    //         raw_args: &raw_args,
-    //     };
-    //     let mut sample =
-    //         create_sample_with_labels(1.0, &[(METRIC_NAME, "metric_total"), ("env", "1")]);
-    //     sample.drop_name = true;
-    //
-    //     let result = func
-    //         .apply_call(
-    //             vec![
-    //                 PromQLArg::InstantVector(vec![sample]),
-    //                 None,
-    //                 None,
-    //                 None,
-    //                 None,
-    //             ],
-    //             &ctx,
-    //         )
-    //         .unwrap();
-    //
-    //     assert_eq!(result[0].labels.get(METRIC_NAME), Some("metric_total_1"));
-    //     assert!(!result[0].drop_name);
-    // }
+    #[test]
+    fn should_preserve_metric_name_when_label_join_writes_name_label() {
+        let func = resolve_function("label_join").unwrap();
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
+        };
+        let mut sample =
+            create_sample_with_labels(1.0, &[(METRIC_NAME, "metric_total"), ("env", "1")]);
+        sample.drop_name = true;
+
+        let result = func
+            .apply_call(
+                vec![
+                    PromQLArg::InstantVector(vec![sample]),
+                    "__name__".into(),
+                    "_".into(),
+                    "__name__".into(),
+                    "env".into(),
+                ],
+                &no_raw_args(&ctx),
+            )
+            .unwrap();
+
+        let ExprResult::InstantVector(result) = result else {
+            panic!("expected InstantVector");
+        };
+
+        assert_eq!(result[0].labels.get(METRIC_NAME), Some("metric_total_1"));
+        assert!(!result[0].drop_name);
+    }
 
     #[test]
     fn should_include_actual_argument_count_in_clamp_errors() {
