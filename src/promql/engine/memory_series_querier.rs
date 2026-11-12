@@ -40,7 +40,7 @@ impl Default for QuerierInner {
 }
 
 /// A mock QueryReader for testing that holds data in memory.
-/// Use `MockQueryReaderBuilder` to construct instances.
+/// Build one with [`MemorySeriesQuerier::new`] and [`MemorySeriesQuerier::add_sample`].
 pub struct MemorySeriesQuerier {
     inner: RwLock<QuerierInner>,
 }

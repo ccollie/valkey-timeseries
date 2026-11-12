@@ -758,59 +758,7 @@ pub trait QueryReader: Send + Sync {
 
 #[cfg(test)]
 pub(crate) mod test_utils {
-    use crate::common::Sample;
-    use crate::labels::Labels;
     pub(crate) use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
-
-    /// Builder for creating MockQueryReader instances from test data.
-    /// Convenience wrapper for single-bucket scenarios.
-    pub(crate) struct MockQueryReaderBuilder {
-        inner: MockMultiBucketQueryReaderBuilder,
-    }
-
-    impl MockQueryReaderBuilder {
-        pub(crate) fn new() -> Self {
-            Self {
-                inner: MockMultiBucketQueryReaderBuilder::new(),
-            }
-        }
-
-        /// Add a sample with labels. If a series with the same labels already exists globally,
-        /// the existing series ID is reused. Otherwise, a new series is created with a global ID.
-        pub(crate) fn add_sample(&mut self, labels: &Labels, sample: Sample) -> &mut Self {
-            self.inner.add_sample(labels, sample);
-            self
-        }
-
-        pub(crate) fn build(self) -> MemorySeriesQuerier {
-            self.inner.build()
-        }
-    }
-
-    /// Builder for creating MockQueryReader instances from test data.
-    /// Supports multi-bucket scenarios.
-    pub(crate) struct MockMultiBucketQueryReaderBuilder {
-        reader: MemorySeriesQuerier,
-    }
-
-    impl MockMultiBucketQueryReaderBuilder {
-        pub(crate) fn new() -> Self {
-            Self {
-                reader: MemorySeriesQuerier::new(),
-            }
-        }
-
-        /// Add a sample with labels to a specific bucket. If a series with the same labels already exists globally,
-        /// the existing series ID is reused. Otherwise, a new series is created with a global ID.
-        pub(crate) fn add_sample(&mut self, labels: &Labels, sample: Sample) -> &mut Self {
-            self.reader.add_sample(labels, sample);
-            self
-        }
-
-        pub(crate) fn build(self) -> MemorySeriesQuerier {
-            self.reader
-        }
-    }
 }
 
 #[cfg(test)]
