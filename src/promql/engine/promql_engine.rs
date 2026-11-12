@@ -31,7 +31,7 @@ use std::ops::RangeBounds;
 #[cfg(test)]
 use std::time::Duration;
 
-// `parse_query`, `PromqlEngine` and `PromqlQuerier` are a convenience API over
+// `parse_query` and `PromqlQuerier` are a convenience API over
 // `evaluate_instant` / `evaluate_range` that only tests use.
 #[cfg(test)]
 fn parse_query(query: &str) -> QueryResult<Expr> {
@@ -63,61 +63,6 @@ fn optimize_statement(
 /// map per batch. Bounds peak intermediate memory to this many step results
 /// rather than materializing every step at once (see `evaluate_range`).
 const STEP_MERGE_CHUNK_SIZE: usize = 64;
-
-#[cfg(test)]
-pub(crate) trait PromqlEngine: Send + Sync {
-    /// Build a query reader
-    fn make_query_reader(&self) -> QueryResult<Arc<dyn QueryReader>>;
-
-    /// Evaluate an instant PromQL query, returning typed `InstantSample`s.
-    fn eval_query(
-        &self,
-        query: &str,
-        time: Option<SystemTime>,
-        opts: QueryOptions,
-    ) -> QueryResult<QueryValue> {
-        let expr = parse_query(query)?;
-
-        let query_time = time.unwrap_or_else(SystemTime::now);
-        let lookback_delta = opts.lookback_delta;
-        let stmt = EvalStmt {
-            expr,
-            start: query_time,
-            end: query_time,
-            interval: Duration::from_secs(0),
-            lookback_delta,
-        };
-
-        let reader = self.make_query_reader()?;
-
-        evaluate_instant(reader, stmt, query_time, opts)
-    }
-
-    /// Evaluate a range PromQL query, returning typed `RangeSample`s.
-    fn eval_query_range(
-        &self,
-        query: &str,
-        start: SystemTime,
-        end: SystemTime,
-        step: Duration,
-        opts: QueryOptions,
-    ) -> QueryResult<Vec<RangeSample>> {
-        let expr = parse_query(query)?;
-
-        let lookback_delta = opts.lookback_delta;
-        let stmt = EvalStmt {
-            expr,
-            start,
-            end,
-            interval: step,
-            lookback_delta,
-        };
-
-        let reader = self.make_query_reader()?;
-
-        evaluate_range(reader, stmt, opts)
-    }
-}
 
 // ── Shared evaluation free functions ────────────────────────────────
 
@@ -396,20 +341,26 @@ impl PromqlQuerier {
         Self { querier }
     }
 
-    /// Evaluate an instant PromQL query, returning typed `InstantSample`s.
-    /// Convenience wrapper over [`PromqlEngine::eval_query`].
+    /// Evaluate an instant PromQL query at `time` (now when `None`).
     pub fn eval_query(
         &self,
         query: &str,
         time: Option<SystemTime>,
         opts: &QueryOptions,
     ) -> QueryResult<QueryValue> {
-        PromqlEngine::eval_query(self, query, time, *opts)
+        let expr = parse_query(query)?;
+        let query_time = time.unwrap_or_else(SystemTime::now);
+        let stmt = EvalStmt {
+            expr,
+            start: query_time,
+            end: query_time,
+            interval: Duration::from_secs(0),
+            lookback_delta: opts.lookback_delta,
+        };
+        evaluate_instant(self.querier.clone(), stmt, query_time, *opts)
     }
 
-    /// Evaluate a range PromQL query, returning typed `RangeSample`s.
-    /// Convenience wrapper over [`PromqlEngine::eval_query_range`] that accepts
-    /// Rust range bounds.
+    /// Evaluate a range PromQL query over `range` at `step`.
     pub fn eval_query_range(
         &self,
         query: &str,
@@ -418,14 +369,14 @@ impl PromqlQuerier {
         opts: &QueryOptions,
     ) -> QueryResult<Vec<RangeSample>> {
         let (start, end) = range_bounds_to_system_time(range);
-        PromqlEngine::eval_query_range(self, query, start, end, step, *opts)
-    }
-}
-
-#[cfg(test)]
-impl PromqlEngine for PromqlQuerier {
-    fn make_query_reader(&self) -> QueryResult<Arc<dyn QueryReader>> {
-        Ok(self.querier.clone())
+        let stmt = EvalStmt {
+            expr: parse_query(query)?,
+            start,
+            end,
+            interval: step,
+            lookback_delta: opts.lookback_delta,
+        };
+        evaluate_range(self.querier.clone(), stmt, *opts)
     }
 }
 

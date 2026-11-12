@@ -22,9 +22,7 @@ mod tests {
         AggregationOutcome, AggregationParam, AggregationRequest, GridOutcome, GridRequest,
         GridRollup,
     };
-    use crate::promql::engine::test_utils::{
-        MemorySeriesQuerier, MockMultiBucketQueryReaderBuilder, MockQueryReaderBuilder,
-    };
+    use crate::promql::engine::test_utils::MemorySeriesQuerier;
     use crate::promql::engine::{QueryOptions, QueryReader};
     use crate::promql::exec::aggregations::AggregationKind;
     use crate::promql::functions::RollupKind;
@@ -135,7 +133,7 @@ mod tests {
     /// data: Vec of (metric_name, labels, timestamp_offset_ms, value)
     /// Returns (MockQueryReader, end_time) where end_time is suitable for querying
     fn setup_mock_reader(data: TestSampleData) -> (MemorySeriesQuerier, SystemTime) {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         // Base timestamp: 300001ms (ensures samples are > start_ms with 5min lookback)
         // Query time will be calculated to be well after all samples
@@ -169,7 +167,7 @@ mod tests {
         let query_timestamp = base_timestamp + max_offset + 1;
         let end_time = UNIX_EPOCH + Duration::from_millis(query_timestamp as u64);
 
-        (builder.build(), end_time)
+        (builder, end_time)
     }
 
     #[rstest]
@@ -1160,7 +1158,7 @@ mod tests {
     #[test]
     fn should_return_identical_results_across_evaluations() {
         // given: mock reader with data in specific bucket
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels: Labels = vec![
             Label {
                 name: METRIC_NAME.to_string(),
@@ -1177,7 +1175,7 @@ mod tests {
             value: 100.0,
         };
         builder.add_sample(&labels, sample);
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate the same query multiple times
@@ -1243,7 +1241,7 @@ mod tests {
     #[test]
     fn should_evaluate_number_literal() {
         // given: create an empty mock reader
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a number literal (should return scalar, which is unsupported)
@@ -1270,7 +1268,7 @@ mod tests {
     #[test]
     fn should_evaluate_time_function_as_scalar() {
         // given
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_millis(1);
 
@@ -1296,7 +1294,7 @@ mod tests {
     #[test]
     fn should_evaluate_pi_function_as_scalar() {
         // given
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(2_000);
 
@@ -1322,7 +1320,7 @@ mod tests {
     #[test]
     fn should_evaluate_scalar_function_as_scalar() {
         // given
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(2_000);
 
@@ -1348,7 +1346,7 @@ mod tests {
     #[test]
     fn should_allow_scalar_function_results_as_vector_arguments() {
         // given
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
         let end_time = UNIX_EPOCH + Duration::from_secs(5);
 
@@ -1373,7 +1371,7 @@ mod tests {
     #[test]
     fn should_handle_string_literal() {
         // given: create an empty mock reader
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a string literal
@@ -1400,7 +1398,7 @@ mod tests {
     #[test]
     fn should_evaluate_label_replace_with_raw_string_arguments() {
         // given: create an empty mock reader
-        let reader = MockQueryReaderBuilder::new().build();
+        let reader = MemorySeriesQuerier::new();
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a function call with a string literal argument
@@ -1523,14 +1521,14 @@ mod tests {
         };
 
         // given: build mock reader with test data
-        let mut builder = MockMultiBucketQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         for (metric_name, label_pairs, timestamp, value) in data {
             let labels = create_labels(metric_name, label_pairs);
             builder.add_sample(&labels, Sample { timestamp, value });
         }
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate vector selector
@@ -1681,12 +1679,12 @@ mod tests {
         #[case] expected: MatrixSelectorExpectedResults,
     ) {
         // given:
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         for (metric_name, label_pairs, timestamp, value) in data {
             let labels: Labels = create_labels(metric_name, label_pairs);
             builder.add_sample(&labels, Sample { timestamp, value });
         }
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate matrix selector
@@ -1973,31 +1971,12 @@ mod tests {
     #[test]
     fn should_evaluate_rate_function_with_matrix_selector() {
         // given: mock reader with counter data over time
-        let mut builder = MockQueryReaderBuilder::new();
+        let reader = MemorySeriesQuerier::new();
         let labels = create_labels("http_requests_total", vec![("job", "webapp")]);
-        builder
-            .add_sample(
-                &labels,
-                Sample {
-                    timestamp: 6_000_000, // t=0s, counter at 100
-                    value: 100.0,
-                },
-            )
-            .add_sample(
-                &labels,
-                Sample {
-                    timestamp: 6_030_000, // t=30s, counter at 115
-                    value: 115.0,
-                },
-            )
-            .add_sample(
-                &labels,
-                Sample {
-                    timestamp: 6_060_000, // t=60s, counter at 130
-                    value: 130.0,
-                },
-            );
-        let reader = builder.build();
+        // t = 0 s, 30 s, 60 s: a counter at 100, 115, 130.
+        for (timestamp, value) in [(6_000_000, 100.0), (6_030_000, 115.0), (6_060_000, 130.0)] {
+            reader.add_sample(&labels, Sample { timestamp, value });
+        }
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate rate(http_requests_total[1m])
@@ -2037,7 +2016,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_positive_offset() {
         // given: samples at different times
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         for (ts, val) in [(5_700_000, 10.0), (6_000_000, 20.0), (6_300_000, 30.0)] {
             builder.add_sample(
@@ -2059,7 +2038,7 @@ mod tests {
             );
         }
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query at t=6_300_000 with positive offset 5m (look back 300_000ms)
@@ -2089,7 +2068,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_at_modifier() {
         // given: samples at different times
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         let labels = create_labels("http_requests", vec![("env", "prod")]);
         builder.add_sample(
@@ -2107,7 +2086,7 @@ mod tests {
             },
         );
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query at t=6_300_000 but with @ 6_000_000
@@ -2138,7 +2117,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_both_at_and_offset_modifiers() {
         // given: samples at different times
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = create_labels("http_requests", vec![("env", "prod")]);
         builder.add_sample(
             &labels,
@@ -2155,7 +2134,7 @@ mod tests {
             },
         );
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query with @ 6_000_000 and offset 5m
@@ -2187,7 +2166,7 @@ mod tests {
     #[test]
     fn should_evaluate_matrix_selector_with_offset_modifier() {
         // given: samples at different times
-        let mut builder = MockMultiBucketQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         // Samples from t=5_700_000 to t=6_300_000
         for (ts, val) in [
@@ -2209,7 +2188,7 @@ mod tests {
             );
         }
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query matrix selector with 5m range and 5m offset at t=6_300_000
@@ -2254,7 +2233,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_at_start_and_end() {
         // given: samples at different times
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels: Labels = parse_metric_name(r#"http_requests{env="prod"}"#)
             .unwrap()
             .into();
@@ -2280,7 +2259,7 @@ mod tests {
             },
         );
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query with @ start() where query_start = 5_700_000
@@ -2341,7 +2320,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_negative_offset() {
         // given: samples at different times
-        let mut builder = MockMultiBucketQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         for (ts, val) in [(5_700_000, 10.0), (6_000_000, 20.0), (6_300_000, 30.0)] {
             let labels = create_labels("http_requests", vec![("env", "prod")]);
@@ -2354,7 +2333,7 @@ mod tests {
             );
         }
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query at t=5_700_000 with negative offset -5m (look forward 300_000ms)
@@ -2384,7 +2363,7 @@ mod tests {
     #[test]
     fn should_evaluate_vector_selector_with_non_aligned_timestamps() {
         // given: samples at irregular timestamps
-        let mut builder = MockMultiBucketQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
 
         for (ts, val) in [
             (5_723_456, 10.0),
@@ -2402,7 +2381,7 @@ mod tests {
             );
         }
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: query at non-aligned timestamp with offset
@@ -3332,7 +3311,7 @@ mod tests {
         use promql_parser::parser::SubqueryExpr;
 
         // given: data at 0s and 10s
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = Labels::new(vec![Label::new("__name__", "metric")]);
         builder.add_sample(
             &labels,
@@ -3349,7 +3328,7 @@ mod tests {
             },
         );
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: subquery with no step in instant query context (interval = 0)
@@ -3384,7 +3363,7 @@ mod tests {
     #[test]
     fn should_preserve_subquery_step_order_when_parallelized() {
         // given: a metric with samples every 10s
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = Labels::new(vec![Label::new("__name__", "metric")]);
         builder.add_sample(
             &labels,
@@ -3408,7 +3387,7 @@ mod tests {
             },
         );
 
-        let reader = builder.build();
+        let reader = builder;
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
 
         // when: evaluate a non-VectorSelector subquery (forces generic subquery path)
@@ -4228,12 +4207,12 @@ mod tests {
     /// Build a reader holding one series, `metric{job="api"}`, sampled every
     /// 10s from t=0 through t=300s with value `t/10`.
     fn rollup_reader() -> MemorySeriesQuerier {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = create_labels("metric", vec![("job", "api")]);
         for i in 0..=30i64 {
             builder.add_sample(&labels, Sample::new(i * 10_000, i as f64));
         }
-        builder.build()
+        builder
     }
 
     /// Options for the rollup tests, which cover every `RollupKind` —
@@ -4538,10 +4517,10 @@ mod tests {
     /// sample rather than being mistaken for an absent one.
     #[test]
     fn should_keep_nan_valued_rollup_results() {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = create_labels("metric", vec![("job", "api")]);
         builder.add_sample(&labels, Sample::new(10_000, f64::NAN));
-        let reader = builder.build();
+        let reader = builder;
 
         for query in ["sum_over_time(metric[1m])", "last_over_time(metric[1m])"] {
             let result = eval_rollup(&reader, query, 10_000);
@@ -5128,7 +5107,7 @@ mod tests {
 
     /// A series with a gap between 60s and 200s and a counter reset at 220s.
     fn gappy_rollup_reader() -> MemorySeriesQuerier {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = create_labels("metric", vec![("job", "api")]);
         for (ts, value) in [
             (0i64, 5.0f64),
@@ -5145,7 +5124,7 @@ mod tests {
         ] {
             builder.add_sample(&labels, Sample::new(ts, value));
         }
-        builder.build()
+        builder
     }
 
     /// Results as `(step, labels, value)` triples, sorted, so a pushed-down run
@@ -5672,7 +5651,7 @@ mod tests {
 
     /// A reader with several series per group, so fusion has something to fold.
     fn grouped_rollup_reader() -> MemorySeriesQuerier {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         for (job, instance, base) in [
             ("api", "0", 0.0f64),
             ("api", "1", 100.0),
@@ -5683,7 +5662,7 @@ mod tests {
                 builder.add_sample(&labels, Sample::new(i * 10_000, base + i as f64));
             }
         }
-        builder.build()
+        builder
     }
 
     /// The fused form must equal the unfused one: same values, same groups, same
@@ -5764,7 +5743,7 @@ mod tests {
     /// Doors that open and close in runs of different lengths, so windows see
     /// runs that start inside them, before them, and not at all.
     fn door_reader() -> MemorySeriesQuerier {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         for (site, door, run_len) in [("a", "1", 4i64), ("a", "2", 7), ("b", "1", 3)] {
             let labels = create_labels("door", vec![("site", site), ("door", door)]);
             for i in 0..=30i64 {
@@ -5772,7 +5751,7 @@ mod tests {
                 builder.add_sample(&labels, Sample::new(i * 10_000, closed as u8 as f64));
             }
         }
-        builder.build()
+        builder
     }
 
     #[test]
@@ -6152,7 +6131,7 @@ mod tests {
     /// A series whose windows hold NaNs and infinities, which is where a
     /// one-pass `max - min` could part ways with the two functions it fuses.
     fn non_finite_rollup_reader() -> MemorySeriesQuerier {
-        let mut builder = MockQueryReaderBuilder::new();
+        let builder = MemorySeriesQuerier::new();
         let labels = create_labels("metric", vec![("job", "api")]);
         for (ts, value) in [
             (0i64, f64::NAN),
@@ -6171,7 +6150,7 @@ mod tests {
         ] {
             builder.add_sample(&labels, Sample::new(ts, value));
         }
-        builder.build()
+        builder
     }
 
     /// `range_over_time` is `max_over_time - min_over_time` at every step,
