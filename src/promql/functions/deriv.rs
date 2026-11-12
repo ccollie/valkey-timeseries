@@ -27,3 +27,30 @@ pub(in crate::promql) fn rollup_deriv(values: &[Sample]) -> Option<f64> {
     let (slope, _intercept) = sample_regression(values)?;
     Some(slope)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::rollup_deriv;
+    use crate::common::Sample;
+
+    fn s(t: i64, v: f64) -> Sample {
+        Sample::new(t, v)
+    }
+
+    #[test]
+    fn deriv_is_the_least_squares_slope_per_second() {
+        // x = 0, 10, 20 s; y = 1, 3, 2: Sxy = 10, Sxx = 200, slope 0.05/s.
+        let slope = rollup_deriv(&[s(0, 1.0), s(10_000, 3.0), s(20_000, 2.0)]).unwrap();
+        assert!((slope - 0.05).abs() < 1e-12, "{slope}");
+    }
+
+    #[test]
+    fn deriv_needs_two_samples_and_keeps_a_nan() {
+        assert_eq!(rollup_deriv(&[s(0, 1.0)]), None);
+        assert!(
+            rollup_deriv(&[s(0, 1.0), s(1_000, f64::NAN)])
+                .unwrap()
+                .is_nan()
+        );
+    }
+}

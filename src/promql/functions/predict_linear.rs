@@ -43,3 +43,63 @@ impl PromQLFunction for PredictLinearFunction {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PredictLinearFunction;
+    use crate::common::Sample;
+    use crate::promql::functions::{PromQLArg, PromQLFunction};
+    use crate::promql::{EvalContext, EvalLabels, EvalSamples, ExprResult};
+
+    fn predict(samples: &[(i64, f64)], at_ms: i64, seconds_ahead: f64) -> Vec<f64> {
+        let series = EvalSamples {
+            values: samples
+                .iter()
+                .map(|&(t, v)| Sample::new(t, v))
+                .collect::<Vec<_>>()
+                .into(),
+            labels: EvalLabels::from_pairs(&[("job", "a")]),
+            drop_name: false,
+            range_ms: at_ms,
+            range_end_ms: at_ms,
+        };
+        let ctx = EvalContext {
+            evaluation_ts: at_ms,
+            ..Default::default()
+        };
+        let result = PredictLinearFunction
+            .apply_args(
+                vec![
+                    PromQLArg::RangeVector(vec![series]),
+                    PromQLArg::Scalar(seconds_ahead),
+                ],
+                &ctx,
+            )
+            .unwrap();
+        let ExprResult::InstantVector(samples) = result else {
+            panic!("expected an instant vector");
+        };
+        samples.into_iter().map(|s| s.value).collect()
+    }
+
+    /// The line through the window, evaluated `t` seconds past the evaluation
+    /// time, not past the window's first sample.
+    #[test]
+    fn predict_linear_extends_the_fit_past_the_evaluation_time() {
+        // One per second from 0 at t = 0 s.
+        let ramp = [(0, 0.0), (10_000, 10.0), (20_000, 20.0)];
+        assert_eq!(predict(&ramp, 20_000, 10.0), vec![30.0]);
+        assert_eq!(predict(&ramp, 20_000, 0.0), vec![20.0]);
+        assert_eq!(predict(&ramp, 30_000, 0.0), vec![30.0]);
+        assert_eq!(predict(&ramp, 20_000, -20.0), vec![0.0]);
+    }
+
+    #[test]
+    fn a_flat_window_predicts_its_value_and_one_sample_predicts_nothing() {
+        assert_eq!(
+            predict(&[(0, 5.0), (10_000, 5.0)], 10_000, 3600.0),
+            vec![5.0]
+        );
+        assert!(predict(&[(0, 5.0)], 10_000, 60.0).is_empty());
+    }
+}

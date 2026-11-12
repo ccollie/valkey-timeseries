@@ -820,6 +820,58 @@ mod tests {
         assert_eq!(rollup_ts_of_max(&window, None), 0.02);
     }
 
+    fn window(values: &[f64]) -> (Vec<f64>, Vec<i64>) {
+        let timestamps = (0..values.len() as i64).map(|i| i * 1_000).collect();
+        (values.to_vec(), timestamps)
+    }
+
+    /// The φ-quantile interpolates linearly at rank φ·(n−1) of the sorted
+    /// values, as Prometheus' `quantile_over_time` does; φ outside [0, 1] is
+    /// −Inf/+Inf, and the input order does not matter.
+    #[test]
+    fn quantile_over_time_interpolates_between_ranks() {
+        let (values, timestamps) = window(&[40.0, 10.0, 30.0, 20.0]);
+        let w = RollupWindow {
+            values: &values,
+            timestamps: &timestamps,
+        };
+        assert_eq!(rollup_quantile(&w, Some(0.0)), 10.0);
+        assert_eq!(rollup_quantile(&w, Some(0.25)), 17.5);
+        assert_eq!(rollup_quantile(&w, Some(0.5)), 25.0);
+        assert_eq!(rollup_quantile(&w, Some(1.0)), 40.0);
+        assert_eq!(rollup_quantile(&w, Some(-0.5)), f64::NEG_INFINITY);
+        assert_eq!(rollup_quantile(&w, Some(1.5)), f64::INFINITY);
+        assert!(rollup_quantile(&w, Some(f64::NAN)).is_nan());
+    }
+
+    /// The median of the absolute deviations from the median.
+    #[test]
+    fn mad_over_time_is_the_median_absolute_deviation() {
+        // Median 3; deviations 2, 1, 0, 1, 97; their median 1.
+        let (values, timestamps) = window(&[1.0, 2.0, 3.0, 4.0, 100.0]);
+        let w = RollupWindow {
+            values: &values,
+            timestamps: &timestamps,
+        };
+        assert_eq!(rollup_mad(&w, None), 1.0);
+
+        // Even count: median 2.5; deviations 1.5, 0.5, 0.5, 1.5; their median 1.
+        let (values, timestamps) = window(&[4.0, 1.0, 3.0, 2.0]);
+        let w = RollupWindow {
+            values: &values,
+            timestamps: &timestamps,
+        };
+        assert_eq!(rollup_mad(&w, None), 1.0);
+
+        // A constant window has no deviation.
+        let (values, timestamps) = window(&[7.0, 7.0, 7.0]);
+        let w = RollupWindow {
+            values: &values,
+            timestamps: &timestamps,
+        };
+        assert_eq!(rollup_mad(&w, None), 0.0);
+    }
+
     #[test]
     fn only_integrals_explicit_default_strategy_is_rewritten() {
         assert_eq!(RollupKind::Integral.canonical_param(Some(2.0)), None);
