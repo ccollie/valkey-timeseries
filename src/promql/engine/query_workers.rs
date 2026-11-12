@@ -127,45 +127,72 @@ where
 
     slot.spawn(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-        if deadline.is_some_and(|d| current_time_millis() > d) {
-            thread_ctx.reply(Err(ValkeyError::String(QueryError::Timeout.to_string())));
-            return;
-        }
-        let abandon = |thread_ctx: &ThreadSafeReplyContext| {
-            CANCELLED.fetch_add(1, Ordering::Relaxed);
-            // Answered all the same: the handle must be, and the server discards it.
-            thread_ctx.reply(Err(ValkeyError::String(QueryError::Cancelled.to_string())));
-        };
-        if cancel.is_cancelled() {
-            abandon(&thread_ctx);
-            return;
-        }
-        // On this thread, not the evaluation pool: it is sequential, and its own thread keeps
-        // it from holding a pool worker other evaluations' parallel work could use.
-        let prepared = match prepare() {
-            Ok(prepared) => prepared,
-            Err(err) => {
+        match answer(deadline, current_time_millis(), cancel, prepare, evaluate) {
+            Answer::Value(value) => reply(&thread_ctx.get_reply_context(), value),
+            Answer::Error(err) => {
                 thread_ctx.reply(Err(err));
-                return;
             }
-        };
-        let evaluate = move || {
-            if PANIC_NEXT_EVALUATION.swap(false, Ordering::Relaxed) {
-                panic!("TS._DEBUG PANIC_NEXT_EVALUATION");
-            }
-            evaluate(prepared, cancel)
-        };
-        match run_evaluation(evaluate) {
-            Ok(value) => reply(&thread_ctx.get_reply_context(), value),
-            Err(QueryError::Cancelled) => abandon(&thread_ctx),
-            Err(err) => {
-                thread_ctx.reply(Err(ValkeyError::String(err.to_string())));
+            Answer::Abandoned => {
+                CANCELLED.fetch_add(1, Ordering::Relaxed);
+                // Answered all the same: the handle must be, and the server discards it.
+                thread_ctx.reply(Err(ValkeyError::String(QueryError::Cancelled.to_string())));
             }
         }
     });
 
     // Answered later, from a query worker.
     Ok(ValkeyValue::NoReply)
+}
+
+/// What a query worker answers a query with.
+enum Answer<R> {
+    /// The evaluation's result, for the command's `reply` to write.
+    Value(R),
+    /// An error reply.
+    Error(ValkeyError),
+    /// The client went away: there is no one to answer.
+    Abandoned,
+}
+
+/// A query's run on its worker, `now` being when the worker took it up: refused with a
+/// timeout, without being prepared, when its `deadline` passed while it waited; abandoned,
+/// likewise, when its client disconnected meanwhile; otherwise prepared on this thread, the
+/// preparation's error being the answer as it stands, then evaluated on the evaluation pool.
+/// An evaluation that ends `Cancelled` was abandoned rather than failed.
+fn answer<S, R>(
+    deadline: Option<Timestamp>,
+    now: Timestamp,
+    cancel: CancelToken,
+    prepare: impl FnOnce() -> ValkeyResult<S>,
+    evaluate: impl FnOnce(S, CancelToken) -> QueryResult<R> + Send,
+) -> Answer<R>
+where
+    S: Send,
+    R: Send,
+{
+    if deadline.is_some_and(|d| now > d) {
+        return Answer::Error(ValkeyError::String(QueryError::Timeout.to_string()));
+    }
+    if cancel.is_cancelled() {
+        return Answer::Abandoned;
+    }
+    // On this thread, not the evaluation pool: it is sequential, and its own thread keeps
+    // it from holding a pool worker other evaluations' parallel work could use.
+    let prepared = match prepare() {
+        Ok(prepared) => prepared,
+        Err(err) => return Answer::Error(err),
+    };
+    let evaluate = move || {
+        if PANIC_NEXT_EVALUATION.swap(false, Ordering::Relaxed) {
+            panic!("TS._DEBUG PANIC_NEXT_EVALUATION");
+        }
+        evaluate(prepared, cancel)
+    };
+    match run_evaluation(evaluate) {
+        Ok(value) => Answer::Value(value),
+        Err(QueryError::Cancelled) => Answer::Abandoned,
+        Err(err) => Answer::Error(ValkeyError::String(err.to_string())),
+    }
 }
 
 fn rejection(rejected: Rejected) -> String {
@@ -180,6 +207,114 @@ fn rejection(rejected: Rejected) -> String {
 /// The query workers' load, for `INFO`.
 pub(crate) fn stats() -> ExecutorStats {
     QUERY_WORKERS.stats()
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::{Answer, answer};
+    use crate::common::replies::TestClient;
+    use crate::promql::QueryError;
+    use std::cell::Cell;
+    use valkey_module::ValkeyError;
+
+    fn text<R>(answer: Answer<R>) -> String {
+        match answer {
+            Answer::Error(err) => err.to_string(),
+            Answer::Value(_) => "a value".to_string(),
+            Answer::Abandoned => "abandoned".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_query_whose_deadline_passed_in_the_queue_times_out_unprepared() {
+        let client = TestClient::new();
+        let prepared = Cell::new(false);
+        let got = answer(
+            Some(1_000),
+            1_001,
+            client.token(),
+            || {
+                prepared.set(true);
+                Ok(())
+            },
+            |(), _| Ok(1),
+        );
+        assert_eq!(text(got), QueryError::Timeout.to_string());
+        assert!(!prepared.get(), "a query past its deadline is not parsed");
+
+        // At the deadline exactly, it runs.
+        let got = answer(Some(1_000), 1_000, client.token(), || Ok(()), |(), _| Ok(7));
+        assert!(matches!(got, Answer::Value(7)));
+    }
+
+    #[test]
+    fn a_query_whose_client_left_in_the_queue_is_abandoned_unprepared() {
+        let client = TestClient::new();
+        client.disconnect();
+        let prepared = Cell::new(false);
+        let got = answer(
+            None,
+            0,
+            client.token(),
+            || {
+                prepared.set(true);
+                Ok(())
+            },
+            |(), _| Ok(1),
+        );
+        assert!(matches!(got, Answer::Abandoned));
+        assert!(!prepared.get());
+    }
+
+    #[test]
+    fn a_preparation_error_is_the_answer_and_nothing_is_evaluated() {
+        let client = TestClient::new();
+        let got: Answer<i32> = answer(
+            None,
+            0,
+            client.token(),
+            || Err::<(), _>(ValkeyError::Str("TSDB: query too long")),
+            |(), _| panic!("evaluated after a failed preparation"),
+        );
+        assert_eq!(text(got), "TSDB: query too long");
+    }
+
+    #[test]
+    fn an_evaluation_is_answered_with_its_value_or_its_error() {
+        let client = TestClient::new();
+        let got = answer(None, 0, client.token(), || Ok(20), |n, _| Ok(n + 1));
+        assert!(matches!(got, Answer::Value(21)));
+
+        let got: Answer<i32> = answer(
+            None,
+            0,
+            client.token(),
+            || Ok(()),
+            |(), _| Err(QueryError::Execution("bad".to_string())),
+        );
+        assert_eq!(
+            text(got),
+            QueryError::Execution("bad".to_string()).to_string()
+        );
+    }
+
+    /// An evaluation the disconnect stopped was abandoned, not failed: no error
+    /// reply is due, and the cancellation is what is counted.
+    #[test]
+    fn an_evaluation_stopped_by_the_disconnect_is_abandoned() {
+        let client = TestClient::new();
+        let got: Answer<i32> = answer(
+            None,
+            0,
+            client.token(),
+            || Ok(()),
+            |(), cancel| {
+                cancel.disconnect_for_test();
+                Err(QueryError::Cancelled)
+            },
+        );
+        assert!(matches!(got, Answer::Abandoned));
+    }
 }
 
 #[cfg(test)]
