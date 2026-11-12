@@ -419,6 +419,31 @@ mod tests {
         assert_string_simplify(expr, expected);
     }
 
+    /// `A + A → A * 2` holds only where the two reads are the same read and the
+    /// match is the plain one-to-one: identical selectors (time modifiers
+    /// included), subqueries or aggregations, with no `on`/`ignoring` clause.
+    #[test]
+    fn test_simplify_a_plus_a_only_for_one_read_and_no_matching_clause() {
+        for (expr, expected) in [
+            (r#"c2{a="1"} + c2{a="1"}"#, r#"c2{a="1"} * 2.0"#),
+            ("c2 offset 5m + c2 offset 5m", "c2 offset 5m * 2.0"),
+            ("sum by (a) (c2) + sum by (a) (c2)", "sum by (a) (c2) * 2.0"),
+        ] {
+            assert_string_simplify(expr, expected);
+        }
+        for unchanged in [
+            "c2 + on(a) c2",
+            "c2 + ignoring(a) c2",
+            "c2 + c3",
+            "c2 offset 5m + c2",
+            "sum by (a) (c2) + sum by (b) (c2)",
+            // A call is not one of the rewritten shapes.
+            "rate(c2[5m]) + rate(c2[5m])",
+        ] {
+            assert_string_simplify(unchanged, unchanged);
+        }
+    }
+
     #[test]
     fn test_simplify_mul_by_one() {
         // Vector arithmetic must execute so it can drop __name__ and preserve

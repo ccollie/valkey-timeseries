@@ -30,3 +30,34 @@ pub(in crate::promql) fn rollup_idelta(samples: &[Sample]) -> Option<f64> {
     }
     Some(last.value - previous.value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::rollup_idelta;
+    use crate::common::Sample;
+
+    fn s(t: i64, v: f64) -> Sample {
+        Sample::new(t, v)
+    }
+
+    #[test]
+    fn idelta_is_the_difference_of_the_last_two_samples() {
+        assert_eq!(
+            rollup_idelta(&[s(0, 100.0), s(10_000, 3.0), s(20_000, 7.5)]),
+            Some(4.5)
+        );
+    }
+
+    #[test]
+    fn a_fall_is_negative_not_a_reset() {
+        // Unlike irate, idelta is for gauges: no counter-reset correction.
+        assert_eq!(rollup_idelta(&[s(0, 9.0), s(1_000, 4.0)]), Some(-5.0));
+    }
+
+    #[test]
+    fn idelta_needs_two_samples_at_different_times() {
+        assert_eq!(rollup_idelta(&[]), None);
+        assert_eq!(rollup_idelta(&[s(0, 1.0)]), None);
+        assert_eq!(rollup_idelta(&[s(1_000, 1.0), s(1_000, 2.0)]), None);
+    }
+}

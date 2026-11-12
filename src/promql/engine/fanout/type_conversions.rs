@@ -558,6 +558,52 @@ mod tests {
         assert!(AggregationKind::try_from(ProtoAggregationKind::Unspecified).is_err());
     }
 
+    /// The other direction: every operator that is pushed down has a wire
+    /// form that decodes back to it, and `quantile`, which needs the whole
+    /// value set on one node, is the only one without. The `match` stops
+    /// compiling when a variant is added, until it is listed here too.
+    #[test]
+    fn every_pushed_down_aggregation_kind_has_a_wire_form() {
+        use AggregationKind::*;
+        let all = [
+            Sum,
+            Avg,
+            Min,
+            Max,
+            Count,
+            Group,
+            Stddev,
+            Stdvar,
+            Topk,
+            Bottomk,
+            CountValues,
+            Quantile,
+            Limitk,
+            LimitRatio,
+        ];
+        let mut wire = Vec::new();
+        let mut local_only = Vec::new();
+        for kind in all {
+            match kind {
+                Sum | Avg | Min | Max | Count | Group | Stddev | Stdvar | Topk | Bottomk
+                | CountValues | Quantile | Limitk | LimitRatio => {}
+            }
+            if kind.pushdown_strategy().is_none() {
+                local_only.push(kind);
+                continue;
+            }
+            let proto = ProtoAggregationKind::from(kind);
+            assert_ne!(proto, ProtoAggregationKind::Unspecified, "{kind:?}");
+            assert_eq!(AggregationKind::try_from(proto).unwrap(), kind);
+            wire.push(proto as i32);
+        }
+        assert_eq!(local_only, [Quantile]);
+        let pushed = wire.len();
+        wire.sort_unstable();
+        wire.dedup();
+        assert_eq!(wire.len(), pushed, "two kinds share a wire value");
+    }
+
     /// Every pushable rollup has a wire form that comes back as itself.
     #[test]
     fn rollup_kinds_round_trip_through_the_wire() {

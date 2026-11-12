@@ -313,3 +313,102 @@ impl GridPreloadKey {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use promql_parser::label::Labels;
+    use promql_parser::parser::{Expr, parse};
+
+    fn vs(q: &str) -> VectorSelector {
+        match parse(q).unwrap() {
+            Expr::VectorSelector(vs) => vs,
+            other => panic!("not a selector: {other}"),
+        }
+    }
+
+    fn key(q: &str) -> PreloadKey {
+        PreloadKey::from_selector(&vs(q))
+    }
+
+    fn by(kind: AggregationKind, labels: &[&str], without: bool) -> AggregationKey {
+        let labels = Labels::new(labels.to_vec());
+        AggregationKey::of(&GridAggregation {
+            kind,
+            modifier: Some(if without {
+                LabelModifier::Exclude(labels)
+            } else {
+                LabelModifier::Include(labels)
+            }),
+            param: None,
+        })
+    }
+
+    /// Selectors that read different series, or the same series over
+    /// different time windows, must never share a preload.
+    #[test]
+    fn keys_tell_apart_what_selects_or_shifts_differently() {
+        let distinct = [
+            r#"m{a="x"}"#,
+            r#"m{a=~"x"}"#,
+            r#"m{a!="x"}"#,
+            r#"m{a!~"x"}"#,
+            r#"m{a="y"}"#,
+            r#"m{b="x"}"#,
+            r#"n{a="x"}"#,
+            r#"m{a="x"} offset 5m"#,
+            r#"m{a="x"} offset -5m"#,
+            r#"m{a="x"} offset 10m"#,
+            r#"m{a="x"} @ start()"#,
+            r#"m{a="x"} @ end()"#,
+            r#"m{a="x"} @ 100"#,
+            r#"m{a="x"} @ 200"#,
+        ];
+        for (i, a) in distinct.iter().enumerate() {
+            for b in &distinct[i + 1..] {
+                assert_ne!(key(a), key(b), "{a} and {b} share a preload key");
+            }
+        }
+    }
+
+    #[test]
+    fn keys_ignore_how_a_selector_is_written() {
+        assert_eq!(key(r#"m{a="1", b="2"}"#), key(r#"m{b="2", a="1"}"#));
+        assert_eq!(
+            SelectorKey::from_selector(&vs(r#"m{a="1"} offset 5m"#)),
+            SelectorKey::from_selector(&vs(r#"m{a="1"}"#)),
+            "the series key leaves time modifiers to PreloadKey"
+        );
+    }
+
+    #[test]
+    fn a_matrix_key_includes_its_window() {
+        let m = vs("m");
+        assert_ne!(
+            MatrixPreloadKey::new(&m, 300_000),
+            MatrixPreloadKey::new(&m, 3_600_000)
+        );
+        assert_eq!(
+            MatrixPreloadKey::new(&m, 300_000),
+            MatrixPreloadKey::new(&m, 300_000)
+        );
+    }
+
+    #[test]
+    fn an_aggregation_key_is_its_operator_grouping_and_parameter() {
+        use AggregationKind::{Sum, Topk};
+        assert_eq!(by(Sum, &["a", "b"], false), by(Sum, &["b", "a"], false));
+        assert_eq!(by(Sum, &["a", "a"], false), by(Sum, &["a"], false));
+        assert_ne!(by(Sum, &["a"], false), by(Sum, &["a"], true));
+        assert_ne!(by(Sum, &["a"], false), by(Topk, &["a"], false));
+        let topk = |k: f64| {
+            AggregationKey::of(&GridAggregation {
+                kind: Topk,
+                modifier: None,
+                param: Some(AggregationParam::Scalar(k)),
+            })
+        };
+        assert_ne!(topk(3.0), topk(5.0));
+        assert_eq!(topk(3.0), topk(3.0));
+    }
+}

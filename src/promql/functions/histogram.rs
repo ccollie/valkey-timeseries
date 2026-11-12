@@ -74,11 +74,6 @@ struct Bucket {
 }
 
 impl Bucket {
-    fn is_set(&self) -> bool {
-        !self.start_str.is_empty()
-            || !self.end_str.is_empty() && self.start != 0.0 && self.end != 0.0
-    }
-
     fn is_zero_ts(&self) -> bool {
         let ts = self.ts.borrow();
         ts.value <= 0.0
@@ -157,14 +152,14 @@ fn vmrange_buckets_to_le(tss: Vec<EvalSample>) -> Vec<EvalSample> {
         });
     }
 
-    let default_bucket: Bucket = Default::default();
-
     let mut uniq_ts: AHashMap<String, SharedTimeseries> = AHashMap::with_capacity(8);
 
     for xss in buckets.values_mut() {
         xss.sort_by(|a, b| a.end.total_cmp(&b.end));
         let mut xss_new: Vec<Bucket> = Vec::with_capacity(xss.len() + 2);
-        let mut xs_prev: &Bucket = &default_bucket;
+        // The last non-empty bucket kept, if any: the histogram's lower edge
+        // is 0 until there is one.
+        let mut xs_prev: Option<&Bucket> = None;
 
         uniq_ts.clear();
 
@@ -180,7 +175,7 @@ fn vmrange_buckets_to_le(tss: Vec<EvalSample>) -> Vec<EvalSample> {
                 continue;
             }
 
-            if xs.start != xs_prev.end {
+            if xs.start != xs_prev.map_or(0.0, |prev| prev.end) {
                 // There is a gap between the previous bucket and the current bucket,
                 // or the previous bucket is skipped because it was zero.
                 // Fill it with a time series with le=xs.start.
@@ -211,11 +206,14 @@ fn vmrange_buckets_to_le(tss: Vec<EvalSample>) -> Vec<EvalSample> {
                 xss_new.push(xs.clone());
             }
 
-            xs_prev = xs;
+            xs_prev = Some(xs);
         }
 
-        if xs_prev.is_set() && !is_inf(xs_prev.end, 1) && !xs_prev.is_zero_ts() {
-            let ts = xs_prev.copy_ts("+Inf");
+        if let Some(prev) = xs_prev
+            && !is_inf(prev.end, 1)
+            && !prev.is_zero_ts()
+        {
+            let ts = prev.copy_ts("+Inf");
 
             xss_new.push(Bucket {
                 start_str: "".to_string(),
@@ -805,6 +803,62 @@ mod tests {
                 ("+Inf".to_string(), 5.0),
             ]
         );
+    }
+
+    /// A missing range becomes an empty `le` bucket at its lower edge, so the
+    /// cumulative counts stay right across it, as VictoriaMetrics converts.
+    #[test]
+    fn a_gap_between_vmrange_buckets_becomes_an_empty_le_bucket() {
+        let out = vmrange_buckets_to_le(vec![
+            sample(&[("__name__", "h"), ("vmrange", "0...1")], 2.0),
+            sample(&[("__name__", "h"), ("vmrange", "2...4")], 3.0),
+        ]);
+        assert_eq!(
+            le_values(out),
+            vec![
+                ("1".to_string(), 2.0),
+                ("2".to_string(), 2.0),
+                ("4".to_string(), 5.0),
+                ("+Inf".to_string(), 5.0),
+            ]
+        );
+    }
+
+    /// The first range not starting at 0 gets an empty bucket at its start.
+    #[test]
+    fn a_histogram_not_starting_at_zero_gets_an_empty_first_bucket() {
+        let out = vmrange_buckets_to_le(vec![sample(
+            &[("__name__", "h"), ("vmrange", "1...2")],
+            3.0,
+        )]);
+        assert_eq!(
+            le_values(out),
+            vec![
+                ("1".to_string(), 0.0),
+                ("2".to_string(), 3.0),
+                ("+Inf".to_string(), 3.0),
+            ]
+        );
+    }
+
+    /// No `+Inf` bucket is added when the last range already ends there, and
+    /// a histogram with no observations converts to nothing.
+    #[test]
+    fn closing_and_empty_vmrange_histograms() {
+        let out = vmrange_buckets_to_le(vec![
+            sample(&[("__name__", "h"), ("vmrange", "0...1")], 1.0),
+            sample(&[("__name__", "h"), ("vmrange", "1...+Inf")], 2.0),
+        ]);
+        assert_eq!(
+            le_values(out),
+            vec![("1".to_string(), 1.0), ("+Inf".to_string(), 3.0)]
+        );
+
+        let empty = vmrange_buckets_to_le(vec![
+            sample(&[("__name__", "h"), ("vmrange", "0...1")], 0.0),
+            sample(&[("__name__", "h"), ("vmrange", "1...2")], 0.0),
+        ]);
+        assert!(empty.is_empty(), "{:?}", le_values(empty));
     }
 
     /// Prometheus-format buckets pass through the conversion unchanged.
