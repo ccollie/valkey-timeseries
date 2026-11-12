@@ -1506,6 +1506,73 @@ mod selector_batch_executor_tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// A cluster range answer as its shard builds it: one symbol table, each
+    /// series in its own chunk.
+    fn wire_response(hosts: &[&str]) -> super::WireRangeResponse {
+        use crate::commands::fanout_codec::symbol_table::SymbolTableBuilder;
+        use crate::common::Sample;
+        use crate::promql::engine::fanout::range_sample_to_proto;
+        use crate::promql::generated::RangeQueryResponse;
+        use crate::promql::{EvalLabels, RangeSample};
+        let mut symbols = SymbolTableBuilder::default();
+        let series = hosts
+            .iter()
+            .map(|host| {
+                let samples = (0..3).map(|i| Sample::new(i * 1_000, i as f64)).collect();
+                let series = RangeSample {
+                    labels: EvalLabels::from_pairs(&[("__name__", "cpu"), ("host", host)]),
+                    samples,
+                };
+                range_sample_to_proto(series, &mut symbols).unwrap()
+            })
+            .collect();
+        RangeQueryResponse {
+            series,
+            labels: Some(symbols.finish()),
+        }
+        .try_into()
+        .unwrap()
+    }
+
+    /// Every shard's series come back resolved against that shard's table and
+    /// decoded in full.
+    #[test]
+    fn a_wire_matrix_resolves_and_decodes_every_shards_series() {
+        let output = super::SelectorOutput::WireMatrix(vec![
+            wire_response(&["a", "b"]),
+            wire_response(&["c"]),
+        ]);
+        let mut got: Vec<(String, usize)> = output
+            .into_matrix()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.labels.get("host").unwrap().to_string(), s.samples.len()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("a".to_string(), 3),
+                ("b".to_string(), 3),
+                ("c".to_string(), 3)
+            ]
+        );
+    }
+
+    /// Two shards answering with the same label set is a PromQL error, caught
+    /// before any chunk is decoded.
+    #[test]
+    fn a_wire_matrix_refuses_a_label_set_two_shards_sent() {
+        let output =
+            super::SelectorOutput::WireMatrix(vec![wire_response(&["a"]), wire_response(&["a"])]);
+        let err = output.into_matrix().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("more than one series has the labels"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn collect_batch_sweeps_only_what_is_already_queued() {
         let (tx, rx) = mpsc::channel();

@@ -13,6 +13,8 @@ pub(in crate::promql) use grid_fanout_command::GridFanoutCommand;
 pub(in crate::promql) use instant_vector_selector_fanout_command::InstantVectorSelectorFanoutCommand;
 pub(in crate::promql) use label_profile_fanout_command::LabelProfileFanoutCommand;
 pub(in crate::promql) use range_vector_selector_fanout_command::RangeVectorSelectorFanoutCommand;
+#[cfg(test)]
+pub(in crate::promql) use type_conversions::range_sample_to_proto;
 pub(in crate::promql) use type_conversions::{
     WireRangeResponse, check_unique_series, decode_range_series, duplicate_series_error,
 };
