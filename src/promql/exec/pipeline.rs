@@ -449,4 +449,108 @@ mod tests {
         assert_eq!(values[2].timestamp, 30);
         assert_eq!(values[2].value, 3.0);
     }
+
+    // -----------------------------------------------------------------------
+    // The pipeline over a reader
+    // -----------------------------------------------------------------------
+
+    use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
+    use promql_parser::parser::{Expr, parse};
+
+    fn selector(q: &str) -> VectorSelector {
+        match parse(q).unwrap() {
+            Expr::VectorSelector(vs) => vs,
+            other => panic!("not a selector: {other}"),
+        }
+    }
+
+    /// `m{s="a"}` every 10 ms from 0 to 100, value = timestamp; `m{s="b"}` only at 5.
+    fn reader() -> MemorySeriesQuerier {
+        let querier = MemorySeriesQuerier::new();
+        let a = crate::labels::Labels::from_pairs(&[("__name__", "m"), ("s", "a")]);
+        let b = crate::labels::Labels::from_pairs(&[("__name__", "m"), ("s", "b")]);
+        for t in (0..=100).step_by(10) {
+            querier.add_sample(&a, sample(t, t as f64));
+        }
+        querier.add_sample(&b, sample(5, -1.0));
+        querier
+    }
+
+    fn by_series(result: ExprResult) -> Vec<(String, Vec<(i64, f64)>)> {
+        let mut out: Vec<_> = match result {
+            ExprResult::InstantVector(samples) => samples
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.labels.get("s").unwrap().to_string(),
+                        vec![(s.timestamp_ms, s.value)],
+                    )
+                })
+                .collect(),
+            ExprResult::RangeVector(series) => series
+                .into_iter()
+                .map(|s| {
+                    let points = s.values.iter().map(|p| (p.timestamp, p.value)).collect();
+                    (s.labels.get("s").unwrap().to_string(), points)
+                })
+                .collect(),
+            other => panic!("unexpected result {other:?}"),
+        };
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    #[test]
+    fn an_instant_read_takes_each_series_latest_sample_in_its_lookback() {
+        let plan = QueryPlan::for_instant_vector(55, 20);
+        let got =
+            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
+                .unwrap();
+        // `b`'s only sample, at 5, is outside (35, 55].
+        assert_eq!(by_series(got), vec![("a".to_string(), vec![(50, 50.0)])]);
+    }
+
+    /// The window excludes its start and includes its end, and each series
+    /// carries the plan's range and end for the rollups that read them.
+    #[test]
+    fn a_matrix_read_spans_the_left_open_window() {
+        let plan = QueryPlan::for_matrix(50, 30);
+        let got =
+            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
+                .unwrap();
+        let ExprResult::RangeVector(series) = &got else {
+            panic!("expected a range vector")
+        };
+        assert!(
+            series
+                .iter()
+                .all(|s| s.range_ms == 30 && s.range_end_ms == 50)
+        );
+        assert_eq!(
+            by_series(got),
+            vec![("a".to_string(), vec![(30, 30.0), (40, 40.0), (50, 50.0)])]
+        );
+    }
+
+    /// The subquery fast path: one sample per step, the latest within the
+    /// lookback, with the subquery's own range rather than the extended read.
+    #[test]
+    fn a_subquery_read_reduces_each_series_to_its_steps() {
+        let plan = QueryPlan::for_subquery_vector_selector(40, 100, 20, 15);
+        let got =
+            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
+                .unwrap();
+        let ExprResult::RangeVector(series) = &got else {
+            panic!("expected a range vector")
+        };
+        assert!(
+            series.iter().all(|s| s.range_ms == 60),
+            "{:?}",
+            series.iter().map(|s| s.range_ms).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            by_series(got),
+            vec![("a".to_string(), vec![(60, 60.0), (80, 80.0), (100, 100.0)])]
+        );
+    }
 }
