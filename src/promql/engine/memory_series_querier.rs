@@ -111,15 +111,15 @@ impl MemorySeriesQuerier {
         let inner = self.inner.read().unwrap();
 
         let selector: SeriesSelector = SeriesSelector::from(selector);
-        let series = inner
+        // A postings error is the read's error: iterating the `Result` instead
+        // made it read as a selector that matched nothing.
+        let postings = inner
             .postings
             .postings_for_selectors(&[selector])
-            .into_iter()
-            .flat_map(|res| {
-                res.iter()
-                    .filter_map(|id| inner.series.get(&id))
-                    .collect::<Vec<_>>()
-            })
+            .map_err(|e| QueryError::Execution(e.to_string()))?;
+        let series = postings
+            .iter()
+            .filter_map(|id| inner.series.get(&id))
             .iter_into_par_rayon()
             .map(&f)
             .into_fallible()
@@ -334,6 +334,29 @@ mod tests {
         let live = Labels::from_pairs(&[("__name__", "m"), ("gen", "live")]);
         querier.add_sample(&live, Sample::new(1_000, 1.0));
         querier
+    }
+
+    /// A selector the index refuses is the read's error, not a selector that
+    /// matched nothing. The parser never builds one, so it is built by hand.
+    #[test]
+    fn an_index_error_is_the_reads_error() {
+        use promql_parser::label::{MatchOp, Matcher, Matchers};
+        let querier = retired_and_live();
+        // Alone, an empty name matching "" is Prometheus' match-all; beside
+        // another matcher the index refuses it.
+        let unanswerable = VectorSelector {
+            name: None,
+            matchers: Matchers::new(vec![
+                Matcher::new(MatchOp::Equal, "", ""),
+                Matcher::new(MatchOp::Equal, "region", "eu"),
+            ]),
+            offset: None,
+            at: None,
+        };
+        let err = querier
+            .query(&unanswerable, 1_000, QueryOptions::default())
+            .expect_err("an index error must not read as no series");
+        assert!(err.to_string().contains("at least one matcher"), "{err}");
     }
 
     #[test]
