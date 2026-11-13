@@ -144,7 +144,6 @@ fn describe_target(target: &NodeInfo) -> String {
 ///
 /// Returns, for an operation that may be abandoned ([`FanoutCommand::cancellable`]), the
 /// [`FanoutCancel`] that ends it once nobody is waiting for its result.
-/// todo: pass in nodes to target instead of letting the command decide, for better separation of concerns.
 pub fn exec_command<OP: FanoutCommand, F>(
     ctx: &Context,
     command: OP,

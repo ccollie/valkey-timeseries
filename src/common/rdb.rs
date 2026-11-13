@@ -315,7 +315,16 @@ pub(crate) fn rdb_load_optional_rounding(
 
 #[cfg(test)]
 mod tests {
-    use super::narrow;
+    use super::{MAX_RDB_COLLECTION_LEN, MAX_RDB_PREALLOC, narrow, rdb_prealloc};
+
+    #[test]
+    fn prealloc_never_exceeds_the_cap() {
+        assert_eq!(rdb_prealloc(0), 0);
+        assert_eq!(rdb_prealloc(7), 7);
+        assert_eq!(rdb_prealloc(MAX_RDB_PREALLOC), MAX_RDB_PREALLOC);
+        assert_eq!(rdb_prealloc(MAX_RDB_COLLECTION_LEN), MAX_RDB_PREALLOC);
+        assert_eq!(rdb_prealloc(usize::MAX), MAX_RDB_PREALLOC);
+    }
 
     #[test]
     fn narrowing_refuses_what_the_type_cannot_hold() {
@@ -326,19 +335,5 @@ mod tests {
         assert!(narrow::<i8, i64>(-129, "i8").is_err());
         assert_eq!(narrow::<i32, i64>(-1, "i32").unwrap(), -1);
         assert!(narrow::<i32, i64>(i64::from(i32::MAX) + 1, "i32").is_err());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_RDB_COLLECTION_LEN, MAX_RDB_PREALLOC, rdb_prealloc};
-
-    #[test]
-    fn prealloc_never_exceeds_the_cap() {
-        assert_eq!(rdb_prealloc(0), 0);
-        assert_eq!(rdb_prealloc(7), 7);
-        assert_eq!(rdb_prealloc(MAX_RDB_PREALLOC), MAX_RDB_PREALLOC);
-        assert_eq!(rdb_prealloc(MAX_RDB_COLLECTION_LEN), MAX_RDB_PREALLOC);
-        assert_eq!(rdb_prealloc(usize::MAX), MAX_RDB_PREALLOC);
     }
 }
