@@ -40,7 +40,7 @@ LONG_LABELS = [
 class TestModuleInfoSections(ValkeyTimeSeriesTestCaseBase):
     SECTIONS = [
         "ts_index", "ts_compaction", "ts_rdb", "ts_blocked_read", "ts_string_interning",
-        "ts_task", "ts_asm", "ts_index_reconciliation", "ts_fanout", "ts_chunk",
+        "ts_task", "ts_asm", "ts_index_reconciliation", "ts_fanout", "ts_chunk", "ts_promql",
     ]
 
     def _raw_info(self, section):

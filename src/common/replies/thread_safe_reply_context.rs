@@ -5,6 +5,7 @@ use crate::error_consts;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -30,12 +31,15 @@ struct Watched {
     hook: Option<DisconnectHook>,
 }
 
-/// Runs on the main thread when a blocked client's connection closes (the peer went away, or
-/// `CLIENT KILL`), never for a client unblocked normally or timed out.
+/// The server's disconnect callback, for both kinds of handle: a [`BlockedClient`]'s
+/// cancellation registration and a [`DisconnectWatch`]. Runs on the main thread when a blocked
+/// client's connection closes (the peer went away, or `CLIENT KILL`), never for a client
+/// unblocked normally or timed out. A handle registered with neither is left alone.
 unsafe extern "C" fn on_disconnect(
     ctx: *mut raw::RedisModuleCtx,
     bc: *mut raw::RedisModuleBlockedClient,
 ) {
+    mark_disconnected(bc as u64);
     let hook = lock(&DISCONNECTED)
         .get_mut(&(bc as usize))
         .and_then(|watched| {
@@ -83,11 +87,6 @@ impl DisconnectWatch {
             flag,
             watching,
         }
-    }
-
-    /// The flag the callback sets; it stays readable after [`Self::forget`].
-    pub(crate) fn flag(&self) -> &AtomicBool {
-        &self.flag
     }
 
     /// Whether the client has disconnected.
@@ -156,15 +155,6 @@ impl BlockedClient {
             .map(Registration::token)
             .unwrap_or_default()
     }
-}
-
-/// The server's disconnect callback: runs on the main thread while `bc` is still blocked (the
-/// peer went away, or `CLIENT KILL`), never for a client unblocked normally.
-extern "C" fn on_disconnect(
-    _ctx: *mut raw::RedisModuleCtx,
-    bc: *mut raw::RedisModuleBlockedClient,
-) {
-    mark_disconnected(bc as u64);
 }
 
 impl Drop for BlockedClient {
@@ -250,10 +240,9 @@ impl ThreadSafeReplyContext {
         }
     }
 
-    /// Set once the client has disconnected: the reply will not be read, so the work can
-    /// stop.
-    pub(crate) fn disconnected(&self) -> &AtomicBool {
-        self.blocked_client.disconnect.flag()
+    /// Reports the client's disconnect: the reply will not be read, so the work can stop.
+    pub(crate) fn cancel_token(&self) -> CancelToken {
+        self.blocked_client.cancel_token()
     }
 
     /// The Valkey modules API does not require locking for `Reply` functions,
