@@ -16,7 +16,6 @@
 //! coordinator leaves the selector as written, which is always safe.
 
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
-use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::local_label_profile;
 use crate::promql::engine::label_profile::{
     LabelProfile, LabelProfileBuilder, LabelValueProfile, ProfileWindow,
@@ -122,8 +121,7 @@ impl FanoutCommand for LabelProfileFanoutCommand {
         req: LabelProfileQuery,
     ) -> ValkeyResult<LabelProfileResponse> {
         let window = window_from_wire(&req);
-        let selector = super::required(req.selector, "selector")?;
-        let series_selector: SeriesSelector = (&selector).try_into()?;
+        let series_selector = super::shard_selector(req.selector.as_ref())?;
         // Locks per batch of matched series, not for the whole read.
         Ok(
             match local_label_profile(
@@ -167,6 +165,7 @@ impl FanoutCommand for LabelProfileFanoutCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labels::filters::SeriesSelector;
     use crate::promql::engine::label_profile::{MAX_PROFILED_LABELS, MAX_PUSHDOWN_VALUES};
 
     fn node(port: u16) -> NodeInfo {

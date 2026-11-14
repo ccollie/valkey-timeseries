@@ -4,9 +4,9 @@ use crate::common::threads::GilSource;
 use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::fanout::FanoutContext;
-use crate::labels::HasFingerprint;
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
+use crate::promql::engine::fanout::type_conversions::UniqueSeries;
 use crate::promql::engine::label_profile::{
     LabelProfile, LabelProfileBuilder, ProfileCollector, ProfileWindow,
 };
@@ -20,7 +20,6 @@ use crate::promql::engine::{
 use crate::promql::generated::{
     InstantQueryResponse, InstantSample, RangeQueryResponse, RangeSample,
 };
-use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalLabels, EvalSample, QueryError, QueryResult};
 use crate::series::chunks::samples_to_chunk_lossless;
 use crate::series::index::{
@@ -399,7 +398,7 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     // Two series with the same labels are refused here, before any of them is
     // reduced: a fused request returns groups, which the coordinator cannot check
     // (see `execute_cluster_aggregation`).
-    let mut seen = FingerprintHashSet::default();
+    let mut seen = UniqueSeries::default();
     for_each_snapshot_batch(
         src,
         selector,
@@ -425,14 +424,10 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
                 .collect::<Vec<_>>()
                 .map_err(super::shard_error)?;
             let windows = bounds.admit(candidates);
-            if let Some(dup) = windows
+            windows
                 .iter()
-                .find(|w| !seen.insert(w.labels.fingerprint()))
-            {
-                return Err(super::shard_error(QueryError::Execution(
-                    super::duplicate_series_error(&dup.labels),
-                )));
-            }
+                .try_for_each(|w| seen.insert(&w.labels))
+                .map_err(|e| super::shard_error(QueryError::Execution(e)))?;
             if bounds.over_series() {
                 // `finish` refuses the read whatever the rest holds.
                 return Ok(ControlFlow::Break(()));

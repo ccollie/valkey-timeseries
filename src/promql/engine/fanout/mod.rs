@@ -6,22 +6,23 @@ mod query_utils;
 mod range_vector_selector_fanout_command;
 mod type_conversions;
 
-pub(in crate::promql) use aggregation_fanout_command::{
-    AggregationFanoutCommand, InstantVectorParams,
-};
+pub(in crate::promql) use aggregation_fanout_command::AggregationFanoutCommand;
 pub(in crate::promql) use grid_fanout_command::GridFanoutCommand;
-pub(in crate::promql) use instant_vector_selector_fanout_command::InstantVectorSelectorFanoutCommand;
+pub(in crate::promql) use instant_vector_selector_fanout_command::{
+    InstantVectorParams, InstantVectorSelectorFanoutCommand,
+};
 pub(in crate::promql) use label_profile_fanout_command::LabelProfileFanoutCommand;
 pub(in crate::promql) use range_vector_selector_fanout_command::RangeVectorSelectorFanoutCommand;
 #[cfg(test)]
 pub(in crate::promql) use type_conversions::range_sample_to_proto;
 pub(in crate::promql) use type_conversions::{
-    WireRangeResponse, check_unique_series, decode_range_series, duplicate_series_error,
+    WireRangeResponse, check_unique_series, decode_range_series,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
 use crate::error_consts;
 use crate::fanout::{ErrorKind, FanoutContext, FanoutError, NodeInfo, register_fanout_operation};
+use crate::labels::filters::SeriesSelector;
 use crate::promql::QueryError;
 use crate::promql::deadline::Deadline;
 
@@ -49,6 +50,14 @@ pub(super) fn shard_error(err: impl Into<QueryError>) -> ValkeyError {
 /// peer from reading as "nothing matched here".
 pub(super) fn required<T>(field: Option<T>, what: &str) -> ValkeyResult<T> {
     field.ok_or_else(|| ValkeyError::String(format!("TSDB: fan-out request has no {what}")))
+}
+
+/// A shard request's selector, which every request must carry, as this node's
+/// own [`SeriesSelector`].
+pub(super) fn shard_selector(
+    selector: Option<&crate::promql::generated::SeriesSelector>,
+) -> ValkeyResult<SeriesSelector> {
+    required(selector, "selector")?.try_into()
 }
 
 /// A peer's answer this node could not use, reported against the peer.

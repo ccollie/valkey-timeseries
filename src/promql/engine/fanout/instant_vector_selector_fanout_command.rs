@@ -1,43 +1,67 @@
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
-use crate::labels::HasFingerprint;
-use crate::labels::filters::SeriesSelector;
+use crate::promql::engine::QueryOptions;
 use crate::promql::engine::fanout::query_utils::{handle_instant_query, shard_read};
+use crate::promql::engine::fanout::type_conversions::UniqueSeries;
 use crate::promql::generated::{
     InstantQuery, InstantQueryResponse, SeriesSelector as ProtoSeriesSelector,
 };
-use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalLabels, InstantSample};
 use promql_parser::label::Matchers;
 use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
-pub struct InstantVectorSelectorFanoutCommand {
-    matchers: Arc<Matchers>,
-    timestamp: i64,
-    lookback_delta: u64,
-    max_series: u64,
-    /// Samples already in evaluator form: each response is resolved against
-    /// its symbol table as it arrives (see `on_response`).
-    results: Vec<InstantSample<EvalLabels>>,
-    seen: FingerprintHashSet,
+/// An instant-vector read: what to select, and when.
+#[derive(Debug, Clone)]
+pub(in crate::promql) struct InstantVectorParams {
+    pub matchers: Arc<Matchers>,
+    pub timestamp: Timestamp,
+    pub lookback_delta: u64,
+    pub max_series: u64,
 }
 
-impl InstantVectorSelectorFanoutCommand {
-    pub fn new(
+impl InstantVectorParams {
+    /// `matchers` at `timestamp`, with the lookback and series limit of `options`.
+    pub(in crate::promql) fn of(
         matchers: Arc<Matchers>,
         timestamp: Timestamp,
-        lookback_delta: u64,
-        max_series: u64,
+        options: &QueryOptions,
     ) -> Self {
         Self {
             matchers,
             timestamp,
-            lookback_delta,
-            max_series,
+            lookback_delta: options.lookback_delta.as_millis() as u64,
+            max_series: options.max_series as u64,
+        }
+    }
+}
+
+impl From<&InstantVectorParams> for InstantQuery {
+    fn from(params: &InstantVectorParams) -> Self {
+        InstantQuery {
+            selector: Some(ProtoSeriesSelector::from(&*params.matchers)),
+            timestamp: params.timestamp,
+            lookback_delta: params.lookback_delta,
+            max_series: params.max_series,
+        }
+    }
+}
+
+pub struct InstantVectorSelectorFanoutCommand {
+    params: InstantVectorParams,
+    /// Samples already in evaluator form: each response is resolved against
+    /// its symbol table as it arrives (see `on_response`).
+    results: Vec<InstantSample<EvalLabels>>,
+    seen: UniqueSeries,
+}
+
+impl InstantVectorSelectorFanoutCommand {
+    pub fn new(params: InstantVectorParams) -> Self {
+        Self {
+            params,
             results: vec![],
-            seen: FingerprintHashSet::default(),
+            seen: UniqueSeries::default(),
         }
     }
 
@@ -59,8 +83,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
         ctx: &FanoutContext,
         req: InstantQuery,
     ) -> ValkeyResult<InstantQueryResponse> {
-        let selector = super::required(req.selector, "selector")?;
-        let series_selector: SeriesSelector = (&selector).try_into()?;
+        let series_selector = super::shard_selector(req.selector.as_ref())?;
         // The response is the samples read, so the budget is held until it is returned.
         let read = shard_read(ctx)?;
         // Locks per batch of matched series, not for the whole read.
@@ -75,13 +98,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
     }
 
     fn generate_request(&self) -> InstantQuery {
-        let selector = ProtoSeriesSelector::from(&*self.matchers);
-        InstantQuery {
-            selector: Some(selector),
-            timestamp: self.timestamp,
-            lookback_delta: self.lookback_delta,
-            max_series: self.max_series,
-        }
+        InstantQuery::from(&self.params)
     }
 
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
@@ -92,10 +109,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
             let labels = resolver
                 .resolve(&mut s)
                 .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
-            let fingerprint = labels.fingerprint();
-            if !self.seen.insert(fingerprint) {
-                return Err(super::duplicate_series_error(&labels).into());
-            }
+            self.seen.insert(&labels)?;
             self.results.push(InstantSample {
                 labels,
                 timestamp_ms: s.timestamp,
@@ -110,6 +124,7 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
 mod tests {
     use super::*;
     use crate::commands::fanout_codec::symbol_table::SymbolTableBuilder;
+    use crate::labels::filters::SeriesSelector;
     use crate::promql::generated::InstantSample as ProtoInstantSample;
     use promql_parser::label::{MatchOp, Matcher};
 
@@ -122,7 +137,12 @@ mod tests {
             Matcher::new(MatchOp::Equal, "__name__", "cpu"),
             Matcher::new(MatchOp::NotEqual, "host", "b"),
         ]);
-        InstantVectorSelectorFanoutCommand::new(Arc::new(matchers), 9_000, 300_000, 50)
+        InstantVectorSelectorFanoutCommand::new(InstantVectorParams {
+            matchers: Arc::new(matchers),
+            timestamp: 9_000,
+            lookback_delta: 300_000,
+            max_series: 50,
+        })
     }
 
     /// A sample a shard answers with: its labels, timestamp and value.
@@ -160,7 +180,7 @@ mod tests {
         let selector: SeriesSelector = (&req.selector.expect("a selector")).try_into().unwrap();
         assert_eq!(
             selector.to_string(),
-            SeriesSelector::from(&*command().matchers).to_string()
+            SeriesSelector::from(&*command().params.matchers).to_string()
         );
     }
 
