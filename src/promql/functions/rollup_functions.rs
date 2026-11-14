@@ -2,6 +2,7 @@ use crate::common::math::{kahan_avg, kahan_std_dev, kahan_sum, kahan_variance, q
 use crate::common::{Sample, Timestamp};
 use crate::promql::functions::PromQLArg;
 use crate::promql::functions::PromQLFunction;
+use crate::promql::functions::PromqlFunctionKind;
 use crate::promql::functions::deriv::rollup_deriv;
 use crate::promql::functions::idelta::rollup_idelta;
 use crate::promql::functions::integral::{IntegralStrategy, rollup_integral};
@@ -23,23 +24,58 @@ use promql_parser::parser::Function;
 use promql_parser::parser::value::ValueType;
 // https://github.com/VictoriaMetrics/VictoriaMetrics/blob/master/app/vmselect/promql/rollup.go
 
-/// A range-vector function that a shard can evaluate on its own.
-///
-/// A timeseries lives entirely on one shard, so a rollup over that series'
-/// own window needs no cross-shard merge algebra: the shard computes the final
-/// value and the coordinator concatenates. That locality — not decomposability —
-/// is the membership rule for this enum. A function belongs here when its output
-/// depends on nothing but one series' samples inside the window, which is why
-/// `absent_over_time` can never join: its answer depends on series being absent
-/// across the whole cluster, something no single shard can observe.
-///
-/// The variants deliberately do not cover every eligible function yet; the list
-/// grows once the conformance suite covers each addition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// Variants are named for the PromQL functions they stand for, which is what
-// makes `from_function_name` a transcription rather than a mapping to maintain.
-#[allow(clippy::enum_variant_names)]
-pub enum RollupKind {
+/// Generates [`RollupKind`]. Each variant is named for the
+/// [`PromqlFunctionKind`] it stands for, so one list makes the enum, both
+/// conversions and [`RollupKind::all`].
+macro_rules! rollup_kinds {
+    ( $( #[$meta: meta] )* $( $variant: ident ),* $(,)? ) => {
+        $( #[$meta] )*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[allow(clippy::enum_variant_names)]
+        pub enum RollupKind {
+            $( $variant, )*
+        }
+
+        impl RollupKind {
+            /// The kind for a PromQL function, or `None` when that function
+            /// cannot be pushed down.
+            fn from_function_kind(kind: PromqlFunctionKind) -> Option<Self> {
+                match kind {
+                    $( PromqlFunctionKind::$variant => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
+
+            /// The PromQL function this kind stands for.
+            #[cfg(test)]
+            pub(in crate::promql) fn function_kind(self) -> PromqlFunctionKind {
+                match self {
+                    $( Self::$variant => PromqlFunctionKind::$variant, )*
+                }
+            }
+
+            /// Every kind, for exhaustive testing.
+            #[cfg(test)]
+            pub(in crate::promql) fn all() -> Vec<RollupKind> {
+                vec![$( Self::$variant, )*]
+            }
+        }
+    };
+}
+
+rollup_kinds! {
+    /// A range-vector function that a shard can evaluate on its own.
+    ///
+    /// A timeseries lives entirely on one shard, so a rollup over that series'
+    /// own window needs no cross-shard merge algebra: the shard computes the final
+    /// value and the coordinator concatenates. That locality — not decomposability —
+    /// is the membership rule for this enum. A function belongs here when its output
+    /// depends on nothing but one series' samples inside the window, which is why
+    /// `absent_over_time` can never join: its answer depends on series being absent
+    /// across the whole cluster, something no single shard can observe.
+    ///
+    /// The variants deliberately do not cover every eligible function yet; the list
+    /// grows once the conformance suite covers each addition.
     SumOverTime,
     CountOverTime,
     LastOverTime,
@@ -110,39 +146,9 @@ impl RollupKind {
     /// * `double_exponential_smoothing` / `holt_winters` — takes two scalar
     ///   parameters and the request carries one.
     pub(in crate::promql) fn from_function_name(name: &str) -> Option<Self> {
-        hashify::map!(
-            name.as_bytes(),
-            RollupKind,
-            "sum_over_time" => RollupKind::SumOverTime,
-            "count_over_time" => RollupKind::CountOverTime,
-            "last_over_time" => RollupKind::LastOverTime,
-            "avg_over_time" => RollupKind::AvgOverTime,
-            "min_over_time" => RollupKind::MinOverTime,
-            "max_over_time" => RollupKind::MaxOverTime,
-            "stddev_over_time" => RollupKind::StddevOverTime,
-            "stdvar_over_time" => RollupKind::StdvarOverTime,
-            "mad_over_time" => RollupKind::MadOverTime,
-            "present_over_time" => RollupKind::PresentOverTime,
-            "first_over_time" => RollupKind::FirstOverTime,
-            "quantile_over_time" => RollupKind::QuantileOverTime,
-            "ts_of_first_over_time" => RollupKind::TsOfFirstOverTime,
-            "ts_of_last_over_time" => RollupKind::TsOfLastOverTime,
-            "ts_of_min_over_time" => RollupKind::TsOfMinOverTime,
-            "ts_of_max_over_time" => RollupKind::TsOfMaxOverTime,
-            "rate" => RollupKind::Rate,
-            "increase" => RollupKind::Increase,
-            "delta" => RollupKind::Delta,
-            "irate" => RollupKind::IRate,
-            "idelta" => RollupKind::IDelta,
-            "deriv" => RollupKind::Deriv,
-            "resets" => RollupKind::Resets,
-            "changes" => RollupKind::Changes,
-            "state_duration_over_time" => RollupKind::StateDurationOverTime,
-            "state_count_over_time" => RollupKind::StateCountOverTime,
-            "range_over_time" => RollupKind::RangeOverTime,
-            "integral" => RollupKind::Integral
-        )
-        .copied()
+        PromqlFunctionKind::try_from(name)
+            .ok()
+            .and_then(Self::from_function_kind)
     }
 
     /// The PromQL function this kind stands for. Tests use it to build a query
@@ -150,37 +156,7 @@ impl RollupKind {
     /// without a second list to keep in step.
     #[cfg(test)]
     pub(in crate::promql) fn function_name(self) -> &'static str {
-        use RollupKind::*;
-        match self {
-            SumOverTime => "sum_over_time",
-            CountOverTime => "count_over_time",
-            LastOverTime => "last_over_time",
-            AvgOverTime => "avg_over_time",
-            MinOverTime => "min_over_time",
-            MaxOverTime => "max_over_time",
-            StddevOverTime => "stddev_over_time",
-            StdvarOverTime => "stdvar_over_time",
-            MadOverTime => "mad_over_time",
-            PresentOverTime => "present_over_time",
-            FirstOverTime => "first_over_time",
-            QuantileOverTime => "quantile_over_time",
-            TsOfFirstOverTime => "ts_of_first_over_time",
-            TsOfLastOverTime => "ts_of_last_over_time",
-            TsOfMinOverTime => "ts_of_min_over_time",
-            TsOfMaxOverTime => "ts_of_max_over_time",
-            Rate => "rate",
-            Increase => "increase",
-            Delta => "delta",
-            IRate => "irate",
-            IDelta => "idelta",
-            Deriv => "deriv",
-            Resets => "resets",
-            Changes => "changes",
-            StateDurationOverTime => "state_duration_over_time",
-            StateCountOverTime => "state_count_over_time",
-            RangeOverTime => "range_over_time",
-            Integral => "integral",
-        }
+        self.function_kind().name()
     }
 
     /// A valid `(param, unit_ms)` for this kind, for tests that build one
@@ -236,79 +212,6 @@ impl RollupKind {
             (RollupKind::Integral, Some(2.0)) => None,
             _ => param,
         }
-    }
-
-    /// Every kind, for exhaustive testing. A new variant that is not listed here
-    /// escapes the conformance suite, so the compiler is made to complain: this
-    /// is written as a match rather than a bare array.
-    #[cfg(test)]
-    pub(in crate::promql) fn all() -> Vec<RollupKind> {
-        use RollupKind::*;
-        let all = [
-            SumOverTime,
-            CountOverTime,
-            LastOverTime,
-            AvgOverTime,
-            MinOverTime,
-            MaxOverTime,
-            StddevOverTime,
-            StdvarOverTime,
-            MadOverTime,
-            PresentOverTime,
-            FirstOverTime,
-            QuantileOverTime,
-            TsOfFirstOverTime,
-            TsOfLastOverTime,
-            TsOfMinOverTime,
-            TsOfMaxOverTime,
-            Rate,
-            Increase,
-            Delta,
-            IRate,
-            IDelta,
-            Deriv,
-            Resets,
-            Changes,
-            StateDurationOverTime,
-            StateCountOverTime,
-            RangeOverTime,
-            Integral,
-        ];
-        for kind in all {
-            // Exhaustive: adding a variant without adding it above fails to
-            // compile here.
-            match kind {
-                SumOverTime
-                | CountOverTime
-                | LastOverTime
-                | AvgOverTime
-                | MinOverTime
-                | MaxOverTime
-                | StddevOverTime
-                | StdvarOverTime
-                | MadOverTime
-                | PresentOverTime
-                | FirstOverTime
-                | QuantileOverTime
-                | TsOfFirstOverTime
-                | TsOfLastOverTime
-                | TsOfMinOverTime
-                | TsOfMaxOverTime
-                | Rate
-                | Increase
-                | Delta
-                | IRate
-                | IDelta
-                | Deriv
-                | Resets
-                | Changes
-                | StateDurationOverTime
-                | StateCountOverTime
-                | RangeOverTime
-                | Integral => {}
-            }
-        }
-        all.to_vec()
     }
 
     /// The reduction this kind applies — the *same* function pointer the local
