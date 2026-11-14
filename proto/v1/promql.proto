@@ -154,13 +154,15 @@ message AggregationPartialState {
 
 /// One (group, shard) partial: the group's label set as computed by the
 /// request's grouping modifier, and the shard's accumulated state for it.
-message AggregationGroupPartial {
+message GroupPartial {
   repeated Label labels = 1;
   AggregationPartialState state = 2;
-  /// Label references into `AggregationQueryResponse.labels`, as on
-  /// `RangeSample`.
+  /// Label references into the response's symbol table, as on `RangeSample`.
   repeated uint32 label_name_refs = 3;
   repeated uint32 label_value_refs = 4;
+  /// The step the state is for, in a grid response; 0 in an aggregation
+  /// response, which has one evaluation.
+  int64 step_ts = 5;
 }
 
 /// A PromQL range-vector function a shard can evaluate on its own. Mirrors
@@ -313,17 +315,6 @@ message GridSeries {
   repeated uint32 label_value_refs = 6;
 }
 
-/// One `(group, step, shard)` partial for a fused grid query: the group's label
-/// set as computed by the request's grouping modifier, the step it belongs to,
-/// and the shard's accumulated state for that pair.
-message GridGroupPartial {
-  repeated Label labels = 1;
-  int64 step_ts = 2;
-  AggregationPartialState state = 3;
-  /// Label references into `GridQueryResponse.labels`, as on `RangeSample`.
-  repeated uint32 label_name_refs = 4;
-  repeated uint32 label_value_refs = 5;
-}
 
 /// Each series the shard read lands in exactly one of the three lists.
 ///
@@ -341,7 +332,7 @@ message GridGroupPartial {
 /// from a corrupt peer.
 message GridQueryResponse {
   repeated GridSeries series = 1;
-  repeated GridGroupPartial partials = 2;
+  repeated GroupPartial partials = 2;
   repeated RangeSample raw = 3;
   /// The symbol table every `series`, `partials` and `raw` element's label
   /// refs index into: one per response, so each distinct name and value
@@ -397,7 +388,7 @@ message LabelProfileResponse {
 message AggregationQueryResponse {
   /// Set for the reduction operators (sum/avg/min/max/count/group/stddev/
   /// stdvar): one mergeable partial per group the shard saw.
-  repeated AggregationGroupPartial partials = 1;
+  repeated GroupPartial partials = 1;
   /// Set for the selection operators (topk/bottomk/limitk/limit_ratio) and
   /// count_values: the shard's locally selected/counted samples.
   repeated InstantSample samples = 2;

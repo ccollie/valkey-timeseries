@@ -654,17 +654,20 @@ pub struct AggregationPartialState {
 /// / One (group, shard) partial: the group's label set as computed by the
 /// / request's grouping modifier, and the shard's accumulated state for it.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AggregationGroupPartial {
+pub struct GroupPartial {
     #[prost(message, repeated, tag = "1")]
     pub labels: ::prost::alloc::vec::Vec<Label>,
     #[prost(message, optional, tag = "2")]
     pub state: ::core::option::Option<AggregationPartialState>,
-    /// / Label references into `AggregationQueryResponse.labels`, as on
-    /// / `RangeSample`.
+    /// / Label references into the response's symbol table, as on `RangeSample`.
     #[prost(uint32, repeated, tag = "3")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "4")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
+    /// / The step the state is for, in a grid response; 0 in an aggregation
+    /// / response, which has one evaluation.
+    #[prost(int64, tag = "5")]
+    pub step_ts: i64,
 }
 /// / The range-vector function half of a grid query: `rate(m\[5m\])`'s `rate` and
 /// / `\[5m\]`. Its presence is what makes a grid query a rollup rather than a
@@ -798,23 +801,6 @@ pub struct GridSeries {
     #[prost(uint32, repeated, tag = "6")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
 }
-/// / One `(group, step, shard)` partial for a fused grid query: the group's label
-/// / set as computed by the request's grouping modifier, the step it belongs to,
-/// / and the shard's accumulated state for that pair.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GridGroupPartial {
-    #[prost(message, repeated, tag = "1")]
-    pub labels: ::prost::alloc::vec::Vec<Label>,
-    #[prost(int64, tag = "2")]
-    pub step_ts: i64,
-    #[prost(message, optional, tag = "3")]
-    pub state: ::core::option::Option<AggregationPartialState>,
-    /// / Label references into `GridQueryResponse.labels`, as on `RangeSample`.
-    #[prost(uint32, repeated, tag = "4")]
-    pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "5")]
-    pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
-}
 /// / Each series the shard read lands in exactly one of the three lists.
 /// /
 /// / Which list is decided by the request and by size. A fused request answers in
@@ -834,7 +820,7 @@ pub struct GridQueryResponse {
     #[prost(message, repeated, tag = "1")]
     pub series: ::prost::alloc::vec::Vec<GridSeries>,
     #[prost(message, repeated, tag = "2")]
-    pub partials: ::prost::alloc::vec::Vec<GridGroupPartial>,
+    pub partials: ::prost::alloc::vec::Vec<GroupPartial>,
     #[prost(message, repeated, tag = "3")]
     pub raw: ::prost::alloc::vec::Vec<RangeSample>,
     /// / The symbol table every `series`, `partials` and `raw` element's label
@@ -905,7 +891,7 @@ pub struct AggregationQueryResponse {
     /// / Set for the reduction operators (sum/avg/min/max/count/group/stddev/
     /// / stdvar): one mergeable partial per group the shard saw.
     #[prost(message, repeated, tag = "1")]
-    pub partials: ::prost::alloc::vec::Vec<AggregationGroupPartial>,
+    pub partials: ::prost::alloc::vec::Vec<GroupPartial>,
     /// / Set for the selection operators (topk/bottomk/limitk/limit_ratio) and
     /// / count_values: the shard's locally selected/counted samples.
     #[prost(message, repeated, tag = "2")]

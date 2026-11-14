@@ -31,12 +31,12 @@
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
-use crate::promql::deadline::{Deadline, SERIES_WORK};
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
 use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
-    decode_peer_partial, decode_range_series, packed_range_series, range_sample_to_proto,
-    wrong_payload,
+    decode_range_series, group_partial, merge_peer_partials, packed_range_series,
+    range_sample_to_proto, wrong_payload,
 };
 use crate::promql::engine::query_reader::{
     AggregationOperation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
@@ -45,8 +45,8 @@ use crate::promql::engine::query_reader::{
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::functions::RollupKind;
 use crate::promql::generated::{
-    GridGroupPartial, GridQuery, GridQueryResponse, GridRollup as ProtoGridRollup,
-    RollupKind as ProtoRollupKind, SeriesSelector as ProtoSeriesSelector,
+    GridQuery, GridQueryResponse, GridRollup as ProtoGridRollup, RollupKind as ProtoRollupKind,
+    SeriesSelector as ProtoSeriesSelector,
 };
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::model::RangeSample;
@@ -260,18 +260,16 @@ impl FanoutCommand for GridFanoutCommand {
                 ));
             }
             let mut added = 0;
-            for mut partial in resp.partials {
-                let labels = resolver.resolve(&mut partial).map_err(malformed)?;
-                let state = decode_peer_partial(
-                    partial.state,
-                    target,
-                    "a grid query fused with a reduction",
-                )?;
-                added += partials.merge(partial.step_ts, labels, state);
-                if let Err(err) = self.deadline.checkpoint(SERIES_WORK) {
-                    self.stopped = Some(err);
-                    return Ok(());
-                }
+            self.stopped = merge_peer_partials(
+                resp.partials,
+                &mut resolver,
+                target,
+                "a grid query fused with a reduction",
+                &self.deadline,
+                |step_ts, labels, state| added += partials.merge(step_ts, labels, state),
+            )?;
+            if self.stopped.is_some() {
+                return Ok(());
             }
             added
         } else {
@@ -601,14 +599,7 @@ fn respond(
             let partials = groups
                 .into_partials()
                 .map(|(step_ts, labels, state)| {
-                    let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
-                    GridGroupPartial {
-                        labels: Vec::new(),
-                        step_ts,
-                        state: Some(state.into()),
-                        label_name_refs,
-                        label_value_refs,
-                    }
+                    group_partial(&mut symbols, &labels, state, step_ts)
                 })
                 .collect();
             (Vec::new(), partials)

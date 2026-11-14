@@ -9,7 +9,7 @@ use crate::promql::engine::query_reader::AggregationParam;
 use crate::promql::exec::aggregations::AggregationKind;
 use crate::promql::exec::pipeline::for_each_step_sample;
 use crate::promql::generated::{
-    AggregationKind as ProtoAggregationKind, GridSeries as ProtoGridSeries,
+    AggregationKind as ProtoAggregationKind, GridSeries as ProtoGridSeries, GroupPartial,
 };
 use crate::series::chunks::WIRE_COMPRESSION_MIN_SAMPLES;
 use promql_parser::parser::LabelModifier;
@@ -144,7 +144,7 @@ fn test_partial_without_samples_is_rejected() {
     let step_ts = request.window_ends()[0];
     let response = |state: Option<AggregationPartialState>| GridQueryResponse {
         series: Vec::new(),
-        partials: vec![GridGroupPartial {
+        partials: vec![GroupPartial {
             labels: vec![ProtoLabel {
                 name: "job".to_string(),
                 value: "z".to_string(),
@@ -1839,7 +1839,7 @@ fn test_mismatched_payload_is_rejected() {
     let mut cmd = command(stepped_grid_request());
     let stray = GridQueryResponse {
         series: Vec::new(),
-        partials: vec![GridGroupPartial::default()],
+        partials: vec![GroupPartial::default()],
         ..Default::default()
     };
     assert!(cmd.on_response(stray, &node(7000)).is_err());
@@ -1851,7 +1851,7 @@ fn test_mismatched_payload_is_rejected() {
     ));
     let stray = GridQueryResponse {
         series: vec![ProtoGridSeries::default()],
-        partials: vec![GridGroupPartial::default()],
+        partials: vec![GroupPartial::default()],
         ..Default::default()
     };
     assert!(cmd.on_response(stray, &node(7000)).is_err());

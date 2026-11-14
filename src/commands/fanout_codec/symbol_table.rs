@@ -30,9 +30,7 @@ use super::generated::{Label, SeriesRangeResponse, SymbolTable};
 use crate::common::context::key_for_display;
 use crate::common::string_interner::InternedString;
 use crate::labels::MetricName;
-use crate::promql::generated::{
-    AggregationGroupPartial, GridGroupPartial, GridSeries, InstantSample, RangeSample,
-};
+use crate::promql::generated::{GridSeries, GroupPartial, InstantSample, RangeSample};
 use crate::promql::{EvalLabels, EvalSample};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -112,8 +110,7 @@ promql_symbol_table_refs! {
     InstantSample => |s| format!("instant sample at {}", s.timestamp);
     RangeSample => |_s| "range series".to_string();
     GridSeries => |_s| "grid series".to_string();
-    GridGroupPartial => |s| format!("grid partial at {}", s.step_ts);
-    AggregationGroupPartial => |_s| "aggregation partial".to_string();
+    GroupPartial => |s| format!("partial at {}", s.step_ts);
 }
 
 /// Builds a response's [`SymbolTable`] from series labels as they are read
