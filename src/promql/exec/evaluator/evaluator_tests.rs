@@ -5497,7 +5497,6 @@ mod tests {
     #[test]
     fn twin_subqueries_are_memoized_in_the_union_they_share() {
         use super::super::{PreparedQuery, SubqueryKey, node_addr};
-        use crate::promql::exec::utils::collect_subqueries;
         use std::sync::Arc;
 
         let twin = "max_over_time(sum_over_time(metric[1m])[2m:1m])[4m:2m]";
@@ -5536,7 +5535,16 @@ mod tests {
             Arc::clone(union)
         }
 
-        let twins = collect_subqueries(&expr);
+        // Every subquery evaluated at an expression's own grid, outermost first.
+        fn collect_subqueries<'e, R: QueryReader + ?Sized>(
+            evaluator: &Evaluator<'_, R>,
+            expr: &'e promql_parser::parser::Expr,
+        ) -> Vec<&'e promql_parser::parser::SubqueryExpr> {
+            let plan = evaluator.plan_grid(expr, &[]);
+            plan.subqueries.into_iter().map(|(_, sq)| sq).collect()
+        }
+
+        let twins = collect_subqueries(&evaluator, &expr);
         assert_eq!(twins.len(), 2);
         let union = memoized_union(&evaluator, twins[0]);
         assert!(Arc::ptr_eq(&union, &memoized_union(&evaluator, twins[1])));
@@ -5545,7 +5553,7 @@ mod tests {
         let nested: Vec<_> = twins
             .iter()
             .map(|twin| {
-                let [nested] = collect_subqueries(&twin.expr)[..] else {
+                let [nested] = collect_subqueries(&over_union, &twin.expr)[..] else {
                     panic!("one nested subquery");
                 };
                 memoized_union(&over_union, nested)
