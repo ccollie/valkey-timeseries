@@ -13,7 +13,7 @@ use crate::common::threads::{IntoParRayon, IterIntoParRayon, request_par_threads
 use crate::common::{MultiSample, Sample};
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo, compute_hash_tag_fanout_target};
-use crate::fanout::{FanoutCommandResult, FanoutContext};
+use crate::fanout::{FanoutCommandResult, FanoutContext, FanoutError};
 use crate::iterators::{KWayMerge, RowReducer, SampleReducer, create_sample_iterator_adapter};
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -218,9 +218,11 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         request
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
         match resp {
-            MRangeShare::Wire(resp) => self.ingest_response(resp).map_err(Into::into),
+            MRangeShare::Wire(resp) => self.ingest_response(resp).map_err(|why| {
+                FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
+            }),
             MRangeShare::Local(series) => {
                 self.ingest_local(series);
                 Ok(())
@@ -2113,7 +2115,8 @@ mod tests {
     }
 
     /// Peer-controlled input: a symbol-table response whose ref arrays point
-    /// past the end of the dictionary must be rejected, not indexed.
+    /// past the end of the dictionary must be rejected, not indexed, and the
+    /// error names the peer that sent it.
     #[test]
     fn ingest_response_rejects_out_of_range_symbol_table_ref() {
         let resp = MultiRangeResponse {
@@ -2132,9 +2135,14 @@ mod tests {
 
         let mut cmd = MRangeFanoutCommand::default();
         let err = cmd
-            .ingest_response(resp)
+            .on_response(MRangeShare::Wire(resp), &NodeInfo::for_test(7001))
             .expect_err("out-of-range ref must be rejected");
-        assert!(err.to_string().contains("out of range"), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("out of range"), "{msg}");
+        assert!(
+            msg.contains("TSDB: peer 127.0.0.1:7001"),
+            "the peer is named: {msg}"
+        );
         assert!(
             cmd.series.is_empty(),
             "a rejected response must not be partially ingested"

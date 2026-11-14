@@ -466,7 +466,7 @@ pub(in crate::promql) fn decode_peer_partial(
     query: impl std::fmt::Display,
 ) -> Result<AggregationPartial, FanoutError> {
     decode_partial_state(state)
-        .map_err(|what| super::peer_fault(target, format_args!("sent {what} for {query}")))
+        .map_err(|what| FanoutError::from_peer(target, format_args!("sent {what} for {query}")))
 }
 
 /// One group's partial state for the wire, for `step_ts` (0 outside a grid),
@@ -499,9 +499,9 @@ pub(in crate::promql) fn merge_peer_partials(
     mut merge: impl FnMut(i64, EvalLabels, AggregationPartial),
 ) -> Result<Option<QueryError>, FanoutError> {
     for mut partial in partials {
-        let labels = resolver
-            .resolve(&mut partial)
-            .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
+        let labels = resolver.resolve(&mut partial).map_err(|why| {
+            FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
+        })?;
         let state = decode_peer_partial(partial.state, target, query)?;
         merge(partial.step_ts, labels, state);
         if let Err(err) = deadline.checkpoint(SERIES_WORK) {
@@ -523,7 +523,7 @@ pub(in crate::promql) fn wrong_payload(
     query: impl std::fmt::Display,
     expected: &str,
 ) -> FanoutError {
-    super::peer_fault(
+    FanoutError::from_peer(
         target,
         format_args!("returned {count} {payload} for {query}, which ships {expected}"),
     )
