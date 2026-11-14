@@ -21,12 +21,7 @@ message SeriesRangeResponse {
   repeated SampleData columns = 4;
   // Label storage, used in place of `labels`: parallel arrays, one entry per
   // label, indexing into `MultiRangeResponse.symbol_table_names` /
-  // `symbol_table_values`. Interning is unconditional, so there is no
-  // flag; non-empty ref arrays are themselves the signal.
-  //
-  // Empty ref arrays mean there is nothing to resolve — either the series has
-  // no labels, or it carries them in `labels` directly. A decoder must leave
-  // `labels` alone in that case rather than overwriting it.
+  // `symbol_table_values`.
   repeated uint32 label_name_refs = 5;
   repeated uint32 label_value_refs = 6;
 }
@@ -43,8 +38,7 @@ message ReducePartialState {
   uint64 count = 1;
   double acc1 = 2;
   double acc2 = 3;
-  reserved 4;
-  double acc1_compensation = 5;
+  double acc1_compensation = 4;
 }
 
 message GroupPartialSeries {
