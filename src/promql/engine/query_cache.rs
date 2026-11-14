@@ -28,12 +28,14 @@
 //! cannot displace the queries that repeat.
 
 use crate::config::{query_cache_max_bytes, query_cache_max_entries};
-use ahash::{AHashMap, AHashSet, RandomState};
+use ahash::{AHashMap, RandomState};
 use promql_parser::label::{MatchOp, Matcher, Matchers};
 use promql_parser::parser::{
     BinModifier, Expr, LabelModifier, VectorMatchCardinality, VectorSelector,
 };
 use regex_automata::meta;
+use std::borrow::Borrow;
+use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
@@ -145,23 +147,85 @@ const SEEN_GENERATION: usize = 4096;
 /// refreshes of one panel — in at most about 150 KB. A hash collision only caches a query a
 /// request early.
 #[derive(Default)]
-struct Seen {
-    current: AHashSet<u64>,
-    previous: AHashSet<u64>,
-}
+struct Seen(TwoGenerations<u64, (), SEEN_GENERATION>);
 
 impl Seen {
     /// Whether `hash` was seen recently. A second sighting consumes it; a first records it.
     fn second_sighting(&mut self, hash: u64) -> bool {
-        if self.current.remove(&hash) || self.previous.remove(&hash) {
+        if self.0.remove(&hash).is_some() {
             return true;
         }
-        if self.current.len() >= SEEN_GENERATION {
+        self.0.insert(hash, ());
+        false
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// A map that forgets by generation: at most `N` entries in the current one and as many in
+/// the previous. When the current fills it becomes the previous, and the old previous is
+/// forgotten whole, so aging costs nothing per entry.
+struct TwoGenerations<K, V, const N: usize> {
+    current: AHashMap<K, V>,
+    previous: AHashMap<K, V>,
+}
+
+impl<K, V, const N: usize> Default for TwoGenerations<K, V, N> {
+    fn default() -> Self {
+        Self {
+            current: AHashMap::default(),
+            previous: AHashMap::default(),
+        }
+    }
+}
+
+impl<K: Eq + Hash, V, const N: usize> TwoGenerations<K, V, N> {
+    fn insert(&mut self, key: K, value: V) {
+        if self.current.len() >= N {
             std::mem::swap(&mut self.current, &mut self.previous);
             self.current.clear();
         }
-        self.current.insert(hash);
-        false
+        self.current.insert(key, value);
+    }
+
+    /// The entry for `key` taken out of whichever generation holds it.
+    fn remove_entry<Q>(&mut self, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.current
+            .remove_entry(key)
+            .or_else(|| self.previous.remove_entry(key))
+    }
+
+    fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.remove_entry(key).map(|(_, value)| value)
+    }
+
+    /// The value for `key`, carried into the current generation if only the previous held it:
+    /// it is still in use.
+    fn get_and_renew<Q>(&mut self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        if !self.current.contains_key(key) {
+            let (key, value) = self.previous.remove_entry(key)?;
+            self.insert(key, value);
+        }
+        self.current.get(key)
     }
 
     fn clear(&mut self) {
@@ -564,39 +628,22 @@ const MAX_MEMOIZED_PATTERN_LEN: usize = 256;
 /// [`PATTERN_GENERATION`] patterns, the older forgotten when the newer fills. A charge is a
 /// function of the pattern alone, so a remembered one is always exact.
 #[derive(Default)]
-struct PatternCharges {
-    current: AHashMap<Box<str>, usize>,
-    previous: AHashMap<Box<str>, usize>,
-}
+struct PatternCharges(TwoGenerations<Box<str>, usize, PATTERN_GENERATION>);
 
 impl PatternCharges {
     fn get(&mut self, pattern: &str) -> Option<usize> {
-        if let Some(&charge) = self.current.get(pattern) {
-            return Some(charge);
-        }
-        // Still in use: carry it into the current generation.
-        let (key, charge) = self.previous.remove_entry(pattern)?;
-        self.insert_owned(key, charge);
-        Some(charge)
+        self.0.get_and_renew(pattern).copied()
     }
 
     fn insert(&mut self, pattern: &str, charge: usize) {
         if pattern.len() <= MAX_MEMOIZED_PATTERN_LEN {
-            self.insert_owned(pattern.into(), charge);
+            self.0.insert(pattern.into(), charge);
         }
-    }
-
-    fn insert_owned(&mut self, pattern: Box<str>, charge: usize) {
-        if self.current.len() >= PATTERN_GENERATION {
-            std::mem::swap(&mut self.current, &mut self.previous);
-            self.current.clear();
-        }
-        self.current.insert(pattern, charge);
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.current.len() + self.previous.len()
+        self.0.len()
     }
 }
 
