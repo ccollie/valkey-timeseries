@@ -204,7 +204,7 @@ impl QueryReader for ValkeySeriesQuerier {
 /// from, so the two stay in sync. `Matchers` is used as the intermediate — rather than the
 /// crate-native `SeriesSelector` — because it preserves the original regex source strings
 /// needed for lossless fanout serialization.
-fn normalize_selector(selector: &VectorSelector) -> Matchers {
+pub(in crate::promql) fn normalize_selector(selector: &VectorSelector) -> Matchers {
     let Some(ref name) = selector.name else {
         return selector.matchers.clone();
     };
