@@ -467,12 +467,17 @@ pub(super) fn fusable_aggregation(aggregate: &AggregateExpr) -> Option<GridAggre
 /// The grid key under which `aggregate` — a fusable aggregation directly over
 /// a bare vector selector — is preloaded, or `None` when it is not that shape.
 pub(super) fn stepped_aggregation_key(aggregate: &AggregateExpr) -> Option<GridPreloadKey> {
+    stepped_key(aggregate, &fusable_aggregation(aggregate)?)
+}
+
+/// [`stepped_aggregation_key`], for a caller that already has `aggregate`'s
+/// [`fusable_aggregation`].
+pub(super) fn stepped_key(
+    aggregate: &AggregateExpr,
+    aggregation: &GridAggregation,
+) -> Option<GridPreloadKey> {
     let Expr::VectorSelector(vs) = strip_parens(&aggregate.expr) else {
         return None;
     };
-    let aggregation = fusable_aggregation(aggregate)?;
-    Some(GridPreloadKey::stepped(
-        vs,
-        AggregationKey::of(&aggregation),
-    ))
+    Some(GridPreloadKey::stepped(vs, AggregationKey::of(aggregation)))
 }

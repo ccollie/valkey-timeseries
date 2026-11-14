@@ -58,7 +58,7 @@ mod preload;
 mod pushdown;
 mod subquery;
 
-use pushdown::{fusable_aggregation, stepped_aggregation_key};
+use pushdown::{fusable_aggregation, stepped_key};
 pub(crate) use subquery::subquery_grid_counts;
 use subquery::{EvaluatedSubquery, SubqueryKey};
 #[cfg(test)]
@@ -198,6 +198,21 @@ fn node_addr<T>(node: &T) -> usize {
 /// [`QueryError::ends_query`].
 fn is_query_ending(err: &EvaluationError) -> bool {
     matches!(err, EvaluationError::Query(err) if err.ends_query())
+}
+
+/// A best-effort preload's result: `Some` on success, `None` when it failed in
+/// a way the per-step path can recover from — logged with `what` — and the
+/// error itself when it ends the query (a deadline, a spent sample budget:
+/// per-step reads would only be refused one by one).
+fn best_effort<T>(result: EvalResult<T>, what: &str) -> EvalResult<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if is_query_ending(&err) => Err(err),
+        Err(err) => {
+            log_debug(format!("{what}: {err}"));
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) struct Evaluator<'reader, R: QueryReader + ?Sized> {
