@@ -9,7 +9,9 @@ use crate::labels::filters::{
     SeriesSelector,
 };
 use crate::labels::try_regex_predicate;
+use crate::promql::QueryError;
 use crate::promql::RangeSample;
+use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::query_reader::{AggregationOperation, AggregationParam};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::exec::partial_aggregation::AggregationPartial;
@@ -18,7 +20,7 @@ use crate::promql::functions::RollupKind;
 use crate::promql::generated::{
     AggregationGrouping as ProtoAggregationGrouping, AggregationKind as ProtoAggregationKind,
     AggregationOperation as ProtoAggregationOperation,
-    AggregationPartialState as ProtoAggregationPartialState,
+    AggregationPartialState as ProtoAggregationPartialState, GroupPartial as ProtoGroupPartial,
     RangeQueryResponse as ProtoRangeQueryResponse, RangeSample as ProtoRangeSample,
     RollupKind as ProtoRollupKind, SeriesSelector as ProtoSeriesSelector,
 };
@@ -479,6 +481,49 @@ pub(in crate::promql) fn decode_peer_partial(
 ) -> Result<AggregationPartial, FanoutError> {
     decode_partial_state(state)
         .map_err(|what| super::peer_fault(target, format_args!("sent {what} for {query}")))
+}
+
+/// One group's partial state for the wire, for `step_ts` (0 outside a grid),
+/// its labels as refs into `symbols`.
+pub(in crate::promql) fn group_partial(
+    symbols: &mut SymbolTableBuilder,
+    labels: &EvalLabels,
+    state: AggregationPartial,
+    step_ts: i64,
+) -> ProtoGroupPartial {
+    let (label_name_refs, label_value_refs) = symbols.intern_eval(labels);
+    ProtoGroupPartial {
+        labels: Vec::new(),
+        state: Some(state.into()),
+        label_name_refs,
+        label_value_refs,
+        step_ts,
+    }
+}
+
+/// Merge a peer's `partials` with `merge(step_ts, labels, state)`, each
+/// resolved against the response's symbol table and checked as `query`'s
+/// ([`decode_peer_partial`]). `Some` once `deadline` has passed: the merge
+/// stopped there, and the caller drops what follows.
+pub(in crate::promql) fn merge_peer_partials(
+    partials: Vec<ProtoGroupPartial>,
+    resolver: &mut EvalLabelResolver<'_>,
+    target: &NodeInfo,
+    query: impl std::fmt::Display + Copy,
+    deadline: &Deadline,
+    mut merge: impl FnMut(i64, EvalLabels, AggregationPartial),
+) -> Result<Option<QueryError>, FanoutError> {
+    for mut partial in partials {
+        let labels = resolver
+            .resolve(&mut partial)
+            .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
+        let state = decode_peer_partial(partial.state, target, query)?;
+        merge(partial.step_ts, labels, state);
+        if let Err(err) = deadline.checkpoint(SERIES_WORK) {
+            return Ok(Some(err));
+        }
+    }
+    Ok(None)
 }
 
 /// A peer answered a push-down in the wrong form: `count` items of `payload`

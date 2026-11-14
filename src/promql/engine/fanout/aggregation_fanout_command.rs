@@ -19,17 +19,19 @@
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
-use crate::promql::deadline::{Deadline, SERIES_WORK};
+use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::InstantVectorParams;
 use crate::promql::engine::fanout::query_utils::{local_instant_eval_samples, shard_read};
-use crate::promql::engine::fanout::type_conversions::{decode_peer_partial, wrong_payload};
+use crate::promql::engine::fanout::type_conversions::{
+    group_partial, merge_peer_partials, wrong_payload,
+};
 use crate::promql::engine::query_reader::{
     AggregationOperation, AggregationParam, AggregationRequest,
 };
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply_aggregation};
 use crate::promql::exec::partial_aggregation::{PartialGroups, merge_count_values};
 use crate::promql::generated::{
-    AggregationGroupPartial, AggregationQuery, AggregationQueryResponse, InstantQuery,
+    AggregationQuery, AggregationQueryResponse, GroupPartial, InstantQuery,
     InstantSample as ProtoInstantSample,
 };
 use crate::promql::{EvalResult, EvalSample, QueryError};
@@ -149,31 +151,22 @@ impl AggregationFanoutCommand {
 
     fn accumulate_partials(
         &mut self,
-        partials: Vec<AggregationGroupPartial>,
+        partials: Vec<GroupPartial>,
         resolver: &mut symbol_table::EvalLabelResolver<'_>,
         target: &NodeInfo,
     ) -> FanoutCommandResult {
         let AggregationSink::Partials(groups) = &mut self.sink else {
             unreachable!("BUG: partial states arrive only for a reduction");
         };
-        for mut partial in partials {
-            let labels = resolver
-                .resolve(&mut partial)
-                .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
-            let state = decode_peer_partial(
-                partial.state,
-                target,
-                format_args!(
-                    "a pushed-down {:?} reduction",
-                    self.aggregation.operation.kind
-                ),
-            )?;
-            groups.merge(labels, state);
-            if let Err(err) = self.deadline.checkpoint(SERIES_WORK) {
-                self.stopped = Some(err);
-                return Ok(());
-            }
-        }
+        let kind = self.aggregation.operation.kind;
+        self.stopped = merge_peer_partials(
+            partials,
+            resolver,
+            target,
+            format_args!("a pushed-down {kind:?} reduction"),
+            &self.deadline,
+            |_, labels, state| groups.merge(labels, state),
+        )?;
         Ok(())
     }
 }
@@ -327,15 +320,7 @@ fn partials_response(groups: PartialGroups) -> AggregationQueryResponse {
     let mut symbols = symbol_table::SymbolTableBuilder::default();
     let partials = groups
         .into_partials()
-        .map(|(labels, state)| {
-            let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
-            AggregationGroupPartial {
-                labels: Vec::new(),
-                state: Some(state.into()),
-                label_name_refs,
-                label_value_refs,
-            }
-        })
+        .map(|(labels, state)| group_partial(&mut symbols, &labels, state, 0))
         .collect();
     AggregationQueryResponse {
         partials,
@@ -662,7 +647,7 @@ mod tests {
         );
         let mut cmd = command(topk);
         let stray = AggregationQueryResponse {
-            partials: vec![AggregationGroupPartial::default()],
+            partials: vec![GroupPartial::default()],
             samples: Vec::new(),
             labels: None,
         };
@@ -711,7 +696,7 @@ mod tests {
     fn test_partial_without_samples_is_rejected() {
         use crate::promql::generated::{AggregationPartialState, Label as ProtoLabel};
         let response = |state: Option<AggregationPartialState>| AggregationQueryResponse {
-            partials: vec![AggregationGroupPartial {
+            partials: vec![GroupPartial {
                 labels: vec![ProtoLabel {
                     name: "job".to_string(),
                     value: "z".to_string(),

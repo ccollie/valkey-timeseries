@@ -41,7 +41,7 @@ pub(super) mod wire {
     /// A sample in a Chimp chunk on typical telemetry, the codec's own
     /// figure (see `samples_to_chunk`).
     pub const RAW_SAMPLE_COMPRESSED: u64 = 6;
-    /// A `GridGroupPartial` less its labels and accumulators: the message
+    /// A `GroupPartial` less its labels and accumulators: the message
     /// envelope, the step as a varint, and the state's envelope and count.
     pub const PARTIAL_OVERHEAD: u64 = 16;
     /// One `double` accumulator of the state: tag and eight bytes.
