@@ -95,6 +95,17 @@ pub(in crate::promql) fn is_valid_label_name(label: &str) -> bool {
     !label.is_empty()
 }
 
+/// `label`, a label name the query supplied, refused unless it is valid.
+pub(in crate::promql) fn expect_label_name(label: &str) -> EvalResult<()> {
+    if is_valid_label_name(label) {
+        Ok(())
+    } else {
+        Err(EvaluationError::ArgumentError(format!(
+            "invalid label name {label:?}"
+        )))
+    }
+}
+
 pub(super) fn expect_string(value: PromQLArg, func: &str, arg_name: &str) -> EvalResult<String> {
     let PromQLArg::String(s) = value else {
         return Err(EvaluationError::ArgumentError(format!(
@@ -147,19 +158,23 @@ pub(super) fn expect_scalar(arg: PromQLArg, func: &str, param_name: &str) -> Eva
     Err(EvaluationError::ArgumentError(msg))
 }
 
+/// `samples` with each value passed through `map`. The result is a function
+/// of the series, not the series itself, so each sample owes a `__name__` drop.
+pub(super) fn map_values(mut samples: Vec<EvalSample>, map: impl Fn(f64) -> f64) -> ExprResult {
+    for sample in &mut samples {
+        sample.value = map(sample.value);
+        sample.drop_name = true;
+    }
+    ExprResult::InstantVector(samples)
+}
+
 pub(super) fn map_scalar_or_vector(
     value: PromQLArg,
     map: impl Fn(f64) -> f64,
 ) -> EvalResult<ExprResult> {
     match value {
         PromQLArg::Scalar(v) => Ok(ExprResult::Scalar(map(v))),
-        PromQLArg::InstantVector(mut vector) => {
-            for sample in &mut vector {
-                sample.value = map(sample.value);
-                sample.drop_name = true;
-            }
-            Ok(ExprResult::InstantVector(vector))
-        }
+        PromQLArg::InstantVector(vector) => Ok(map_values(vector, map)),
         other => Err(EvaluationError::ArgumentError(format!(
             "function expects scalar or instant vector, got {:?}",
             other.value_type()

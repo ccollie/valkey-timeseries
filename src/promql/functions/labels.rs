@@ -2,7 +2,8 @@ use crate::labels::build_with_repeat_fallback;
 use crate::promql::binops::ensure_unique_labelsets;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
-    expect_exact_arg_count, expect_min_arg_count, expect_string, is_valid_label_name,
+    expect_exact_arg_count, expect_instant_vector, expect_label_name, expect_min_arg_count,
+    expect_string,
 };
 use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
 use ahash::AHashMap;
@@ -103,6 +104,20 @@ fn with_anchored_regex<T>(regex_src: &str, f: impl FnOnce(&Regex) -> T) -> EvalR
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct LabelReplaceFunction;
 
+/// Write `value` into `sample`'s `dst_label`, or remove the label when `value`
+/// is empty. A sample whose `__name__` is written is named again, so it no
+/// longer owes the name drop a function before it left pending.
+fn write_label(sample: &mut EvalSample, dst_label: &str, value: String) {
+    if value.is_empty() {
+        sample.labels.remove(dst_label);
+    } else {
+        sample.labels.set(dst_label, value);
+    }
+    if dst_label == METRIC_NAME {
+        sample.drop_name = false;
+    }
+}
+
 fn apply_label_replace_to_samples(
     mut samples: Vec<EvalSample>,
     dst_label: &str,
@@ -110,12 +125,7 @@ fn apply_label_replace_to_samples(
     src_label: &str,
     regex_src: &str,
 ) -> EvalResult<ExprResult> {
-    if !is_valid_label_name(dst_label) {
-        return Err(EvaluationError::InternalError(format!(
-            "invalid label name {:?}",
-            dst_label
-        )));
-    }
+    expect_label_name(dst_label)?;
 
     with_anchored_regex(regex_src, |regex| {
         for sample in &mut samples {
@@ -124,16 +134,7 @@ fn apply_label_replace_to_samples(
             if let Some(captures) = regex.captures(src_value) {
                 let mut replaced = String::new();
                 captures.expand(replacement, &mut replaced);
-
-                if replaced.is_empty() {
-                    sample.labels.remove(dst_label);
-                } else {
-                    sample.labels.set(dst_label, replaced);
-                }
-
-                if dst_label == METRIC_NAME {
-                    sample.drop_name = false;
-                }
+                write_label(sample, dst_label, replaced);
             }
         }
     })?;
@@ -146,13 +147,10 @@ impl PromQLFunction for LabelReplaceFunction {
         expect_exact_arg_count("label_replace", 5, args.len())?;
 
         let mut args_iter = args.into_iter();
-        let PromQLArg::InstantVector(samples) =
-            args_iter.next().expect("validated args.len() == 5")
-        else {
-            return Err(EvaluationError::InternalError(
-                "label_replace expects an instant vector as its first argument".to_string(),
-            ));
-        };
+        let samples = expect_instant_vector(
+            args_iter.next().expect("validated args.len() == 5"),
+            "label_replace",
+        )?;
 
         let dst_label = expect_string(
             args_iter.next().expect("validated args.len() == 5"),
@@ -207,14 +205,12 @@ impl PromQLFunction for LabelJoinFunction {
         expect_min_arg_count("label_join", 3, actual_args)?;
 
         let mut args_iter = args.into_iter();
-        let PromQLArg::InstantVector(mut samples) = args_iter
-            .next()
-            .expect("validated args.len() == ctx.raw_args.len() >= 3")
-        else {
-            return Err(EvaluationError::InternalError(
-                "label_join expects an instant vector as its first argument".to_string(),
-            ));
-        };
+        let mut samples = expect_instant_vector(
+            args_iter
+                .next()
+                .expect("validated args.len() == ctx.raw_args.len() >= 3"),
+            "label_join",
+        )?;
         let dst_arg = args_iter
             .next()
             .expect("validated evaluated_args.len() == 4");
@@ -228,12 +224,7 @@ impl PromQLFunction for LabelJoinFunction {
             .map(|arg| expect_string(arg, "label_join", "source_label"))
             .collect::<EvalResult<Vec<_>>>()?;
 
-        if !is_valid_label_name(&dst_label) {
-            return Err(EvaluationError::InternalError(format!(
-                "invalid label name {:?}",
-                dst_label
-            )));
-        }
+        expect_label_name(&dst_label)?;
 
         for sample in &mut samples {
             let mut joined = String::new();
@@ -246,15 +237,7 @@ impl PromQLFunction for LabelJoinFunction {
                 }
             }
 
-            if joined.is_empty() {
-                sample.labels.remove(&dst_label);
-            } else {
-                sample.labels.set(&dst_label, joined);
-            }
-
-            if dst_label == METRIC_NAME {
-                sample.drop_name = false;
-            }
+            write_label(sample, &dst_label, joined);
         }
 
         ensure_unique_labelsets(&samples)?;

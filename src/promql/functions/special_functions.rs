@@ -2,7 +2,6 @@ use crate::promql::functions::types::{FunctionCallContext, PromQLArg, PromQLFunc
 use crate::promql::functions::utils::{exact_arity_error, labels_for_absent};
 use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
 use promql_parser::parser::Expr;
-use std::default::Default;
 
 /// `absent(instant-vector)`
 ///
@@ -83,95 +82,56 @@ pub(in crate::promql) struct VectorFunction;
 
 impl PromQLFunction for VectorFunction {
     fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        Ok(ExprResult::InstantVector(vec![EvalSample {
-            timestamp_ms: ctx.evaluation_ts,
-            value: arg.into_scalar()?,
-            labels: Default::default(),
-            drop_name: false,
-        }]))
+        Ok(ExprResult::InstantVector(vec![EvalSample::unlabelled(
+            ctx.evaluation_ts,
+            arg.into_scalar()?,
+        )]))
     }
 }
 
-/// Start function: returns the start timestamp of the query as the number of seconds since
-/// January 1, 1970 UTC.
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct StartFunction;
+/// A function of the query alone, taking no arguments: its value is read off
+/// the evaluation context.
+macro_rules! query_function {
+    ( $(#[$meta: meta])* $name: ident, |$ctx: ident| $value: expr ) => {
+        $(#[$meta])*
+        #[derive(Copy, Clone)]
+        pub(in crate::promql) struct $name;
 
-impl PromQLFunction for StartFunction {
-    fn apply(&self, _arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        Ok(ExprResult::Scalar(ctx.query_start as f64 / 1000.0))
-    }
-
-    fn apply_args(&self, _args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        Ok(ExprResult::Scalar(ctx.query_start as f64 / 1000.0))
-    }
-}
-
-/// End function: returns the end timestamp of the query as the number of seconds since
-/// January 1, 1970 UTC. It is fixed for the whole query, not the current step, so it equals the
-/// evaluation timestamp only for instant queries.
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct EndFunction;
-
-impl EndFunction {
-    fn end_seconds(ctx: &EvalContext) -> f64 {
-        ctx.query_end as f64 / 1000.0
-    }
-}
-
-impl PromQLFunction for EndFunction {
-    fn apply(&self, _arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        Ok(ExprResult::Scalar(Self::end_seconds(ctx)))
-    }
-
-    fn apply_args(&self, _args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        Ok(ExprResult::Scalar(Self::end_seconds(ctx)))
-    }
-}
-
-/// Range function: returns the range duration in seconds for range selectors, or 0 for instant selectors
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct RangeFunction;
-
-impl RangeFunction {
-    fn range_seconds(ctx: &EvalContext) -> f64 {
-        ctx.query_end.saturating_sub(ctx.query_start).max(0) as f64 / 1000.0
-    }
-}
-impl PromQLFunction for RangeFunction {
-    fn apply(&self, _arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let range_seconds = Self::range_seconds(ctx);
-        Ok(ExprResult::Scalar(range_seconds))
-    }
-
-    fn apply_args(&self, _args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let range_seconds = Self::range_seconds(ctx);
-        Ok(ExprResult::Scalar(range_seconds))
-    }
-}
-
-/// step function: returns the step duration in seconds for range selectors, or 0 for instant selectors
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct StepFunction;
-
-impl StepFunction {
-    fn step_seconds(ctx: &EvalContext) -> f64 {
-        if ctx.step_ms > 0 {
-            ctx.step_ms as f64 / 1000.0
-        } else {
-            0.0
+        impl PromQLFunction for $name {
+            fn apply_args(&self, _args: Vec<PromQLArg>, $ctx: &EvalContext) -> EvalResult<ExprResult> {
+                Ok(ExprResult::Scalar($value))
+            }
         }
-    }
+    };
 }
 
-impl PromQLFunction for StepFunction {
-    fn apply(&self, _arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let step_seconds = Self::step_seconds(ctx);
-        Ok(ExprResult::Scalar(step_seconds))
-    }
+query_function!(
+    /// Start function: returns the start timestamp of the query as the number of seconds since
+    /// January 1, 1970 UTC.
+    StartFunction,
+    |ctx| ctx.query_start as f64 / 1000.0
+);
 
-    fn apply_args(&self, _args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let step_seconds = Self::step_seconds(ctx);
-        Ok(ExprResult::Scalar(step_seconds))
+query_function!(
+    /// End function: returns the end timestamp of the query as the number of seconds since
+    /// January 1, 1970 UTC. It is fixed for the whole query, not the current step, so it equals the
+    /// evaluation timestamp only for instant queries.
+    EndFunction,
+    |ctx| ctx.query_end as f64 / 1000.0
+);
+
+query_function!(
+    /// Range function: returns the range duration in seconds for range selectors, or 0 for instant selectors
+    RangeFunction,
+    |ctx| ctx.query_end.saturating_sub(ctx.query_start).max(0) as f64 / 1000.0
+);
+
+query_function!(
+    /// step function: returns the step duration in seconds for range selectors, or 0 for instant selectors
+    StepFunction,
+    |ctx| if ctx.step_ms > 0 {
+        ctx.step_ms as f64 / 1000.0
+    } else {
+        0.0
     }
-}
+);

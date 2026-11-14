@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn end_returns_query_end_not_step_time_on_both_paths() {
+    fn end_returns_query_end_not_step_time() {
         // A step in the middle of a range query: the step time differs from the query end.
         let ctx = EvalContext {
             query_start: 10_000,
@@ -1156,11 +1156,7 @@ mod tests {
         };
         let func = resolve_function("end").unwrap();
 
-        let via_apply = scalar_from(func.apply(PromQLArg::Scalar(0.0), &ctx));
-        let via_apply_args = scalar_from(func.apply_args(vec![], &ctx));
-
-        assert_eq!(via_apply, 50.0);
-        assert_eq!(via_apply_args, 50.0);
+        assert_eq!(scalar_from(func.apply_args(vec![], &ctx)), 50.0);
     }
 
     #[test]
@@ -1176,11 +1172,10 @@ mod tests {
         };
         let func = resolve_function("range").unwrap();
 
-        let via_apply = scalar_from(func.apply(PromQLArg::Scalar(0.0), &ctx));
-        let via_apply_args = scalar_from(func.apply_args(vec![], &ctx));
-
-        assert_eq!(via_apply, i64::MAX as f64 / 1000.0);
-        assert_eq!(via_apply_args, i64::MAX as f64 / 1000.0);
+        assert_eq!(
+            scalar_from(func.apply_args(vec![], &ctx)),
+            i64::MAX as f64 / 1000.0
+        );
     }
 
     #[test]
