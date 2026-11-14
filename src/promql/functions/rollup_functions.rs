@@ -1,5 +1,6 @@
 use crate::common::math::{kahan_avg, kahan_std_dev, kahan_sum, kahan_variance, quantile};
 use crate::common::{Sample, Timestamp};
+use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::functions::PromQLArg;
 use crate::promql::functions::PromQLFunction;
 use crate::promql::functions::PromqlFunctionKind;
@@ -424,27 +425,17 @@ fn rollup_quantile(rfa: &RollupWindow, phi: Option<f64>) -> f64 {
     quantile(&mut values, phi.unwrap_or(0.5))
 }
 
-/// Min over time.
-///
-/// IMPORTANT:
-/// We intentionally do NOT use `f64::min` or a fold with +inf.
-///
-/// Prometheus semantics:
-/// - If the first value is NaN and later values are real numbers,
-///   NaN is replaced by the first real number.
-/// - If all values are NaN, the result must remain NaN.
-///
-/// A naive fold starting from +inf would incorrectly return +inf
-/// for all-NaN input. This manual loop preserves exact PromQL behavior.
+/// Min over time: [`min_ignore_nan`] folded from the first sample, so a NaN
+/// is replaced by any later real value and an all-NaN window stays NaN (a fold
+/// seeded with `+Inf` would answer `+Inf` there). Of equal values the first is
+/// kept, so `-0` and `+0` resolve as the `min` aggregator does.
 fn rollup_min(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
-    let mut min = rfa.values[0];
-
-    for &cur in rfa.values.iter().skip(1) {
-        if cur < min || min.is_nan() {
-            min = cur;
-        }
-    }
-    min
+    let (&first, rest) = rfa
+        .values
+        .split_first()
+        .expect("a rollup window is never empty");
+    rest.iter()
+        .fold(first, |min, &cur| min_ignore_nan(min, cur))
 }
 
 fn rollup_mad(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
@@ -460,26 +451,15 @@ fn rollup_mad(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
     quantile(&mut values, 0.5)
 }
 
-/// Max over time.
-///
-/// IMPORTANT:
-/// We intentionally do NOT use `f64::max` or a fold with -inf.
-///
-/// Prometheus semantics:
-/// - NaN is replaced by any subsequent real value.
-/// - If all values are NaN, the result must remain NaN.
-///
-/// A naive fold starting from -inf would incorrectly return -inf
-/// for all-NaN input. This manual loop guarantees semantic parity
-/// with Prometheus.
+/// Max over time: [`max_ignore_nan`] folded from the first sample; see
+/// [`rollup_min`].
 fn rollup_max(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
-    let mut max = rfa.values[0];
-    for &cur in rfa.values.iter().skip(1) {
-        if cur > max || max.is_nan() {
-            max = cur;
-        }
-    }
-    max
+    let (&first, rest) = rfa
+        .values
+        .split_first()
+        .expect("a rollup window is never empty");
+    rest.iter()
+        .fold(first, |max, &cur| max_ignore_nan(max, cur))
 }
 
 /// `range_over_time`: `max_over_time - min_over_time`, in one pass.
@@ -490,58 +470,39 @@ fn rollup_max(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
 /// subtract as IEEE says: `+Inf` and `-Inf` give `+Inf`, an all-`+Inf` window
 /// gives NaN.
 fn rollup_range(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
-    let mut min = rfa.values[0];
-    let mut max = min;
-    for &cur in rfa.values.iter().skip(1) {
-        if cur < min || min.is_nan() {
-            min = cur;
-        }
-        if cur > max || max.is_nan() {
-            max = cur;
-        }
-    }
+    let (&first, rest) = rfa
+        .values
+        .split_first()
+        .expect("a rollup window is never empty");
+    let (min, max) = rest.iter().fold((first, first), |(min, max), &cur| {
+        (min_ignore_nan(min, cur), max_ignore_nan(max, cur))
+    });
     max - min
 }
 
 fn rollup_ts_of_min(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
-    let values = rfa.values;
-    let mut min_value = values[0];
-    let mut min_timestamp = rfa.timestamps[0];
-    for (v, ts) in rfa
-        .values
-        .iter()
-        .copied()
-        .zip(rfa.timestamps.iter().copied())
-    {
-        // Get the last timestamp for the minimum value as most users expect. A
-        // NaN seed is replaced by the first real value, as in `rollup_min`.
-        if v <= min_value || min_value.is_nan() {
-            min_value = v;
-            min_timestamp = ts;
-        }
-    }
-    min_timestamp as f64 / 1e3_f64
+    ts_of_extreme(rfa, |cur, min| cur <= min)
 }
 
 fn rollup_ts_of_max(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
-    let mut max_value = rfa.values[0];
-    let mut max_timestamp = rfa.timestamps[0];
+    ts_of_extreme(rfa, |cur, max| cur >= max)
+}
 
-    for (v, ts) in rfa
-        .values
-        .iter()
-        .copied()
-        .zip(rfa.timestamps.iter().copied())
-    {
-        // Get the last timestamp for the maximum value as most users expect. A
-        // NaN seed is replaced by the first real value, as in `rollup_max`.
-        if v >= max_value || max_value.is_nan() {
-            max_value = v;
-            max_timestamp = ts;
+/// The timestamp, in seconds, of the window's extreme value, where
+/// `replaces(cur, best)` says whether `cur` takes over from the best so far.
+/// The comparisons are inclusive, so of equal values the last is kept, as most
+/// users expect. Unlike [`rollup_min`], a NaN best is replaced by every later
+/// sample, NaN or not: an all-NaN window answers its last timestamp.
+fn ts_of_extreme(rfa: &RollupWindow, replaces: impl Fn(f64, f64) -> bool) -> f64 {
+    let mut best = rfa.values[0];
+    let mut best_ts = rfa.timestamps[0];
+    for (&v, &ts) in rfa.values.iter().zip(rfa.timestamps).skip(1) {
+        if replaces(v, best) || best.is_nan() {
+            best = v;
+            best_ts = ts;
         }
     }
-
-    max_timestamp as f64 / 1e3_f64
+    best_ts as f64 / 1e3_f64
 }
 
 fn rollup_sum(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
