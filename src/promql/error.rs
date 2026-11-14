@@ -19,6 +19,14 @@ pub enum EvaluationError {
     Query(QueryError),
 }
 
+impl EvaluationError {
+    /// A query the evaluator ran and refused on what it found, such as a join
+    /// whose matching labels are not unique: the query's fault, not the engine's.
+    pub(crate) fn execution(message: impl Into<String>) -> Self {
+        EvaluationError::Query(QueryError::Execution(message.into()))
+    }
+}
+
 impl From<QueryError> for EvaluationError {
     fn from(err: QueryError) -> Self {
         EvaluationError::Query(err)
