@@ -43,8 +43,6 @@ impl std::error::Error for EvaluationError {}
 pub(crate) type EvalResult<T> = Result<T, EvaluationError>;
 
 /// Error type for PromQL query and discovery operations.
-///
-/// This is returned by the read/query methods on `TimeSeriesDb`.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum QueryError {
     /// The query string could not be parsed or is otherwise invalid.

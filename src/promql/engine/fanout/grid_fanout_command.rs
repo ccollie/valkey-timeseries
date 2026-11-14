@@ -465,8 +465,10 @@ fn shard_response(
 /// That output is never kept: under a fused reduction every staged series is
 /// folded into its group's partials as it is staged ([`GridSink::Partials`]),
 /// promoted spans a chunk at a time ([`GridRequest::per_series_chunked`]). What
-/// outlives a chunk is the partials, which are the response itself, so nothing
-/// here needs charging beyond the raw samples the read charged.
+/// outlives a chunk is the partials, which are the response itself; what they
+/// grow by beyond the raw samples the read charged is charged as each chunk is
+/// taken ([`GridSink::take_charged`]), since a sparse span's partials can
+/// outnumber its samples.
 ///
 /// Promoted spans are folded after the group's other members rather than in
 /// match order. Under a fused reduction that can move a sum in its last bits,
@@ -516,8 +518,9 @@ impl<'a> ShardGrid<'a> {
     /// still charged past the spans staged into it ([`GridSink::take_charged`]): a fused
     /// selection's candidates need not be fewer than its input.
     ///
-    /// Fails only for a fused selection: it refuses its parameter, or the
-    /// requester gives up while it runs.
+    /// Fails when what is staged crosses the sample budget, when the requester
+    /// gives up while a fused reduction or selection folds it, or when a fused
+    /// selection refuses its parameter.
     pub(super) fn add(&mut self, windows: Vec<RangeSample<EvalLabels>>) -> ValkeyResult<()> {
         let (raw, staged): (Vec<_>, Vec<_>) = windows
             .into_iter()

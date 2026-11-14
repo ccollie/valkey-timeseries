@@ -84,9 +84,10 @@ pub struct GridRollup {
 /// An outer aggregation fused onto a grid request: the `sum by (job)` of
 /// `sum by (job) (rate(m[5m]))` or of `sum by (job) (m)`.
 ///
-/// Only the reducing operators appear here. The selecting ones (`topk` and
-/// friends) need the individual samples to choose among, so fusing them would
-/// not reduce what crosses the wire — see
+/// The reducing operators ship one partial per group per step. The selecting
+/// and counting ones (`topk` and friends, `count_values`) are fused too,
+/// shipping their per-step picks or counts as candidates the coordinator
+/// re-selects or sums ([`SteppedSelection`]) — see
 /// [`crate::promql::exec::aggregations::PushdownStrategy`].
 #[derive(Debug, Clone)]
 pub struct GridAggregation {

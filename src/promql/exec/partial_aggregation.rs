@@ -324,8 +324,9 @@ impl PartialGroups {
     }
 }
 
-/// Per-`(group, step)` mergeable state, for a rollup fused with an outer
-/// aggregation.
+/// Per-`(group, step)` mergeable state, for a reduction fused into a grid
+/// request: over a rollup (`sum(rate(m[5m]))`) or over stepped samples
+/// (`sum by (job) (m)`).
 ///
 /// One [`PartialGroups`] per step. The merge algebra is per group and identical
 /// at every step — steps never interact — so keying by step on the outside
@@ -484,7 +485,7 @@ impl SteppedPartialGroups {
         for (step_ts, value) in points {
             let Some(i) = self.step_index(step_ts, cursor) else {
                 debug_assert!(false, "point {step_ts} is not a window end of its grid");
-                self.drop_off_grid(step_ts, "rollup point");
+                self.drop_off_grid(step_ts, "grid point");
                 continue;
             };
             cursor = i;
@@ -584,12 +585,12 @@ impl SteppedPartialGroups {
 /// candidate set the coordinator re-selects from (`limit_ratio` picks each
 /// series by a hash of its own labels, so it is exact the same way), and a
 /// shard's per-value counts add. Steps never interact, so the fold is one
-/// [`Self::step`] per step, kept ordered so the output is chronological
+/// [`Self::run_steps`] per step, kept ordered so the output is chronological
 /// without a sort.
 pub(in crate::promql) struct SteppedSelection {
     aggregation: GridAggregation,
     /// Per step: the candidates so far — the operator's output from whoever
-    /// ran it (a shard, or [`Self::apply`] here).
+    /// ran it (a shard, or [`Self::apply_grid`] here).
     steps: BTreeMap<Timestamp, Vec<EvalSample>>,
 }
 
@@ -605,15 +606,9 @@ impl SteppedSelection {
         self.aggregation.strategy()
     }
 
-    /// The collected form, kept as the reference the grid form is tested
-    /// against.
+    /// [`Self::apply_grid`] over collected series: the reference the grid
+    /// form is tested against.
     #[cfg(test)]
-    /// Run the operator over per-series step values — a shard's own series,
-    /// or the ones the coordinator was handed raw — and keep its output as
-    /// candidates, returning how many it kept. `deadline` is checked between
-    /// series as they are transposed, then at every step and every few
-    /// thousand series within one: a shard passes its requester's, a
-    /// coordinator its query's.
     pub fn apply(
         &mut self,
         series: Vec<RangeSample<EvalLabels>>,
@@ -624,8 +619,12 @@ impl SteppedSelection {
         self.run_steps(by_step, deadline)
     }
 
-    /// [`Self::apply`] over a per-series stage's output as it stands, its
-    /// stepped points transposed where they lie.
+    /// Run the operator over a per-series stage's output — a shard's own
+    /// series, or the ones the coordinator was handed raw — its stepped
+    /// points transposed where they lie, and keep its output as candidates,
+    /// returning how many it kept. `deadline` is checked between series as
+    /// they are transposed, then at every step and every few thousand series
+    /// within one: a shard passes its requester's, a coordinator its query's.
     pub fn apply_grid(&mut self, output: GridSeries, deadline: &Deadline) -> EvalResult<usize> {
         let mut by_step: BTreeMap<Timestamp, Vec<EvalSample>> = BTreeMap::new();
         Self::transpose_grid(output, &mut by_step, deadline)?;
@@ -651,12 +650,9 @@ impl SteppedSelection {
         Ok(added)
     }
 
-    /// The collected form, kept as the reference the grid form is tested
-    /// against.
+    /// [`Self::merge_grid`] over collected series: the reference the grid
+    /// form is tested against.
     #[cfg(test)]
-    /// Fold in another party's output — a shard's per-step selection or
-    /// counts — as candidates, returning how many. `deadline` is checked
-    /// between series.
     pub fn merge(
         &mut self,
         series: Vec<RangeSample<EvalLabels>>,
@@ -665,14 +661,16 @@ impl SteppedSelection {
         Self::transpose(series, &mut self.steps, deadline)
     }
 
-    /// [`Self::merge`] over a per-series stage's output as it stands.
+    /// Fold in another party's output — a shard's per-step selection or
+    /// counts, as the per-series stage's output it stands in — as
+    /// candidates, returning how many. `deadline` is checked between series.
     pub fn merge_grid(&mut self, output: GridSeries, deadline: &Deadline) -> EvalResult<usize> {
         Self::transpose_grid(output, &mut self.steps, deadline)
     }
 
     /// One entry per output label set, each holding its sparse `(step,
     /// value)` points in ascending step order. `deadline` is checked at every
-    /// step, and within a selection as [`Self::apply`] checks it: this
+    /// step, and within a selection as [`Self::apply_grid`] checks it: this
     /// re-selects over every candidate the query accumulated.
     pub fn finalize(self, deadline: &Deadline) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
         let strategy = self.strategy();

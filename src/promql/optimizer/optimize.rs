@@ -71,9 +71,8 @@ pub fn simplify_expr(expr: Expr) -> Expr {
 
 /// Apply algebraic optimization rules to a binary expression.
 ///
-/// This covers constant folding (both sides are number literals) and
-/// operator-specific rewrites such as `A + A → A * 2` and
-/// `A OR (A AND B) → A`.
+/// Operator-specific rewrites such as `A + A → A * 2` and
+/// `A OR (A AND B) → A`; constant folding is `const_folding`'s job.
 fn optimize_binary(binary: BinaryExpr) -> Expr {
     let BinaryExpr {
         lhs,
@@ -198,7 +197,7 @@ fn optimize_binary(binary: BinaryExpr) -> Expr {
 }
 
 /// One post-order pass of the algebraic rules over `expr`: binary operators
-/// through `optimize_binary_expr`, selectors through `dedupe_matchers`, and
+/// through `optimize_binary`, selectors through `dedupe_matchers`, and
 /// parentheses stripped where a simplified operand no longer needs them.
 /// Constant folding is `const_folding`'s job and runs before this in
 /// `simplify_expr`.
