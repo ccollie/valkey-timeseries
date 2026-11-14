@@ -136,7 +136,6 @@ where
             let (presence, values, sample_lag) = encode_columns(window_ends, points, with_lag);
             let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
             ProtoGridSeries {
-                labels: Vec::new(),
                 presence,
                 values,
                 sample_lag,

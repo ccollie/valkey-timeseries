@@ -522,18 +522,15 @@ impl MatcherOpType {
 /// / Returned by instant (point-in-time) PromQL queries.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InstantSample {
-    /// / The labels identifying this series.
-    #[prost(message, repeated, tag = "1")]
-    pub labels: ::prost::alloc::vec::Vec<Label>,
     /// / The value of the sample.
     #[prost(double, tag = "2")]
     pub value: f64,
     /// / Timestamp in milliseconds since Unix epoch.
     #[prost(int64, tag = "3")]
     pub timestamp: i64,
-    /// / Interned label references into `InstantQueryResponse.labels`: parallel
-    /// / packed arrays, one entry per label (see `SymbolTable`). Empty means the
-    /// / labels travel inline in `labels`.
+    /// / The labels identifying this series, as references into
+    /// / `InstantQueryResponse.labels`: parallel packed arrays, one entry per
+    /// / label (see `SymbolTable`). Empty means the series has no labels.
     #[prost(uint32, repeated, tag = "4")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "5")]
@@ -560,20 +557,17 @@ pub struct InstantQueryResponse {
 /// / A series with values over a time range.
 /// /
 /// / Returned by range PromQL queries.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RangeSample {
-    /// / The labels identifying this series.
-    #[prost(message, repeated, tag = "1")]
-    pub labels: ::prost::alloc::vec::Vec<Label>,
     /// / The samples, as the chunk codec `TS.MRANGE` fans out with: Chimp from
     /// / `WIRE_COMPRESSION_MIN_SAMPLES` up, uncompressed below it. Around 5-6
     /// / bytes per sample on typical telemetry.
     #[prost(message, optional, tag = "2")]
     pub data: ::core::option::Option<SampleData>,
-    /// / Interned label references into the enclosing response's symbol table
-    /// / (`RangeQueryResponse.labels` / `GridQueryResponse.labels`): parallel
-    /// / packed arrays, one entry per label (see `SymbolTable`). Empty means the
-    /// / labels travel inline in `labels`.
+    /// / The labels identifying this series, as references into the enclosing
+    /// / response's symbol table (`RangeQueryResponse.labels` /
+    /// / `GridQueryResponse.labels`): parallel packed arrays, one entry per label
+    /// / (see `SymbolTable`). Empty means the series has no labels.
     #[prost(uint32, repeated, tag = "3")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "4")]
@@ -655,8 +649,6 @@ pub struct AggregationPartialState {
 /// / request's grouping modifier, and the shard's accumulated state for it.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupPartial {
-    #[prost(message, repeated, tag = "1")]
-    pub labels: ::prost::alloc::vec::Vec<Label>,
     #[prost(message, optional, tag = "2")]
     pub state: ::core::option::Option<AggregationPartialState>,
     /// / Label references into the response's symbol table, as on `RangeSample`.
@@ -784,8 +776,6 @@ pub struct GridQuery {
 /// / to survive the wire: NaN is a legitimate rolled-up value.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GridSeries {
-    #[prost(message, repeated, tag = "1")]
-    pub labels: ::prost::alloc::vec::Vec<Label>,
     #[prost(bytes = "vec", tag = "2")]
     pub presence: ::prost::alloc::vec::Vec<u8>,
     #[prost(double, repeated, tag = "3")]

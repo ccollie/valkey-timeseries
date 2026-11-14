@@ -338,7 +338,6 @@ fn samples_response(samples: Vec<EvalSample>) -> AggregationQueryResponse {
         .map(|s| {
             let (label_name_refs, label_value_refs) = symbols.intern_eval(&s.labels);
             ProtoInstantSample {
-                labels: Vec::new(),
                 value: s.value,
                 timestamp: s.timestamp_ms,
                 label_name_refs,
@@ -664,7 +663,12 @@ mod tests {
         let aggregation = params(AggregationKind::Sum, Some(by_job));
         let response = shard_response(&aggregation, test_shards()[0].clone());
         assert_eq!(response.partials.len(), 2);
-        assert!(response.partials.iter().all(|p| p.labels.is_empty()));
+        assert!(
+            response
+                .partials
+                .iter()
+                .all(|p| p.label_name_refs.len() == 1)
+        );
         let table = response.labels.clone().unwrap();
         assert_eq!(table.names, vec!["job"]);
         assert_eq!(table.values.len(), 2);
@@ -694,18 +698,19 @@ mod tests {
     /// conjured a group of its own (`sum` 0 for `job="z"`, which no shard saw).
     #[test]
     fn test_partial_without_samples_is_rejected() {
-        use crate::promql::generated::{AggregationPartialState, Label as ProtoLabel};
+        use crate::promql::generated::{AggregationPartialState, SymbolTable};
         let response = |state: Option<AggregationPartialState>| AggregationQueryResponse {
             partials: vec![GroupPartial {
-                labels: vec![ProtoLabel {
-                    name: "job".to_string(),
-                    value: "z".to_string(),
-                }],
+                label_name_refs: vec![0],
+                label_value_refs: vec![0],
                 state,
                 ..Default::default()
             }],
             samples: Vec::new(),
-            labels: None,
+            labels: Some(SymbolTable {
+                names: vec!["job".to_string()],
+                values: vec!["z".to_string()],
+            }),
         };
         for (what, state) in [
             ("no state", None),

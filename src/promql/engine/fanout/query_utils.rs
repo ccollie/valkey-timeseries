@@ -176,7 +176,6 @@ pub(super) fn handle_instant_query<S: GilSource + ?Sized>(
         |series, sample| {
             let (label_name_refs, label_value_refs) = symbol_table.intern(&series.labels);
             InstantSample {
-                labels: Vec::new(),
                 value: sample.value,
                 timestamp: sample.timestamp,
                 label_name_refs,
@@ -612,7 +611,6 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
         .map(|(labels, data)| {
             let (label_name_refs, label_value_refs) = symbol_table.intern(&labels);
             RangeSample {
-                labels: Vec::new(),
                 data: Some(data),
                 label_name_refs,
                 label_value_refs,

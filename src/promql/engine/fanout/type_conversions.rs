@@ -45,7 +45,7 @@ pub(in crate::promql) struct WireRangeResponse {
 }
 
 pub(in crate::promql) struct WireRangeSeries {
-    /// The series' label refs (or inline labels), its chunk taken out.
+    /// The series' label refs, its chunk taken out.
     labels: ProtoRangeSample,
     pub chunk: TimeSeriesChunk,
 }
@@ -177,8 +177,8 @@ pub(in crate::promql) fn packed_range_series(
     Ok((labels, wire.chunk))
 }
 
-/// A series that carries its labels inline, as no shard sends them any more
-/// but a test fixture may.
+/// A series resolved against an empty symbol table, as a fixture with no
+/// labels needs.
 #[cfg(test)]
 impl TryFrom<ProtoRangeSample> for RangeSample<EvalLabels> {
     type Error = ValkeyError;
@@ -198,7 +198,6 @@ pub(in crate::promql) fn range_sample_to_proto(
     let RangeSample { labels, samples } = series;
     let (label_name_refs, label_value_refs) = symbols.intern_eval(&labels);
     Ok(ProtoRangeSample {
-        labels: Vec::new(),
         data: Some(serialize_chunk(samples_to_chunk_lossless(samples))?),
         label_name_refs,
         label_value_refs,
@@ -480,7 +479,6 @@ pub(in crate::promql) fn group_partial(
 ) -> ProtoGroupPartial {
     let (label_name_refs, label_value_refs) = symbols.intern_eval(labels);
     ProtoGroupPartial {
-        labels: Vec::new(),
         state: Some(state.into()),
         label_name_refs,
         label_value_refs,
@@ -616,7 +614,6 @@ mod tests {
     use crate::common::Sample;
     use crate::common::constants::METRIC_NAME_LABEL;
     use crate::labels::filters::MatchOp;
-    use crate::promql::generated::Label as ProtoLabel;
     use crate::series::chunks::ChunkOps;
     use promql_parser::label::{MatchOp as PromMatchOp, Matcher, Matchers};
     use promql_parser::parser::{Expr, VectorSelector};
@@ -708,7 +705,6 @@ mod tests {
     fn round_trip(series: RangeSample<EvalLabels>) -> RangeSample<EvalLabels> {
         let mut symbols = SymbolTableBuilder::default();
         let proto = range_sample_to_proto(series, &mut symbols).unwrap();
-        assert!(proto.labels.is_empty(), "labels travel as refs");
         let table = symbols.finish();
         range_sample_from_proto(proto, &mut EvalLabelResolver::new(&table)).unwrap()
     }
@@ -775,19 +771,15 @@ mod tests {
         assert_eq!(back.labels, series(Vec::new()).labels);
 
         let unsorted = ProtoRangeSample {
-            labels: vec![
-                ProtoLabel {
-                    name: "host".to_string(),
-                    value: "a".to_string(),
-                },
-                ProtoLabel {
-                    name: "__name__".to_string(),
-                    value: "cpu".to_string(),
-                },
-            ],
+            label_name_refs: vec![0, 1],
+            label_value_refs: vec![0, 1],
             ..Default::default()
         };
-        let back = RangeSample::<EvalLabels>::try_from(unsorted).unwrap();
+        let table = SymbolTable {
+            names: vec!["host".to_string(), "__name__".to_string()],
+            values: vec!["a".to_string(), "cpu".to_string()],
+        };
+        let back = range_sample_from_proto(unsorted, &mut EvalLabelResolver::new(&table)).unwrap();
         assert!(matches!(back.labels, EvalLabels::Interned(_)));
         assert_eq!(back.labels, series(Vec::new()).labels);
     }
