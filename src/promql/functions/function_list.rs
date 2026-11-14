@@ -104,9 +104,7 @@ macro_rules! impl_promql_function_impl {
 
         impl PromQLFunctionImpl {
             pub fn name(&self) -> &'static str {
-                match self {
-                    $( Self::$Variant(_) => $name, )*
-                }
+                self.kind().name()
             }
 
             pub(crate) fn kind(&self) -> PromqlFunctionKind {
@@ -115,23 +113,19 @@ macro_rules! impl_promql_function_impl {
                 }
             }
 
+            /// The implementation of `kind`.
+            pub(crate) fn of(kind: PromqlFunctionKind) -> Self {
+                match kind {
+                    $( PromqlFunctionKind::$Variant => Self::$Variant($Ty), )*
+                }
+            }
         }
 
         impl TryFrom<&str> for PromQLFunctionImpl {
             type Error = ValkeyError;
 
             fn try_from(value: &str) -> Result<Self, Self::Error> {
-                let v = hashify::map!(
-                    value.as_bytes(),
-                    PromQLFunctionImpl,
-                    $( $name => PromQLFunctionImpl::$Variant($Ty), )*
-                )
-                .copied();
-
-                match v {
-                    Some(f) => Ok(f),
-                    None => Err(ValkeyError::Str("PromQL: unknown function")),
-                }
+                PromqlFunctionKind::try_from(value).map(Self::of)
             }
         }
 
