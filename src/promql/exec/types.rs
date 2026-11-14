@@ -1173,6 +1173,17 @@ pub struct EvalSample {
 }
 
 impl EvalSample {
+    /// A sample with no labels: what `vector(s)`, `time()` and the like
+    /// answer with.
+    pub(in crate::promql) fn unlabelled(timestamp_ms: i64, value: f64) -> Self {
+        Self {
+            timestamp_ms,
+            value,
+            labels: EvalLabels::empty(),
+            drop_name: false,
+        }
+    }
+
     #[cfg(test)]
     pub fn label_value(&self, label: &str) -> Option<&str> {
         self.labels.get(label)

@@ -5,7 +5,7 @@ use crate::labels::{HasFingerprint, SeriesFingerprint};
 use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::exec::types::EvalLabels;
-use crate::promql::functions::utils::is_valid_label_name;
+use crate::promql::functions::utils::expect_label_name;
 use crate::promql::hashers::FingerprintHashMap;
 use crate::promql::{EvalResult, EvalSample, EvaluationError, ExprResult};
 use promql_parser::parser::token::{TokenType, *};
@@ -235,11 +235,7 @@ pub(in crate::promql) fn check_aggregation_param(
 /// The label `count_values` writes each value into, which must be a valid label name.
 fn count_values_label(param: Option<ExprResult>) -> EvalResult<String> {
     let label_name = get_param_as_string(param, "count_values")?;
-    if !is_valid_label_name(&label_name) {
-        return Err(EvaluationError::InternalError(format!(
-            "invalid label name {label_name:?}"
-        )));
-    }
+    expect_label_name(&label_name)?;
     Ok(label_name)
 }
 

@@ -1,9 +1,7 @@
-use crate::promql::exec::types::EvalLabels;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{exact_arity_error, max_arity_error};
 use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use std::default::Default;
 
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct TimestampFunction;
@@ -104,14 +102,12 @@ macro_rules! make_datetime_function {
                 ctx: &EvalContext,
             ) -> EvalResult<ExprResult> {
                 match args.len() {
-                    0 => Ok(ExprResult::InstantVector(vec![EvalSample {
-                        timestamp_ms: ctx.evaluation_ts,
-                        value: datetime_from_millis(ctx.evaluation_ts)
+                    0 => Ok(ExprResult::InstantVector(vec![EvalSample::unlabelled(
+                        ctx.evaluation_ts,
+                        datetime_from_millis(ctx.evaluation_ts)
                             .map(|dt| $part.extract(dt))
                             .unwrap_or(f64::NAN),
-                        labels: EvalLabels::default(),
-                        drop_name: false,
-                    }])),
+                    )])),
                     1 => self.apply(args.into_iter().next().expect("single arg"), ctx),
                     _ => Err(max_arity_error($func_name, 1, args.len())),
                 }
@@ -142,11 +138,9 @@ impl PromQLFunction for TimeFunction {
             return Err(exact_arity_error("time", 0, args.len()));
         }
 
-        Ok(ExprResult::InstantVector(vec![EvalSample {
-            timestamp_ms: ctx.evaluation_ts,
-            value: ctx.evaluation_ts as f64 / 1000.0,
-            labels: Default::default(),
-            drop_name: false,
-        }]))
+        Ok(ExprResult::InstantVector(vec![EvalSample::unlabelled(
+            ctx.evaluation_ts,
+            ctx.evaluation_ts as f64 / 1000.0,
+        )]))
     }
 }

@@ -3,13 +3,13 @@ use std::rc::Rc;
 
 use crate::labels::HasFingerprint;
 use crate::promql::functions::utils::{
-    expect_instant_vector, expect_min_arg_count, expect_scalar, expect_string, is_inf,
-    is_valid_label_name, three_args, two_args,
+    expect_instant_vector, expect_label_name, expect_min_arg_count, expect_scalar, expect_string,
+    is_inf, three_args, two_args,
 };
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::hashers::FingerprintHashMap;
 use crate::promql::model::is_stale_nan;
-use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
+use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
 use ahash::AHashMap;
 use promql_parser::label::METRIC_NAME;
 
@@ -300,11 +300,7 @@ fn histogram_quantiles(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
     let mut arg_iter = args.into_iter();
     let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_quantiles")?;
     let label = expect_string(arg_iter.next().unwrap(), "histogram_quantiles", "label")?;
-    if !is_valid_label_name(&label) {
-        return Err(EvaluationError::InternalError(format!(
-            "invalid label name {label:?}"
-        )));
-    }
+    expect_label_name(&label)?;
     let phis = arg_iter
         .map(|arg| expect_scalar(arg, "histogram_quantiles", "phi"))
         .collect::<EvalResult<Vec<f64>>>()?;

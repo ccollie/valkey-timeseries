@@ -214,12 +214,7 @@ impl<'a> ArithOpContext<'a> {
 
 #[inline]
 fn make_fill_one_sample(many_sample: &EvalSample, fill_value: f64) -> EvalSample {
-    EvalSample {
-        timestamp_ms: many_sample.timestamp_ms,
-        value: fill_value,
-        labels: EvalLabels::empty(),
-        drop_name: false,
-    }
+    EvalSample::unlabelled(many_sample.timestamp_ms, fill_value)
 }
 
 /// The "many" sample a fill stands in for: the fill value, labelled with the

@@ -3,7 +3,7 @@ use crate::promql::common::math::{max_ignore_nan, max_with_nan, min_ignore_nan, 
 use crate::promql::functions::PromqlFunctionKind;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
-    exact_arity_error, map_scalar_or_vector, three_args, two_args,
+    exact_arity_error, map_scalar_or_vector, map_values, three_args, two_args,
 };
 use crate::promql::{EvalContext, EvalResult, EvalSample, EvaluationError, ExprResult};
 
@@ -91,12 +91,10 @@ impl PromQLFunction for PiFunction {
             return Err(exact_arity_error("pi", 0, args.len()));
         }
 
-        Ok(ExprResult::InstantVector(vec![EvalSample {
-            timestamp_ms: ctx.evaluation_ts,
-            value: std::f64::consts::PI,
-            labels: Default::default(),
-            drop_name: false,
-        }]))
+        Ok(ExprResult::InstantVector(vec![EvalSample::unlabelled(
+            ctx.evaluation_ts,
+            std::f64::consts::PI,
+        )]))
     }
 }
 
@@ -115,13 +113,8 @@ impl RoundFunction {
 }
 
 impl PromQLFunction for RoundFunction {
-    fn apply(&self, arg: PromQLArg, _ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let mut samples = arg.into_instant_vector()?;
-        for sample in &mut samples {
-            sample.value = Self::round_to_nearest(sample.value, 1.0);
-            sample.drop_name = true;
-        }
-        Ok(ExprResult::InstantVector(samples))
+    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
+        self.apply_args(vec![arg], ctx)
     }
 
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
@@ -131,7 +124,7 @@ impl PromQLFunction for RoundFunction {
                 "round requires at least one argument".to_string(),
             ));
         };
-        let mut samples = first_arg.into_instant_vector()?;
+        let samples = first_arg.into_instant_vector()?;
         let to_nearest = match args_iter.next() {
             None => 1.0,
             Some(second_arg) => {
@@ -146,11 +139,9 @@ impl PromQLFunction for RoundFunction {
             }
         };
 
-        for sample in &mut samples {
-            sample.value = Self::round_to_nearest(sample.value, to_nearest);
-            sample.drop_name = true;
-        }
-        Ok(ExprResult::InstantVector(samples))
+        Ok(map_values(samples, |value| {
+            Self::round_to_nearest(value, to_nearest)
+        }))
     }
 }
 
@@ -160,13 +151,9 @@ pub(in crate::promql) struct ClampMaxFunction;
 impl PromQLFunction for ClampMaxFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         let (vector, max) = two_args("clamp_max", args)?;
-        let mut samples = vector.into_instant_vector()?;
+        let samples = vector.into_instant_vector()?;
         let max = max.into_scalar()?;
-        for sample in &mut samples {
-            sample.value = min_with_nan(sample.value, max);
-            sample.drop_name = true;
-        }
-        Ok(ExprResult::InstantVector(samples))
+        Ok(map_values(samples, |value| min_with_nan(value, max)))
     }
 }
 
@@ -176,13 +163,9 @@ pub(in crate::promql) struct ClampMinFunction;
 impl PromQLFunction for ClampMinFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         let (vector, min) = two_args("clamp_min", args)?;
-        let mut samples = vector.into_instant_vector()?;
+        let samples = vector.into_instant_vector()?;
         let min = min.into_scalar()?;
-        for sample in &mut samples {
-            sample.value = max_with_nan(sample.value, min);
-            sample.drop_name = true;
-        }
-        Ok(ExprResult::InstantVector(samples))
+        Ok(map_values(samples, |value| max_with_nan(value, min)))
     }
 }
 
@@ -192,18 +175,16 @@ pub(in crate::promql) struct ClampFunction;
 impl PromQLFunction for ClampFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         let (vector, min, max) = three_args("clamp", args)?;
-        let mut samples = vector.into_instant_vector()?;
+        let samples = vector.into_instant_vector()?;
         let min = min.into_scalar()?;
         let max = max.into_scalar()?;
         if min > max {
             return Ok(ExprResult::InstantVector(vec![]));
         }
 
-        for sample in &mut samples {
-            sample.value = max_with_nan(min_with_nan(sample.value, max), min);
-            sample.drop_name = true;
-        }
-        Ok(ExprResult::InstantVector(samples))
+        Ok(map_values(samples, |value| {
+            max_with_nan(min_with_nan(value, max), min)
+        }))
     }
 }
 
