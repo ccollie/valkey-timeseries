@@ -15,7 +15,8 @@
 //! `docs/plans/state-count-over-time-requirements.md` for the contracts.
 use crate::common::Sample;
 use crate::parser::duration::parse_positive_duration_value;
-use crate::promql::functions::rollups::{eval_rollups, eval_rollups_basic};
+use crate::promql::functions::RollupKind;
+use crate::promql::functions::rollup_functions::eval_rollup;
 use crate::promql::functions::types::RollupWindow;
 use crate::promql::functions::utils::{
     expect_min_arg_count, expect_range_vector, expect_scalar, expect_string, max_arity_error,
@@ -85,11 +86,13 @@ impl PromQLFunction for StateDurationOverTimeFunction {
             None => DEFAULT_UNIT_MS,
         };
 
-        Ok(ExprResult::InstantVector(eval_rollups_basic(
+        eval_rollup(
             ctx,
+            RollupKind::StateDurationOverTime,
             range,
-            |window| state_duration_window(window, Some(state), Some(unit_ms)),
-        )?))
+            Some(state),
+            Some(unit_ms),
+        )
     }
 }
 
@@ -101,12 +104,13 @@ impl PromQLFunction for StateCountOverTimeFunction {
         let (range, state) = two_args(COUNT_NAME, args)?;
         let range = expect_range_vector(range, COUNT_NAME)?;
         let state = expect_state(state, COUNT_NAME)?;
-        Ok(ExprResult::InstantVector(eval_rollups(
+        eval_rollup(
             ctx,
+            RollupKind::StateCountOverTime,
             range,
             Some(state),
-            rollup_state_count,
-        )?))
+            None,
+        )
     }
 }
 

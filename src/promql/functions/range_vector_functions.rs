@@ -1,6 +1,5 @@
 use crate::common::Sample;
 use crate::promql::functions::rollups::eval_series;
-use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, EvalSamples, ExprResult};
 
 /// Generic aggregator for range vector functions. It operates over the entire range rather
@@ -17,18 +16,6 @@ where
     Ok(ExprResult::InstantVector(eval_series(ctx, series, |s| {
         f(&s.values)
     })?))
-}
-
-/// Returns the number of counter-resets within the provided time range as an instant vector. Any decrease in the value
-/// between two consecutive float samples is interpreted as a counter-reset.
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct ResetsFunction;
-
-impl PromQLFunction for ResetsFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let samples = arg.into_range_vector()?;
-        eval_range(ctx, samples, rollup_resets)
-    }
 }
 
 /// `resets` over one window. Named rather than inline so the pushed-down path
@@ -54,17 +41,6 @@ pub(in crate::promql) fn rollup_resets(values: &[Sample]) -> Option<f64> {
     }
 
     Some(n as f64)
-}
-
-/// Returns the number of times its value has changed within the provided time range as an instant vector.
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct ChangesFunction;
-
-impl PromQLFunction for ChangesFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let samples = arg.into_range_vector()?;
-        eval_range(ctx, samples, rollup_changes)
-    }
 }
 
 /// `changes` over one window. Named rather than inline so the pushed-down path
@@ -99,9 +75,8 @@ mod deadline_tests {
     use crate::common::Sample;
     use crate::promql::deadline::{CHECK_EVERY, Deadline};
     use crate::promql::exec::types::EvalLabels;
-    use crate::promql::functions::deriv::DerivFunction;
     use crate::promql::functions::holt_winters::DoubleExponentialSmoothingFunction;
-    use crate::promql::functions::rate::RateFunction;
+    use crate::promql::functions::rollup_functions::{DerivFunction, RateFunction};
     use crate::promql::functions::{PromQLArg, PromQLFunction};
     use crate::promql::{EvalContext, EvalSamples, QueryError};
 

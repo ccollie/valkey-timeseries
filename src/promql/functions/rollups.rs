@@ -71,29 +71,6 @@ where
         .collect::<Vec<_>>()
 }
 
-/// Evaluate `rollup_fn` over each series' window, one value per series.
-///
-/// The window is the one the matrix selector loaded: it ends at
-/// [`EvalSamples::range_end_ms`], which already carries any `@`/`offset`
-/// adjustment. Series whose window holds no samples are dropped rather than
-/// emitted as NaN.
-pub(super) fn eval_rollups(
-    ctx: &EvalContext,
-    range_vec: Vec<EvalSamples>,
-    optional_param: Option<f64>,
-    rollup_fn: fn(&RollupWindow, Option<f64>) -> f64,
-) -> EvalResult<Vec<EvalSample>> {
-    eval_series(ctx, range_vec, |series| {
-        rollup_window_value(
-            &series.values,
-            series.range_end_ms,
-            series.range_ms,
-            optional_param,
-            rollup_fn,
-        )
-    })
-}
-
 /// `rollup_fn` over the one window of `samples` ending at `window_end`, or
 /// `None` when that window is empty — the local per-step path, which has one
 /// window per series and no grid to amortize a pass over.
@@ -220,34 +197,6 @@ fn seek_first_timestamp_idx_after(
         }
     }
     .saturating_add(slice_start)
-}
-
-/// An alternate implementation of rollup evaluation that operates directly on
-/// `Sample` objects without de-interleaving into separate vectors. It is used by
-/// the rollups that read whole samples rather than values — `count_over_time`,
-/// `first_over_time`, `ts_of_last_over_time` — and that gain nothing from
-/// vectorization.
-///
-/// Window selection and the empty-window rule are the same as
-/// [`rollup_series_over_grid`]; see that function for why the grid belongs to the
-/// caller. `f` may also decline a non-empty window (`None`), which drops the
-/// series from the result like an empty window does — declining is not the same
-/// as answering NaN.
-pub(super) fn eval_rollups_basic<F>(
-    ctx: &EvalContext,
-    series_data: Vec<EvalSamples>,
-    f: F,
-) -> EvalResult<Vec<EvalSample>>
-where
-    F: Fn(&[Sample]) -> Option<f64> + Sync,
-{
-    eval_series(ctx, series_data, |series| {
-        f(window_samples(
-            &series.values,
-            series.range_end_ms,
-            series.range_ms,
-        )?)
-    })
 }
 
 /// The samples of `series` inside `(window_end - window_ms, window_end]`, or

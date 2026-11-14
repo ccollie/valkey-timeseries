@@ -1,48 +1,10 @@
 use crate::common::Sample;
-use crate::promql::functions::rollups::eval_series;
-use crate::promql::functions::{PromQLArg, PromQLFunction};
-use crate::promql::{EvalContext, EvalResult, EvalSamples, ExprResult};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::promql) enum RateKind {
     Rate,
     Increase,
     Delta,
-}
-
-/// Rate function: calculates per-second rate of change for range vectors
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct RateFunction;
-
-impl PromQLFunction for RateFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        calculate_rate(arg, ctx, RateKind::Rate)
-    }
-}
-
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct DeltaFunction;
-
-impl PromQLFunction for DeltaFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        calculate_rate(arg, ctx, RateKind::Delta)
-    }
-}
-
-#[derive(Copy, Clone)]
-pub(in crate::promql) struct IncreaseFunction;
-
-impl PromQLFunction for IncreaseFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        calculate_rate(arg, ctx, RateKind::Increase)
-    }
-}
-
-fn calculate_rate(arg: PromQLArg, ctx: &EvalContext, kind: RateKind) -> EvalResult<ExprResult> {
-    let series = arg.into_range_vector()?;
-    Ok(ExprResult::InstantVector(eval_series(ctx, series, |s| {
-        extrapolated_rate(s, kind)
-    })?))
 }
 
 fn counter_increase_value(samples: &[Sample]) -> Option<f64> {
@@ -68,16 +30,6 @@ fn sample_delta_value(samples: &[Sample]) -> Option<f64> {
         return None;
     }
     Some(samples.last()?.value - samples.first()?.value)
-}
-
-/// Computes extrapolated rate for a series as per Prometheus logic.
-pub(in crate::promql) fn extrapolated_rate(samples: &EvalSamples, kind: RateKind) -> Option<f64> {
-    extrapolated_rate_window(
-        &samples.values,
-        samples.range_ms,
-        samples.range_end_ms,
-        kind,
-    )
 }
 
 /// The same computation over one explicit window, for callers that hold the

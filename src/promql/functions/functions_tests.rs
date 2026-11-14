@@ -1320,15 +1320,17 @@ mod tests {
 
         let func = get_range_function("rate").unwrap();
 
-        // 2s range, samples sit exactly at the window edges.
+        // Windows are left-open, so the range reaches 1ms past the first
+        // sample to take it in. Rate extrapolates that 1ms onto the increase
+        // and divides by it again, so the rate is the samples' own.
         let result = func
-            .apply_with_range(samples, 3000, Duration::from_millis(2000))
+            .apply_with_range(samples, 3000, Duration::from_millis(2001))
             .unwrap()
             .expect_instant_vector("expected an instant vector");
 
         assert_eq!(result.len(), 1);
         // Rate = (125 - 100) / (3000 - 1000) * 1000 = 25 / 2 = 12.5 per second
-        assert_eq!(result[0].value, 12.5);
+        assert!((result[0].value - 12.5).abs() < 1e-9, "{}", result[0].value);
         assert_eq!(result[0].timestamp_ms, 3000);
         assert_eq!(
             result[0].labels.to_label_vec(),
@@ -1630,16 +1632,18 @@ mod tests {
             labels,
         )];
 
-        // 1s range, samples sit exactly at the window edges.
+        // Windows are left-open, so the range reaches 1ms past the first
+        // sample to take it in. Rate extrapolates that 1ms onto the increase
+        // and divides by it again, so the rate is the samples' own.
         // increase = (50 - 100) + 100 = 50 (counter reset correction)
         // rate = 50.0 per second
         let result = func
-            .apply_with_range(samples, 2000, Duration::from_millis(1000))
+            .apply_with_range(samples, 2000, Duration::from_millis(1001))
             .unwrap()
             .expect_instant_vector("expected instant vector result from rate function");
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].value, 50.0);
+        assert!((result[0].value - 50.0).abs() < 1e-9, "{}", result[0].value);
     }
 
     #[test]
@@ -1662,10 +1666,12 @@ mod tests {
         )];
 
         // when
-        // 6s range, samples sit exactly at the window edges.
+        // Windows are left-open, so the range reaches 1ms past the first
+        // sample to take it in. Rate extrapolates that 1ms onto the increase
+        // and divides by it again, so the rate is the samples' own.
         // increase = (6 - 1) + 5 + 4 = 14 so rate = 14.0 / 6
         let result = func
-            .apply_with_range(samples, 7000, Duration::from_millis(6000))
+            .apply_with_range(samples, 7000, Duration::from_millis(6001))
             .unwrap()
             .expect_instant_vector("instant vector expected");
 
