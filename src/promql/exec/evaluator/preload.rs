@@ -88,6 +88,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         let _: Vec<()> = unique_selectors
             .par_rayon()
+            .num_threads(preload_threads(unique_selectors.len()))
             .map(|&vs| self.preload_vector_selector(vs, grid))
             .into_fallible()
             .collect()?;
@@ -245,9 +246,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 matrix_range_ms(matrix),
             )
         });
+        let threads = preload_threads(groups.len());
         let _: Vec<()> = groups
             .into_par_rayon()
-            .num_threads(MAX_CONCURRENT_PRELOAD_REQUESTS)
+            .num_threads(threads)
             .map(|group| {
                 self.check_deadline()?;
                 self.preload_rollup_group(group, grid)
@@ -439,9 +441,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
         drop(grids);
 
+        let threads = preload_threads(targets.len());
+
         let _: Vec<()> = targets
             .into_par_rayon()
-            .num_threads(MAX_CONCURRENT_PRELOAD_REQUESTS)
+            .num_threads(threads)
             .map(|(key, matrix)| -> EvalResult<()> {
                 self.check_deadline()?;
                 self.preload_matrix(key, matrix, grid)
@@ -775,9 +779,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // selector's own stepped preload, and the others aggregate per step
         // over it, as they would have over their own copy.
         let groups = self.group_by_span(requests, |(_, vs, _)| PreloadKey::from_selector(vs));
+        let threads = preload_threads(groups.len());
         let _: Vec<()> = groups
             .into_par_rayon()
-            .num_threads(MAX_CONCURRENT_PRELOAD_REQUESTS)
+            .num_threads(threads)
             .map(|group| {
                 for (key, vs, aggregation) in group {
                     self.check_deadline()?;
@@ -937,8 +942,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let offset_mod = vs.offset.clone();
 
         // ── Per-series step-bucketing ─────────────────
+        let work = raw_series
+            .iter()
+            .map(|s| s.samples.len())
+            .sum::<usize>()
+            .saturating_add(raw_series.len().saturating_mul(num_steps));
+        let threads = request_par_threads(raw_series.len(), work);
         let preloaded_series: Vec<PreloadedInstantSeries> = raw_series
             .into_par_rayon()
+            .num_threads(threads)
             .map(|RangeSample { labels, samples }| -> EvalResult<_> {
                 // Another series' grid may already have spent the budget.
                 self.check_budget()?;

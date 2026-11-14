@@ -1,7 +1,7 @@
 use crate::commands::fanout_codec::chunks::serialize_chunk;
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::threads::GilSource;
-use crate::common::threads::IntoParRayon;
+use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::fanout::FanoutContext;
 use crate::labels::HasFingerprint;
@@ -354,6 +354,13 @@ where
     )
 }
 
+/// The samples a batch of snapshots decodes, at least, for
+/// [`request_par_threads`]: a short batch decodes faster on this thread than
+/// a pool round trip takes.
+fn decode_work<T>(snapshots: &[(T, RangeSnapshot)]) -> usize {
+    snapshots.iter().map(|(_, s)| s.min_samples()).sum()
+}
+
 /// Read the raw windows a pushed-down grid query needs, one entry per series,
 /// handing them to `sink` a batch at a time.
 ///
@@ -403,8 +410,10 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
         read,
         |s| EvalLabels::interned(&s.labels),
         |snapshots| {
+            let threads = request_par_threads(snapshots.len(), decode_work(&snapshots));
             let candidates = snapshots
                 .into_par_rayon()
+                .num_threads(threads)
                 .map(|(labels, snapshot)| {
                     if !decode_within_budget(budget, &snapshot)? {
                         return Ok::<_, QueryError>(None);
@@ -571,8 +580,10 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
         read,
         |s| s.labels.clone(),
         |snapshots| {
+            let threads = request_par_threads(snapshots.len(), decode_work(&snapshots));
             let batch = snapshots
                 .into_par_rayon()
+                .num_threads(threads)
                 .map(|(labels, snapshot)| {
                     if !decode_within_budget(budget, &snapshot)? {
                         return Ok::<_, QueryError>(None);

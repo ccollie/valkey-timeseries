@@ -4,7 +4,7 @@ use super::aggregations::{
 use crate::common::Timestamp;
 use crate::common::logging::log_debug;
 use crate::common::threads::join;
-use crate::common::threads::{IntoParRayon, ParCollectionRayon};
+use crate::common::threads::{IntoParRayon, ParCollectionRayon, request_par_threads};
 use crate::common::time::system_time_to_millis;
 use crate::promql::binops::{
     can_push_down_common_filters, ensure_unique_labelsets, eval_binary_expr, push_down_filters,
@@ -26,6 +26,7 @@ use crate::promql::exec::types::{
     PreloadedMatrixData, PreloadedMatrixSeries, SampleWindow, StepGrid, StepGridBuilder,
     SubquerySeriesMap,
 };
+use crate::promql::exec::utils::{PARALLEL_STEP_THRESHOLD, step_threads};
 use crate::promql::exec::utils::{merge_step_into_subquery_map, strip_parens};
 use crate::promql::functions::RollupKind;
 use crate::promql::functions::{
@@ -72,6 +73,17 @@ pub(crate) use subquery::{
 /// a single node), so unbounded parallelism would multiply concurrent fanouts
 /// and peak memory. Mirrors the batch size of the selector executor.
 const MAX_CONCURRENT_PRELOAD_REQUESTS: usize = 4;
+
+/// Threads for a preload over `reads` independent reads: the calling thread
+/// alone for one, which a pool round trip would only delay, else at most
+/// [`MAX_CONCURRENT_PRELOAD_REQUESTS`].
+fn preload_threads(reads: usize) -> usize {
+    if reads < 2 {
+        1
+    } else {
+        MAX_CONCURRENT_PRELOAD_REQUESTS
+    }
+}
 
 /// The preloaded data of one step grid, frozen once preparation is done.
 ///
