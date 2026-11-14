@@ -1,4 +1,5 @@
 use crate::labels::build_with_repeat_fallback;
+use crate::labels::regex_cache::{REGEX_CACHE_MAX_PATTERN_LEN, evict_oldest};
 use crate::promql::exec::utils::ensure_unique_labelsets;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
@@ -34,7 +35,8 @@ thread_local! {
     ///
     /// Patterns come from user queries, so the map is bounded: once it holds
     /// [`REGEX_CACHE_CAPACITY`] entries, the oldest tenth make room for the
-    /// next pattern rather than the map growing with every distinct query.
+    /// next pattern rather than the map growing with every distinct query, and
+    /// a pattern longer than [`REGEX_CACHE_MAX_PATTERN_LEN`] is never stored.
     ///
     /// Each entry is bounded too: patterns compile under the module's regex
     /// limits (a 64 KiB program and a 16 KiB lazy-DFA cache), so a full cache
@@ -50,44 +52,30 @@ const REGEX_CACHE_CAPACITY: usize = 64;
 /// full cache always frees at least one slot.
 const REGEX_CACHE_EVICT_COUNT: usize = REGEX_CACHE_CAPACITY.div_ceil(10);
 
-/// Drops the [`REGEX_CACHE_EVICT_COUNT`] entries compiled longest ago.
-fn evict_oldest(cache: &mut AHashMap<String, CachedRegex>) {
-    let mut by_age: Vec<(Instant, &String)> = cache
-        .iter()
-        .map(|(pattern, entry)| (entry.created, pattern))
-        .collect();
-    let evict = REGEX_CACHE_EVICT_COUNT.min(by_age.len());
-    if evict == 0 {
-        return;
-    }
-    if evict < by_age.len() {
-        by_age.select_nth_unstable_by_key(evict - 1, |(created, _)| *created);
-    }
-    let oldest: Vec<String> = by_age[..evict]
-        .iter()
-        .map(|(_, pattern)| (*pattern).clone())
-        .collect();
-    for pattern in oldest {
-        cache.remove(&pattern);
-    }
-}
-
 /// Runs `f` against the compiled, fully anchored form of `regex_src`,
-/// compiling it on this thread's first sight of the pattern.
+/// compiling it on this thread's first sight of the pattern. A pattern longer
+/// than [`REGEX_CACHE_MAX_PATTERN_LEN`] is compiled for this call only, so
+/// the keys of a full cache stay bounded however long a query may be.
 fn with_anchored_regex<T>(regex_src: &str, f: impl FnOnce(&Regex) -> T) -> EvalResult<T> {
     let anchored = format!("^(?s:{regex_src})$");
+    // Also accepts Go's literal braces (`a{b}`), as Prometheus does and as
+    // selector matchers already did.
+    let compile = |pattern: &str| {
+        build_with_repeat_fallback(pattern).map_err(|err| {
+            EvaluationError::ArgumentError(format!(
+                "invalid regular expression in label_replace(): {err}"
+            ))
+        })
+    };
+    if anchored.len() > REGEX_CACHE_MAX_PATTERN_LEN {
+        return Ok(f(&compile(&anchored)?));
+    }
     REGEX_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.contains_key(&anchored) {
-            // Also accepts Go's literal braces (`a{b}`), as Prometheus does and
-            // as selector matchers already did.
-            let regex = build_with_repeat_fallback(&anchored).map_err(|err| {
-                EvaluationError::ArgumentError(format!(
-                    "invalid regular expression in label_replace(): {err}"
-                ))
-            })?;
+            let regex = compile(&anchored)?;
             if cache.len() >= REGEX_CACHE_CAPACITY {
-                evict_oldest(&mut cache);
+                evict_oldest(&mut cache, REGEX_CACHE_EVICT_COUNT, |entry| entry.created);
             }
             cache.insert(
                 anchored.clone(),
@@ -295,6 +283,16 @@ mod tests {
             .chain(std::iter::once("^(?s:overflow)$".to_string()))
             .collect();
         assert_eq!(remaining, survivors);
+    }
+
+    #[test]
+    fn should_not_cache_patterns_over_the_length_limit() {
+        REGEX_CACHE.with(|cache| cache.borrow_mut().clear());
+        // Whitespace in verbose mode: a long source with a tiny program.
+        let long = format!("(?x)a{}", " ".repeat(REGEX_CACHE_MAX_PATTERN_LEN));
+        assert!(with_anchored_regex(&long, |regex| regex.is_match("a")).unwrap());
+        assert!(cached_patterns().is_empty());
+        assert!(with_anchored_regex("(", |_| ()).is_err());
     }
 
     #[test]
