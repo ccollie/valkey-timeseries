@@ -1,6 +1,6 @@
 use crate::common::Sample;
 use crate::promql::common::math::sample_regression;
-use crate::promql::functions::rollups::eval_series;
+use crate::promql::functions::range_vector_functions::eval_range;
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, ExprResult};
 
@@ -10,9 +10,7 @@ pub(in crate::promql) struct DerivFunction;
 impl PromQLFunction for DerivFunction {
     fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
         let series = arg.into_range_vector()?;
-        Ok(ExprResult::InstantVector(eval_series(ctx, series, |s| {
-            rollup_deriv(&s.values)
-        })?))
+        eval_range(ctx, series, rollup_deriv)
     }
 }
 
