@@ -172,16 +172,39 @@ impl EvalContext {
             deadline: Default::default(),
         }
     }
+
+    /// An instant query at `ts` with the Prometheus default lookback. Vary a
+    /// field with struct update: `EvalContext { step_ms: 60_000, ..EvalContext::at(ts) }`.
+    #[cfg(test)]
+    pub fn at(ts: Timestamp) -> Self {
+        Self::for_vector_selector(ts, TEST_DEFAULT_LOOKBACK_MS)
+    }
+
+    /// A range query over `[start, end]` every `step_ms`, positioned at its
+    /// first step, with the Prometheus default lookback.
+    #[cfg(test)]
+    pub fn range(start: Timestamp, end: Timestamp, step_ms: i64) -> Self {
+        EvalContext {
+            query_start: start,
+            query_end: end,
+            evaluation_ts: start,
+            step_ms,
+            lookback_delta_ms: TEST_DEFAULT_LOOKBACK_MS,
+            deadline: Default::default(),
+        }
+    }
 }
+
+#[cfg(test)]
+const TEST_DEFAULT_LOOKBACK_MS: i64 = (5 * crate::common::constants::MILLIS_PER_MIN) as i64;
 
 /// A context ending now with the Prometheus default lookback: a convenience
 /// for tests only, since production contexts come from the query's statement.
 #[cfg(test)]
 impl Default for EvalContext {
     fn default() -> Self {
-        const DEFAULT_LOOKBACK_DELTA: i64 = (5 * crate::common::constants::MILLIS_PER_MIN) as i64;
         let now = crate::common::time::current_time_millis();
-        let lookback = DEFAULT_LOOKBACK_DELTA;
+        let lookback = TEST_DEFAULT_LOOKBACK_MS;
         let query_end = now;
         let query_start = now - lookback;
         let evaluation_ts = query_end;

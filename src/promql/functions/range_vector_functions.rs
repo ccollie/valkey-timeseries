@@ -99,12 +99,8 @@ mod deadline_tests {
 
     fn passed_ctx() -> EvalContext {
         EvalContext {
-            query_start: 0,
-            query_end: 0,
-            evaluation_ts: 0,
-            lookback_delta_ms: 300_000,
-            step_ms: 0,
             deadline: Deadline::until(Some(std::time::Instant::now())),
+            ..EvalContext::at(0)
         }
     }
 

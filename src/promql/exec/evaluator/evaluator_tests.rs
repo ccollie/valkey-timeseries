@@ -1709,14 +1709,7 @@ mod tests {
             range,
         };
 
-        let eval_ctx = EvalContext {
-            query_start: query_time_ms,
-            query_end: query_time_ms,
-            evaluation_ts: query_time_ms,
-            step_ms: 0,
-            lookback_delta_ms: 0,
-            ..Default::default()
-        };
+        let eval_ctx = EvalContext::for_vector_selector(query_time_ms, 0);
 
         let result = evaluator
             .evaluate_matrix_selector(&matrix_selector, &eval_ctx, true)
@@ -1820,12 +1813,8 @@ mod tests {
 
         let end_time_ms = system_time_to_millis(end_time);
         let ctx = EvalContext {
-            query_start: end_time_ms,
-            query_end: end_time_ms,
-            evaluation_ts: end_time_ms,
             step_ms: 60_000,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
+            ..EvalContext::at(end_time_ms)
         };
 
         let result = evaluator.evaluate_call(&call, &ctx, false).unwrap();
@@ -1868,12 +1857,8 @@ mod tests {
         let end_time_ms = system_time_to_millis(end_time);
 
         let ctx = EvalContext {
-            query_start: end_time_ms,
-            query_end: end_time_ms,
-            evaluation_ts: end_time_ms,
             step_ms: 60_000,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
+            ..EvalContext::at(end_time_ms)
         };
         let result = evaluator.evaluate_call(&call, &ctx, false).unwrap();
         match result {
@@ -2050,7 +2035,7 @@ mod tests {
         };
 
         let query_time = 6_300_000;
-        let ctx = EvalContext::for_vector_selector(query_time, 300_000);
+        let ctx = EvalContext::at(query_time);
         let result = evaluator
             .evaluate_vector_selector(&selector, &ctx, false)
             .unwrap();
@@ -2099,7 +2084,7 @@ mod tests {
         };
 
         let query_time = 6_300_000;
-        let ctx = EvalContext::for_vector_selector(query_time, 300_000);
+        let ctx = EvalContext::at(query_time);
         let result = evaluator
             .evaluate_vector_selector(&selector, &ctx, false)
             .unwrap();
@@ -2148,7 +2133,7 @@ mod tests {
         };
 
         let query_time = 6_300_000;
-        let ctx = EvalContext::for_vector_selector(query_time, 300_000);
+        let ctx = EvalContext::at(query_time);
         let result = evaluator
             .evaluate_vector_selector(&selector, &ctx, false)
             .unwrap();
@@ -2204,14 +2189,7 @@ mod tests {
         };
 
         let query_time = 6_300_000;
-        let ctx = EvalContext {
-            query_start: query_time,
-            query_end: query_time,
-            evaluation_ts: query_time,
-            step_ms: 0, // ??
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(query_time);
         let result = evaluator
             .evaluate_matrix_selector(&matrix_selector, &ctx, true)
             .unwrap();
@@ -2345,7 +2323,7 @@ mod tests {
         };
 
         let query_time = 5_700_000;
-        let ctx = EvalContext::for_vector_selector(query_time, 300_000);
+        let ctx = EvalContext::at(query_time);
         let result = evaluator
             .evaluate_vector_selector(&selector, &ctx, false)
             .unwrap();
@@ -2393,7 +2371,7 @@ mod tests {
         };
 
         let query_time = 6_234_567;
-        let ctx = EvalContext::for_vector_selector(query_time, 300_000);
+        let ctx = EvalContext::at(query_time);
 
         let result = evaluator
             .evaluate_vector_selector(&selector, &ctx, false)
@@ -3346,14 +3324,7 @@ mod tests {
         };
 
         let eval_time_ms = 10_000i64; // 10 seconds in ms
-        let ctx = EvalContext {
-            query_start: eval_time_ms,
-            query_end: eval_time_ms,
-            evaluation_ts: eval_time_ms,
-            step_ms: 0, // instant query context
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(eval_time_ms);
         let result = evaluator.evaluate_subquery(&subquery, &ctx);
 
         // then: should not panic or infinite loop, should use fallback step
@@ -3398,14 +3369,7 @@ mod tests {
         };
 
         let eval_time_ms = 20_000i64;
-        let ctx = EvalContext {
-            query_start: eval_time_ms,
-            query_end: eval_time_ms,
-            evaluation_ts: eval_time_ms,
-            step_ms: 0,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(eval_time_ms);
 
         let result = evaluator.evaluate_subquery(&subquery, &ctx).unwrap();
         let ExprResult::RangeVector(mut range_vector) = result else {
@@ -4770,7 +4734,7 @@ mod tests {
     fn should_accept_a_scalar_parameter_on_either_side_of_the_matrix() {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Evaluated);
         let evaluator = Evaluator::new(&reader, QueryOptions::default());
-        let ctx = crate::promql::EvalContext::for_vector_selector(120_000, 300_000);
+        let ctx = crate::promql::EvalContext::at(120_000);
 
         for (query, want_param) in [
             ("quantile_over_time(0.9, metric[1m])", Some(0.9)),
@@ -4943,12 +4907,8 @@ mod tests {
 
         let expr = parse_registered("sum_over_time(metric[1m])").unwrap();
         let ctx = crate::promql::EvalContext {
-            query_start: 60_000,
-            query_end: 180_000,
             evaluation_ts: 120_000,
-            step_ms: 30_000,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
+            ..crate::promql::EvalContext::range(60_000, 180_000, 30_000)
         };
         evaluator.evaluate_with_context(&expr, ctx).unwrap();
 
@@ -4988,14 +4948,7 @@ mod tests {
         let reader = GridPushdownReader::new(inner, answer);
         let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = parse_registered(query).unwrap();
-        let base = crate::promql::EvalContext {
-            query_start: start_ms,
-            query_end: end_ms,
-            evaluation_ts: start_ms,
-            step_ms,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let base = crate::promql::EvalContext::range(start_ms, end_ms, step_ms);
 
         // `Local` is the baseline: no preload, so every step evaluates live.
         if answer != GridAnswer::Local {
@@ -5504,14 +5457,7 @@ mod tests {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);
         let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = promql_parser::parser::parse(&query).unwrap();
-        let ctx = crate::promql::EvalContext {
-            query_start: 120_000,
-            query_end: 240_000,
-            evaluation_ts: 120_000,
-            step_ms: 60_000,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let ctx = crate::promql::EvalContext::range(120_000, 240_000, 60_000);
         evaluator.preload_for_range(&expr, &ctx).unwrap();
 
         // The union `evaluator`'s table memoizes `node`'s key for, checking
@@ -5567,14 +5513,7 @@ mod tests {
         let reader = GridPushdownReader::new(rollup_reader(), GridAnswer::Raw);
         let mut evaluator = Evaluator::new(&reader, rollup_test_options());
         let expr = promql_parser::parser::parse(query).unwrap();
-        let ctx = crate::promql::EvalContext {
-            query_start: 120_000,
-            query_end: 240_000,
-            evaluation_ts: 120_000,
-            step_ms: 60_000,
-            lookback_delta_ms: 300_000,
-            ..Default::default()
-        };
+        let ctx = crate::promql::EvalContext::range(120_000, 240_000, 60_000);
         evaluator
             .preload_for_range(&expr, &ctx)
             .unwrap_or_else(|e| panic!("{query}: preload failed: {e}"));
@@ -6733,12 +6672,8 @@ mod tests {
                 let mut evaluator = Evaluator::new(&reader, QueryOptions::default());
                 let expr = parse_registered(query).unwrap();
                 let base = crate::promql::EvalContext {
-                    query_start: 60_000,
-                    query_end: 240_000,
-                    evaluation_ts: 60_000,
-                    step_ms: 30_000,
                     lookback_delta_ms: 30_000,
-                    ..Default::default()
+                    ..crate::promql::EvalContext::range(60_000, 240_000, 30_000)
                 };
                 if answer != GridAnswer::Local {
                     evaluator.preload_for_range(&expr, &base).unwrap();
