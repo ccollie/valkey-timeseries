@@ -817,12 +817,7 @@ fn execute_cluster_aggregation(
                     ));
                     Ok(SelectorOutput::Aggregation(AggregationOutcome::Unsupported))
                 }
-                Err(e) => {
-                    log_warning(format!(
-                        "promql: cluster command failed for aggregation query: {e}"
-                    ));
-                    Err(e.into())
-                }
+                Err(e) => Err(selector_fanout_failure("aggregation", e)),
             }
         },
     );

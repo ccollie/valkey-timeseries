@@ -659,10 +659,7 @@ mod tests {
             samples.push(i).unwrap();
         }
         let err = samples.push(3).unwrap_err().to_string();
-        assert!(
-            err.to_string().contains("ts-promql-max-samples-per-query"),
-            "{err}"
-        );
+        assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
         assert_eq!(samples.len(), 3, "the refused sample is not kept");
         assert_eq!(samples.finish().unwrap(), vec![0, 1, 2]);
         assert_eq!(budget.loaded(), 3);
@@ -684,10 +681,7 @@ mod tests {
             "one batch charged so far"
         );
         let err = samples.push(limit).unwrap_err().to_string();
-        assert!(
-            err.to_string().contains("ts-promql-max-samples-per-query"),
-            "{err}"
-        );
+        assert!(err.contains("ts-promql-max-samples-per-query"), "{err}");
         assert_eq!(samples.finish().unwrap().len(), limit);
         assert_eq!(budget.loaded(), limit);
     }

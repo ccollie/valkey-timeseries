@@ -16,7 +16,7 @@ use crate::promql::functions::types::FunctionCallContext;
 use crate::promql::functions::types::RollupWindow;
 use crate::promql::functions::utils::{
     exact_arity_error, expect_exact_arg_count, expect_range_vector, expect_scalar,
-    labels_for_absent,
+    labels_for_absent, two_args,
 };
 use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
 use promql_parser::parser::Expr;
@@ -758,13 +758,7 @@ impl PromQLFunction for QuantileOverTimeFunction {
         args: Vec<PromQLArg>,
         ctx: &FunctionCallContext,
     ) -> EvalResult<ExprResult> {
-        if args.len() != 2 {
-            return Err(exact_arity_error("quantile_over_time", 2, args.len()));
-        }
-        let mut iter = args.into_iter();
-        let phi_arg = iter.next().unwrap();
-        let range_arg = iter.next().unwrap();
-
+        let (phi_arg, range_arg) = two_args("quantile_over_time", args)?;
         let phi = expect_scalar(phi_arg, "quantile_over_time", "phi")?;
         let range = expect_range_vector(range_arg, "quantile_over_time")?;
 
