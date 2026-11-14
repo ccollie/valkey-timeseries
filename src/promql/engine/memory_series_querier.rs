@@ -5,19 +5,25 @@ use crate::labels::filters::SeriesSelector;
 use crate::labels::{Labels, SeriesFingerprint};
 use crate::promql::EvalLabels;
 use crate::promql::engine::QueryReader;
+use crate::promql::engine::fanout::check_unique_series;
 use crate::promql::engine::label_profile::{
     LabelProfile, LabelProfileBuilder, ProfileCollector, ProfileWindow, profiled_series_cap,
 };
+use crate::promql::engine::query_limits::{
+    copy_snapshots, decode_snapshot, instant_lookback_start_ms, validate_max_series,
+};
 use crate::promql::engine::query_reader::{AggregationOutcome, AggregationRequest};
+use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::model::InstantSample;
 use crate::promql::time::duration_ms;
 use crate::promql::{QueryError, QueryOptions, QueryResult, RangeSample};
-use crate::series::index::Postings;
+use crate::series::index::{Postings, PostingsBitmap};
 use crate::series::{SeriesRef, TimeSeries};
 use ahash::AHashMap;
 use orx_parallel::Par;
 use orx_parallel::ParResult;
 use promql_parser::parser::VectorSelector;
+use std::borrow::Cow;
 use std::sync::RwLock;
 use valkey_module::ValkeyResult;
 
@@ -26,6 +32,17 @@ struct QuerierInner {
     postings: Postings,
     next_id: SeriesRef,
     fingerprint_to_id: AHashMap<SeriesFingerprint, SeriesRef>,
+}
+
+impl QuerierInner {
+    /// The series `selector` matches. A postings error is the read's error:
+    /// iterating the `Result` instead made it read as a selector that matched
+    /// nothing.
+    fn postings_for(&self, selector: &VectorSelector) -> QueryResult<Cow<'_, PostingsBitmap>> {
+        self.postings
+            .postings_for_selectors(&[SeriesSelector::from(selector)])
+            .map_err(|e| QueryError::Execution(e.to_string()))
+    }
 }
 
 impl Default for QuerierInner {
@@ -109,14 +126,7 @@ impl MemorySeriesQuerier {
         R: Send + Sync,
     {
         let inner = self.inner.read().unwrap();
-
-        let selector: SeriesSelector = SeriesSelector::from(selector);
-        // A postings error is the read's error: iterating the `Result` instead
-        // made it read as a selector that matched nothing.
-        let postings = inner
-            .postings
-            .postings_for_selectors(&[selector])
-            .map_err(|e| QueryError::Execution(e.to_string()))?;
+        let postings = inner.postings_for(selector)?;
         let series = postings
             .iter()
             .filter_map(|id| inner.series.get(&id))
@@ -137,22 +147,19 @@ impl MemorySeriesQuerier {
 }
 
 impl QueryReader for MemorySeriesQuerier {
+    /// The latest sample in each series' lookback window, `(timestamp - lookback, timestamp]`,
+    /// under the read limits a module read applies: the series limit on what is returned, and
+    /// no two series with the same labels. The deadline is not checked.
     fn query(
         &self,
         selector: &VectorSelector,
         timestamp: i64,
-        _options: QueryOptions,
+        options: QueryOptions,
     ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
-        // Mock querier ignores the deadline for now (cooperative cancellation could be
-        // implemented in tests by checking `_deadline`), and behaves like the
-        // original implementation.
-        // Implement lookback semantics: return the latest sample with
-        // timestamp <= `timestamp` and timestamp > (timestamp - lookback_delta).
-        // `QueryOptions::lookback_delta` is provided in `_options`.
-        let lookback_ms = duration_ms(_options.lookback_delta);
-        let start_inclusive = timestamp.saturating_sub(lookback_ms).saturating_add(1);
+        let start_inclusive =
+            instant_lookback_start_ms(timestamp, duration_ms(options.lookback_delta));
 
-        self.select_series(selector, |ts| {
+        let samples = self.select_series(selector, |ts| {
             // Fetch samples in the inclusive range [start_inclusive, timestamp].
             let samples = ts.get_range(start_inclusive, timestamp);
             if samples.is_empty() {
@@ -170,34 +177,46 @@ impl QueryReader for MemorySeriesQuerier {
             }
 
             Ok(None)
-        })
+        })?;
+        validate_max_series(samples.len(), options.max_series)?;
+        check_unique_series(samples.iter().map(|s| &s.labels)).map_err(QueryError::Execution)?;
+        Ok(samples)
     }
 
+    /// Each series' samples in `[start_ms, end_ms]`, read as a module read is: chunks copied
+    /// under the lock against the query's sample budget, decoded after it under the budget
+    /// and the per-series point limit, then the series limit and the duplicate-labels check.
+    /// The deadline is not checked.
     fn query_range(
         &self,
         selector: &VectorSelector,
         start_ms: i64,
         end_ms: i64,
-        _options: QueryOptions,
+        options: QueryOptions,
     ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
-        // As with `query`, this mock ignores the deadline and returns the full range.
-        self.select_series(selector, |ts| {
-            let labels = EvalLabels::interned(&ts.labels);
-            let samples: Vec<Sample> = ts
-                .get_range(start_ms, end_ms)
-                .into_iter()
-                .map(|s| Sample {
-                    timestamp: s.timestamp,
-                    value: s.value,
-                })
-                .collect();
-
-            if samples.is_empty() {
-                return Ok(None);
-            }
-
-            Ok(Some(RangeSample { labels, samples }))
-        })
+        let budget = SampleBudget::new(options.max_samples);
+        let snapshots = {
+            let inner = self.inner.read().unwrap();
+            let postings = inner.postings_for(selector)?;
+            let series = postings.iter().filter_map(|id| inner.series.get(&id));
+            copy_snapshots(series, start_ms, end_ms, &budget, |ts| {
+                EvalLabels::interned(&ts.labels)
+            })?
+        };
+        let max_points = options.max_points_per_series;
+        let series = snapshots
+            .into_iter()
+            .iter_into_par_rayon()
+            .map(|(labels, snapshot)| {
+                decode_snapshot(&budget, &snapshot, max_points)
+                    .map(|samples| samples.map(|samples| RangeSample { labels, samples }))
+            })
+            .into_fallible()
+            .filter_map(|series| series)
+            .collect::<Vec<_>>()?;
+        validate_max_series(series.len(), options.max_series)?;
+        check_unique_series(series.iter().map(|s| &s.labels)).map_err(QueryError::Execution)?;
+        Ok(series)
     }
 
     /// There is nothing to push down to in memory, but answering `Raw` (rather
@@ -354,6 +373,55 @@ mod tests {
             .query(&unanswerable, 1_000, QueryOptions::default())
             .expect_err("an index error must not read as no series");
         assert!(err.to_string().contains("at least one matcher"), "{err}");
+    }
+
+    /// Reads are refused at the limits a module read applies, so the conformance suite
+    /// runs them: the series limit counts only series with a sample in the window, and
+    /// the per-series point and per-query sample limits hold for a range read.
+    #[test]
+    fn reads_apply_the_module_read_limits() {
+        let querier = retired_and_live();
+        let m = selector("m");
+        // Only `us` has a sample in the window, so one series is within a limit of one.
+        let short_lookback = QueryOptions {
+            lookback_delta: std::time::Duration::from_millis(100),
+            ..options(1)
+        };
+        assert_eq!(querier.query(&m, 1_009, short_lookback).unwrap().len(), 1);
+        assert_eq!(
+            querier
+                .query_range(&m, 1_000, 1_009, options(1))
+                .unwrap()
+                .len(),
+            1
+        );
+        let both = querier.query_range(&m, 0, 1_009, options(1)).unwrap_err();
+        assert!(both.to_string().contains("2 > 1"), "{both}");
+        let both = querier
+            .query(
+                &m,
+                1_009,
+                QueryOptions {
+                    lookback_delta: std::time::Duration::from_secs(10),
+                    ..options(1)
+                },
+            )
+            .unwrap_err();
+        assert!(both.to_string().contains("2 > 1"), "{both}");
+
+        let points = QueryOptions {
+            max_points_per_series: Some(5),
+            ..options(0)
+        };
+        let err = querier.query_range(&m, 1_000, 1_009, points).unwrap_err();
+        assert!(err.to_string().contains("max points per series"), "{err}");
+
+        let samples = QueryOptions {
+            max_samples: 15,
+            ..options(0)
+        };
+        let err = querier.query_range(&m, 0, 1_009, samples).unwrap_err();
+        assert!(err.to_string().contains("max-samples-per-query"), "{err}");
     }
 
     #[test]
