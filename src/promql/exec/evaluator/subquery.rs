@@ -4,6 +4,7 @@
 use super::*;
 use crate::common::{Sample, hash::DeterministicHasher};
 use crate::promql::engine::sample_budget::Retained;
+use crate::promql::exec::types::StepMerger;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -433,10 +434,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             0 => MAX_SUBQUERY_GRID_POINTS,
             limit => limit.min(MAX_SUBQUERY_GRID_POINTS),
         };
-        let mut index: ahash::AHashMap<EvalLabels, usize> = ahash::AHashMap::new();
-        // Per series: its labels, points, each point's position in its step's
-        // output, and drop flags.
-        let mut series: Vec<(EvalLabels, Vec<Sample>, Vec<u32>, DropFlagsBuilder)> = Vec::new();
+        // In first-seen order, as `SeriesSpans` needs them.
+        let mut series: StepMerger<UnionSeries> = StepMerger::default();
         let mut points = 0usize;
         // The grid is kept until the query ends: its points are reserved in
         // flight as they are added, and given back when it is dropped.
@@ -475,25 +474,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 GRID_POINTS_EVALUATED.with(|n| n.set(n.get() + samples.len()));
                 for (position, sample) in samples.into_iter().enumerate() {
                     points += 1;
-                    // Labels are cloned only when a series is first seen.
-                    let at = match index.get(&sample.labels) {
-                        Some(&at) => at,
-                        None => {
-                            index.insert(sample.labels.clone(), series.len());
-                            series.push((
-                                sample.labels,
-                                Vec::new(),
-                                Vec::new(),
-                                DropFlagsBuilder::default(),
-                            ));
-                            series.len() - 1
-                        }
-                    };
-                    let (_, samples, positions, drops) = &mut series[at];
-                    drops.push(sample.drop_name, samples.len());
-                    samples.push(Sample::new(ts, sample.value));
-                    positions.push(u32::try_from(position).unwrap_or(u32::MAX));
+                    let at = series.entry(sample.labels);
+                    at.drops.push(sample.drop_name, at.samples.len());
+                    at.samples.push(Sample::new(ts, sample.value));
+                    at.positions
+                        .push(u32::try_from(position).unwrap_or(u32::MAX));
                 }
+                series.end_step();
             }
             if points > cap {
                 log_debug(format!(
@@ -532,10 +519,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             union_bounds: Some((union.start_ms, union.end_ms)),
             ..EvaluatedSubquery::new(
                 series
-                    .into_iter()
-                    .map(|(labels, samples, positions, drops)| {
-                        (labels, samples, positions, drops.finish())
-                    })
+                    .into_series()
+                    .map(|(labels, s)| (labels, s.samples, s.positions, s.drops.finish()))
                     .collect(),
             )
         }))
@@ -726,6 +711,15 @@ impl DropFlags {
             DropFlags::Mixed(each) => each[points].iter().any(|&drop| drop),
         }
     }
+}
+
+/// One series of a union grid as it is built: its points, each point's
+/// position in its step's output, and drop flags.
+#[derive(Default)]
+struct UnionSeries {
+    samples: Vec<Sample>,
+    positions: Vec<u32>,
+    drops: DropFlagsBuilder,
 }
 
 /// Collects a series' [`DropFlags`] point by point, keeping one value until a
