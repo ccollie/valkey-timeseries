@@ -1,5 +1,6 @@
 use crate::commands::fanout_codec::EnvelopeError;
 use crate::error_consts;
+use crate::fanout::NodeInfo;
 use prost::Message;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -259,6 +260,12 @@ impl FanoutError {
             message: description.into(),
             kind: ErrorKind::Custom,
         }
+    }
+
+    /// An answer from `peer` that this node could not use, blamed on the peer
+    /// in the one spelling every fan-out shares: `TSDB: peer <addr> <fault>`.
+    pub fn from_peer(peer: &NodeInfo, fault: impl std::fmt::Display) -> Self {
+        Self::custom(format!("TSDB: peer {} {fault}", peer.socket_address))
     }
 
     /// Whether this error means the peer does not know the operation at all,

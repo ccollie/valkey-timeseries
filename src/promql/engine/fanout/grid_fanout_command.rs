@@ -241,8 +241,9 @@ impl FanoutCommand for GridFanoutCommand {
         // resolved to interned labels: each distinct pair once per response.
         let table = resp.labels.take().unwrap_or_default();
         let mut resolver = EvalLabelResolver::new(&table);
-        let malformed =
-            |why: ValkeyError| super::peer_error(target, "returned malformed labels", why);
+        let malformed = |why: ValkeyError| {
+            FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
+        };
 
         // Corrupt-peer defenses. A request fused with a reduction is answered
         // in partials; every other request in series — a fused selection's
@@ -289,7 +290,10 @@ impl FanoutCommand for GridFanoutCommand {
             for mut series in resp.series {
                 let labels = resolver.resolve(&mut series).map_err(malformed)?;
                 let points = decode_columns(&self.window_ends, &series).map_err(|why| {
-                    super::peer_error(target, "returned a malformed grid series", why)
+                    FanoutError::from_peer(
+                        target,
+                        format_args!("returned a malformed grid series: {why}"),
+                    )
                 })?;
                 match &mut output {
                     GridSeries::Rolled(rolled) => rolled.push(RangeSample {
@@ -326,7 +330,10 @@ impl FanoutCommand for GridFanoutCommand {
             .into_iter()
             .map(|raw| {
                 packed_range_series(raw, &mut resolver).map_err(|why| {
-                    super::peer_error(target, "returned an undecodable raw series", why)
+                    FanoutError::from_peer(
+                        target,
+                        format_args!("returned an undecodable raw series: {why}"),
+                    )
                 })
             })
             .collect::<Result<Vec<_>, FanoutError>>()?;

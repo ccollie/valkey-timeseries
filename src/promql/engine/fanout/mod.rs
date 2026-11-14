@@ -21,7 +21,7 @@ pub(in crate::promql) use type_conversions::{
 use valkey_module::{ValkeyError, ValkeyResult};
 
 use crate::error_consts;
-use crate::fanout::{ErrorKind, FanoutContext, FanoutError, NodeInfo, register_fanout_operation};
+use crate::fanout::{ErrorKind, FanoutContext, FanoutError, register_fanout_operation};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::QueryError;
 use crate::promql::deadline::Deadline;
@@ -58,20 +58,6 @@ pub(super) fn shard_selector(
     selector: Option<&crate::promql::generated::SeriesSelector>,
 ) -> ValkeyResult<SeriesSelector> {
     required(selector, "selector")?.try_into()
-}
-
-/// A peer's answer this node could not use, reported against the peer.
-pub(super) fn peer_error(
-    target: &NodeInfo,
-    what: &str,
-    why: impl std::fmt::Display,
-) -> FanoutError {
-    peer_fault(target, format_args!("{what}: {why}"))
-}
-
-/// The one spelling of an error blamed on a peer: `TSDB: peer <addr> <fault>`.
-pub(super) fn peer_fault(target: &NodeInfo, fault: std::fmt::Arguments<'_>) -> FanoutError {
-    FanoutError::custom(format!("TSDB: peer {} {fault}", target.socket_address))
 }
 
 impl From<FanoutError> for QueryError {

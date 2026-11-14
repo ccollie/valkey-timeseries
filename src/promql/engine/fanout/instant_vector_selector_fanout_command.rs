@@ -1,6 +1,6 @@
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
-use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
+use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
 use crate::promql::engine::QueryOptions;
 use crate::promql::engine::fanout::query_utils::{handle_instant_query, shard_read};
 use crate::promql::engine::fanout::type_conversions::UniqueSeries;
@@ -106,9 +106,9 @@ impl FanoutCommand for InstantVectorSelectorFanoutCommand {
         let mut resolver = symbol_table::EvalLabelResolver::new(&symbol_table);
         self.results.reserve(resp.samples.len());
         for mut s in resp.samples {
-            let labels = resolver
-                .resolve(&mut s)
-                .map_err(|why| super::peer_error(target, "returned malformed labels", why))?;
+            let labels = resolver.resolve(&mut s).map_err(|why| {
+                FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
+            })?;
             self.seen.insert(&labels)?;
             self.results.push(InstantSample {
                 labels,

@@ -227,9 +227,9 @@ impl FanoutCommand for AggregationFanoutCommand {
         let samples = std::mem::take(&mut resp.samples)
             .into_iter()
             .map(|s| {
-                resolver
-                    .resolve_sample(s)
-                    .map_err(|why| super::peer_error(target, "returned malformed labels", why))
+                resolver.resolve_sample(s).map_err(|why| {
+                    FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
+                })
             })
             .collect::<Result<Vec<EvalSample>, FanoutError>>()?;
         match &mut self.sink {
