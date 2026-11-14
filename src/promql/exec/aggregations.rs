@@ -6,7 +6,7 @@ use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::functions::utils::expect_label_name;
-use crate::promql::hashers::FingerprintHashMap;
+use crate::promql::hashers::{FingerprintHashMap, fold_fingerprint};
 use crate::promql::{EvalResult, EvalSample, EvaluationError, ExprResult};
 use promql_parser::parser::token::{TokenType, *};
 use promql_parser::parser::{AggregateExpr, LabelModifier};
@@ -348,9 +348,7 @@ fn count_values_grouping(
 /// bucket. The finalizer is MurmurHash3's `fmix64`.
 #[inline]
 fn count_values_bucket_key(group: SeriesFingerprint, value_key: u64) -> u64 {
-    // Fold the 128-bit fingerprint as `FingerprintHasher::write_u128` does.
-    let group = (group as u64) ^ ((group >> 64) as u64).rotate_left(32);
-    let mut x = group ^ value_key.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut x = fold_fingerprint(group) ^ value_key.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
     x ^= x >> 33;
