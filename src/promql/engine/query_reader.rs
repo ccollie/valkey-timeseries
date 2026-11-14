@@ -3,7 +3,6 @@ use crate::common::{Sample, Timestamp};
 use crate::promql::EvalLabels;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::label_profile::{LabelProfile, ProfileWindow};
-use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::exec::partial_aggregation::{SteppedPartialGroups, SteppedSelection};
 use crate::promql::exec::pipeline::for_each_step_sample;
@@ -371,8 +370,7 @@ impl GridRequest {
         let window_ends = self.window_ends();
         let mut sink = GridSink::for_request(self, &window_ends);
         self.per_series_chunked(&window_ends, series, deadline, |output, read| {
-            let added = sink.take(self, output, deadline)?;
-            charge(added.saturating_sub(read))
+            sink.take_charged(self, output, read, deadline, charge)
         })?;
         sink.finish(deadline).map_err(QueryError::from)
     }
@@ -522,25 +520,26 @@ impl GridSink {
         partials.accumulate_grid(modifier, output, deadline)
     }
 
-    /// Everything taken, as the request's outcome. A fused sink walks every
-    /// state or candidate it accumulated to finalize them, `deadline` checked
-    /// as it goes.
-    /// [`Self::take`], charging `budget` for what the sink now holds beyond
-    /// the `read` raw samples the output was built from, which the read
-    /// already charged. The one place a staged chunk is accounted, on the
-    /// shard and on the coordinator alike.
+    /// [`Self::take`], passing `charge` what the sink now holds beyond the
+    /// `read` raw samples the output was built from, which the read already
+    /// charged. The one place a staged chunk is accounted: on a shard, on the
+    /// coordinator, and on a node evaluating a raw span
+    /// ([`GridRequest::evaluate`]).
     pub(in crate::promql) fn take_charged(
         &mut self,
         request: &GridRequest,
         output: GridSeries,
         read: usize,
         deadline: &Deadline,
-        budget: &SampleBudget,
+        charge: &mut dyn FnMut(usize) -> QueryResult<()>,
     ) -> QueryResult<()> {
         let added = self.take(request, output, deadline)?;
-        budget.charge(added.saturating_sub(read))
+        charge(added.saturating_sub(read))
     }
 
+    /// Everything taken, as the request's outcome. A fused sink walks every
+    /// state or candidate it accumulated to finalize them, `deadline` checked
+    /// as it goes.
     pub(in crate::promql) fn finish(self, deadline: &Deadline) -> EvalResult<GridOutcome> {
         Ok(match self {
             GridSink::Series(series) => series.into(),
