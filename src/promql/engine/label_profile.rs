@@ -29,6 +29,7 @@
 
 use crate::common::Timestamp;
 use crate::labels::{MAX_LABELS_PER_SERIES, compile_literal_set};
+use crate::promql::exec::types::EvalLabels;
 use crate::series::TimeSeries;
 use ahash::AHashMap;
 use promql_parser::label::{METRIC_NAME, MatchOp, Matcher};
@@ -36,6 +37,7 @@ use promql_parser::label::{METRIC_NAME, MatchOp, Matcher};
 use regex::Regex;
 use regex::escape;
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 
 /// The most distinct values a derived filter enumerates. The index resolves
 /// the filter by one lookup per value, and past this the values are unlikely
@@ -150,6 +152,56 @@ impl ProfileWalk {
         } else {
             (self.key_cap + 1).saturating_sub(self.opened)
         }
+    }
+}
+
+/// A [`ProfileWalk`] that keeps the label sets it takes, for a walk stepped
+/// under the lock and profiled once the lock is released ([`Self::take`]):
+/// keeping a label set is a refcount bump, hashing it into the profile is not.
+/// The single-node, shard and in-memory walks all step through this.
+pub(in crate::promql) struct ProfileCollector {
+    walk: ProfileWalk,
+    taken: Vec<EvalLabels>,
+    overflow: bool,
+}
+
+impl ProfileCollector {
+    pub(in crate::promql) fn new(window: Option<ProfileWindow>, series_cap: usize) -> Self {
+        Self {
+            walk: ProfileWalk::new(window, series_cap),
+            taken: Vec::new(),
+            overflow: false,
+        }
+    }
+
+    /// See [`ProfileWalk::keys_left`].
+    pub(in crate::promql) fn keys_left(&self) -> usize {
+        self.walk.keys_left()
+    }
+
+    /// Step the walk over `series`, keeping its labels when it is taken.
+    /// `Break` once a cap is passed: the profile is unavailable, and the rest
+    /// of the walk is not worth doing.
+    pub(in crate::promql) fn visit(&mut self, series: &TimeSeries) -> ControlFlow<()> {
+        match self.walk.step(series) {
+            ProfileStep::Skip => {}
+            ProfileStep::Stop => {
+                self.overflow = true;
+                return ControlFlow::Break(());
+            }
+            ProfileStep::Take => self.taken.push(EvalLabels::interned(&series.labels)),
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Whether a cap was passed, leaving no profile.
+    pub(in crate::promql) fn overflowed(&self) -> bool {
+        self.overflow
+    }
+
+    /// The label sets taken since the last call, to add to the profile.
+    pub(in crate::promql) fn take(&mut self) -> Vec<EvalLabels> {
+        std::mem::take(&mut self.taken)
     }
 }
 
@@ -359,6 +411,13 @@ impl LabelProfileBuilder {
     /// How many series have been added so far.
     pub fn series(&self) -> u64 {
         self.series
+    }
+
+    /// Count each of `taken` ([`ProfileCollector::take`]).
+    pub(in crate::promql) fn add_taken(&mut self, taken: Vec<EvalLabels>) {
+        for labels in taken {
+            self.add_series(labels.iter().map(|l| (l.name, l.value)));
+        }
     }
 
     /// Count one series with the given labels. `__name__` is ignored.

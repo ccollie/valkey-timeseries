@@ -15,7 +15,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::label_profile::{
-    LabelProfile, LabelProfileBuilder, ProfileStep, ProfileWalk, ProfileWindow, profiled_series_cap,
+    LabelProfile, LabelProfileBuilder, ProfileCollector, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationRequest, GridOutcome, GridRequest,
@@ -1109,15 +1109,12 @@ enum ReadState {
         ranges: Vec<RangeSample<EvalLabels>>,
     },
     /// The label profile of the matched series — those with a retained
-    /// sample in its window, when there is one — within `walk`'s caps.
+    /// sample in its window, when there is one — within the walk's caps.
+    /// What a hold takes is added to `builder` once the lock is released
+    /// ([`LocalRead::profile_taken`]).
     Profile {
-        walk: ProfileWalk,
+        walk: ProfileCollector,
         builder: LabelProfileBuilder,
-        overflow: bool,
-        /// The label sets a hold took, shared from storage by refcount: added
-        /// to `builder` once the lock is released ([`LocalRead::profile_taken`]),
-        /// so a hold does not spend its time hashing labels into the profile.
-        taken: Vec<EvalLabels>,
     },
 }
 
@@ -1183,10 +1180,8 @@ impl LocalRead {
             }
             SelectorTaskKind::Profile(pc) => {
                 let state = ReadState::Profile {
-                    walk: ProfileWalk::new(pc.window, profiled_series_cap(&pc.options)),
+                    walk: ProfileCollector::new(pc.window, profiled_series_cap(&pc.options)),
                     builder: LabelProfileBuilder::new(),
-                    overflow: false,
-                    taken: Vec::new(),
                 };
                 (pc.matchers, pc.options, state)
             }
@@ -1301,12 +1296,7 @@ impl LocalRead {
                         }))
                     })?
                 }
-                ReadState::Profile {
-                    walk,
-                    overflow,
-                    taken,
-                    ..
-                } => {
+                ReadState::Profile { walk, .. } => {
                     // Every key of a batch is opened before the first is
                     // stepped, so the batch is no larger than the walk may
                     // still open: the key cap bounds the keys opened.
@@ -1316,19 +1306,13 @@ impl LocalRead {
                             // The window is checked without decoding: the
                             // cursor's own range filter would decode a chunk
                             // per series under the lock.
-                            match walk.step(s) {
-                                ProfileStep::Skip => {}
-                                ProfileStep::Stop => {
-                                    *overflow = true;
-                                    break;
-                                }
-                                // A refcount bump; profiled after the hold.
-                                ProfileStep::Take => taken.push(EvalLabels::interned(&s.labels)),
+                            if walk.visit(s).is_break() {
+                                break;
                             }
                         }
                         Ok(())
                     })?;
-                    if *overflow {
+                    if walk.overflowed() {
                         // Past a cap the profile is not worth finishing.
                         cursor.finish();
                     }
@@ -1345,10 +1329,8 @@ impl LocalRead {
 
     /// Off the lock: add the label sets the last hold took to the profile.
     fn profile_taken(&mut self) {
-        if let ReadState::Profile { builder, taken, .. } = &mut self.state {
-            for labels in taken.drain(..) {
-                builder.add_series(labels.iter().map(|l| (l.name, l.value)));
-            }
+        if let ReadState::Profile { walk, builder } = &mut self.state {
+            builder.add_taken(walk.take());
         }
     }
 
@@ -1393,10 +1375,8 @@ impl LocalRead {
                     .and_then(|()| unique_series(ranges.iter().map(|s| &s.labels)))
                     .map(|()| SelectorOutput::Matrix(ranges))
             }
-            ReadState::Profile {
-                builder, overflow, ..
-            } => Ok(SelectorOutput::Profile(
-                (!overflow).then(|| builder.finish()),
+            ReadState::Profile { walk, builder } => Ok(SelectorOutput::Profile(
+                (!walk.overflowed()).then(|| builder.finish()),
             )),
         };
         deliver_task_result(&self.responder, result);
