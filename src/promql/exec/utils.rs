@@ -1,8 +1,10 @@
+use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint, fingerprint_labels};
 use crate::promql::exec::types::{EvalLabels, EvalSample, SeriesMap, SubquerySeriesMap};
 use crate::promql::hashers::FingerprintHashSet;
 use crate::promql::{EvalResult, EvaluationError};
+use orx_parallel::{Par, ParResult};
 use promql_parser::label::METRIC_NAME;
 use promql_parser::parser::Expr;
 
@@ -59,12 +61,30 @@ pub(in crate::promql) fn strip_parens(expr: &Expr) -> &Expr {
 /// it saves.
 pub(in crate::promql) const PARALLEL_STEP_THRESHOLD: usize = 4;
 
-/// Threads for evaluating `steps` steps at once: see [`PARALLEL_STEP_THRESHOLD`].
-pub(in crate::promql) fn step_threads(steps: usize) -> usize {
-    if steps < PARALLEL_STEP_THRESHOLD {
-        1
+/// Up to `size` more of `steps`, allocated once: `steps` cannot say how many
+/// are left, so a plain `collect` would grow the batch from empty.
+pub(in crate::promql) fn next_step_batch(
+    steps: &mut impl Iterator<Item = Timestamp>,
+    size: usize,
+) -> Vec<Timestamp> {
+    let mut batch = Vec::with_capacity(size);
+    batch.extend(steps.take(size));
+    batch
+}
+
+/// `eval` at each of `batch`'s steps, the results in step order: on this
+/// thread below [`PARALLEL_STEP_THRESHOLD`] steps, across the request pool
+/// otherwise. The first error ends the batch.
+pub(in crate::promql) fn evaluate_step_batch<T: Send, E: Send>(
+    batch: Vec<Timestamp>,
+    eval: impl Fn(Timestamp) -> Result<T, E> + Sync,
+) -> Result<Vec<T>, E> {
+    if batch.len() < PARALLEL_STEP_THRESHOLD {
+        batch.into_iter().map(eval).collect()
     } else {
-        0
+        // A reference is `Copy` and `Send`, as the pool's adapters need.
+        let eval = &eval;
+        batch.into_par_rayon().map(eval).into_fallible().collect()
     }
 }
 

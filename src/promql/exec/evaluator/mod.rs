@@ -26,7 +26,7 @@ use crate::promql::exec::types::{
     SubquerySeriesMap,
 };
 use crate::promql::exec::utils::ensure_unique_labelsets;
-use crate::promql::exec::utils::{PARALLEL_STEP_THRESHOLD, step_threads};
+use crate::promql::exec::utils::{evaluate_step_batch, next_step_batch};
 use crate::promql::exec::utils::{merge_step_into_subquery_map, strip_parens};
 use crate::promql::functions::RollupKind;
 use crate::promql::functions::{

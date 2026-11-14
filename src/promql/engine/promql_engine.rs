@@ -1,4 +1,3 @@
-use crate::common::threads::IntoParRayon;
 use crate::common::time::system_time_to_millis;
 use crate::common::{Sample, Timestamp};
 use crate::promql::deadline::Deadline;
@@ -10,14 +9,15 @@ use crate::promql::error::QueryError;
 use crate::promql::exec::planner::{PlannedQuery, PreloadGrid};
 use crate::promql::exec::preloader::Preloader;
 use crate::promql::exec::types::{EvalLabels, SeriesMap};
-use crate::promql::exec::utils::{merge_step_into_series_map, step_threads};
+use crate::promql::exec::utils::{
+    evaluate_step_batch, merge_step_into_series_map, next_step_batch,
+};
 use crate::promql::model::{InstantSample, QueryValue, RangeSample};
 use crate::promql::optimizer::{optimize_expr, simplify_expr};
 use crate::promql::time::duration_ms;
 use crate::promql::time::{grid_step_count, step_times};
 use crate::promql::utils::{check_subquery_cost, validate_max_points_per_timeseries};
 use crate::promql::{Evaluator, ExprResult, QueryResult};
-use orx_parallel::{Par, ParResult};
 use promql_parser::parser::EvalStmt;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -221,18 +221,11 @@ pub fn evaluate_range(
     let mut points = 0usize;
 
     loop {
-        let chunk: Vec<Timestamp> = step_ts.by_ref().take(STEP_MERGE_CHUNK_SIZE).collect();
+        let chunk = next_step_batch(&mut step_ts, STEP_MERGE_CHUNK_SIZE);
         if chunk.is_empty() {
             break;
         }
-
-        let threads = step_threads(chunk.len());
-        let chunk_results: Vec<(Timestamp, ExprResult)> = chunk
-            .into_par_rayon()
-            .num_threads(threads)
-            .map(eval_step)
-            .into_fallible()
-            .collect()?;
+        let chunk_results = evaluate_step_batch(chunk, eval_step)?;
 
         // Charged before it is merged: the result holds every step's samples
         // until the reply, and an expression that reads nothing (`vector(1)`,
