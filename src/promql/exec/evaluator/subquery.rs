@@ -154,7 +154,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         //
         // Only for a selector with no time modifiers of its own.
         // `evaluate_subquery_vector_selector` derives its whole grid from the
-        // subquery's start/end/step (`QueryPlan::for_subquery_vector_selector`)
+        // subquery's start/end/step (`read_subquery_vector_selector`)
         // and never sees `at`/`offset`, so a modifier on the inner selector
         // would be silently dropped. Those shapes take the general per-step
         // path below, which resolves modifiers through
@@ -176,9 +176,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }
 
         // Align start time to the step interval to ensure consistent evaluation points
-        // (see compute_subquery_alignment for the negative-timestamp rationale).
-        let (aligned_start_ms, _, _, expected_steps) =
-            compute_subquery_alignment(subquery_start_ms, subquery_end_ms, step_ms, 0);
+        // (see align_subquery_start for the negative-timestamp rationale).
+        let aligned_start_ms = align_subquery_start(subquery_start_ms, step_ms);
+        let expected_steps = grid_step_count(aligned_start_ms, subquery_end_ms, step_ms) as usize;
 
         // The inner expression already evaluated at every step of the union
         // (`preload_subqueries`): this window is a slice of it.
@@ -316,13 +316,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         step_ms: i64,
         lookback_delta_ms: i64,
     ) -> EvalResult<ExprResult> {
-        let plan = QueryPlan::for_subquery_vector_selector(
+        let result = read_subquery_vector_selector(
+            self.reader,
+            vector_selector,
             subquery_start_ms,
             subquery_end_ms,
             step_ms,
             lookback_delta_ms,
-        );
-        let result = execute_selector_pipeline(self.reader, &plan, vector_selector, self.options)?;
+            self.options,
+        )?;
         self.charge_result(&result)?;
         Ok(result)
     }

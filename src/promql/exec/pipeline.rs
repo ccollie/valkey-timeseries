@@ -1,14 +1,7 @@
-//! Explicit phase artifacts for the evaluator query pipeline.
-//!
-//! All evaluator-backed query paths (instant vector selector, matrix selector,
-//! subquery vector-selector fast path) share the same logical execution model:
-//!
-//! 1. **Plan** – compute concrete time bounds and path-specific parameters
-//! 2. **LoadSamples** – read the selected series over those bounds
-//! 3. **ShapeSamples** – turn each series' samples into the evaluator's per-series form
-//! 4. **Evaluate** – run PromQL expression semantics on prepared in-memory inputs
-//!
-//! The types in this module represent the intermediate artifacts produced by each phase.
+//! The evaluator's unpreloaded selector reads: an instant vector selector, a
+//! matrix selector, and the subquery vector-selector fast path. Each reads its
+//! series over concrete bounds and shapes them into the evaluator's
+//! per-series form.
 
 use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
@@ -19,132 +12,119 @@ use crate::promql::{EvalResult, EvalSample, EvalSamples, ExprResult, QueryOption
 use orx_parallel::Par;
 use promql_parser::parser::VectorSelector;
 
-// ---------------------------------------------------------------------------
-// Phase artifact types
-// ---------------------------------------------------------------------------
-
-/// Path-specific execution parameters.
-pub(crate) enum QueryPathKind {
-    /// Instant vector selector: the reader returns each series' latest sample
-    /// within the lookback window.
-    InstantVector { lookback_delta_ms: i64 },
-    /// Matrix selector: each series' samples in `(start, end]`, as read.
-    Matrix,
-    /// Subquery vector-selector fast path: each series' samples, reduced to
-    /// the latest one at each subquery step.
-    SubqueryVectorSelector {
-        range_ms: i64,
-        aligned_start_ms: i64,
-        step_ms: i64,
-        lookback_delta_ms: i64,
-        expected_steps: usize,
-    },
-}
-
-/// Computed execution plan for a query path.
-pub(crate) struct QueryPlan {
-    /// Exclusive lower bound for sample filtering (timestamp > start). The
-    /// instant path does not read it: the reader applies the lookback itself.
-    pub sample_start_ms: Timestamp,
-    /// Inclusive upper bound for sample filtering (timestamp <= end).
-    pub sample_end_ms: Timestamp,
-    /// Path-specific behavior and parameters.
-    pub path_kind: QueryPathKind,
-}
-
-// ---------------------------------------------------------------------------
-// Phase 1: Planning
-// ---------------------------------------------------------------------------
-
-impl QueryPlan {
-    /// Construct a plan for an instant vector selector: the lookback window
-    /// ending at the (modifier-adjusted) evaluation timestamp.
-    pub(crate) fn for_instant_vector(
-        adjusted_eval_ts_ms: Timestamp,
-        lookback_delta_ms: Timestamp,
-    ) -> Self {
-        let end_ms = adjusted_eval_ts_ms;
-        let start_ms = end_ms.saturating_sub(lookback_delta_ms);
-        QueryPlan {
-            sample_start_ms: start_ms,
-            sample_end_ms: end_ms,
-            path_kind: QueryPathKind::InstantVector { lookback_delta_ms },
-        }
-    }
-
-    /// Construct a plan for a matrix selector: the range ending at the
-    /// (modifier-adjusted) evaluation timestamp.
-    pub(crate) fn for_matrix(adjusted_eval_ts_ms: Timestamp, range_ms: Timestamp) -> Self {
-        let end_ms = adjusted_eval_ts_ms;
-        let start_ms = end_ms.saturating_sub(range_ms);
-        QueryPlan {
-            sample_start_ms: start_ms,
-            sample_end_ms: end_ms,
-            path_kind: QueryPathKind::Matrix,
-        }
-    }
-
-    /// Construct a plan for a subquery vector-selector fast path.
-    ///
-    /// Computes step alignment and extends the sample range backward by
-    /// `lookback_delta_ms` so the first step has data.
-    pub(crate) fn for_subquery_vector_selector(
-        subquery_start_ms: Timestamp,
-        subquery_end_ms: Timestamp,
-        step_ms: Timestamp,
-        lookback_delta_ms: Timestamp,
-    ) -> Self {
-        let (aligned_start_ms, range_start_ms, range_end_ms, expected_steps) =
-            compute_subquery_alignment(
-                subquery_start_ms,
-                subquery_end_ms,
-                step_ms,
-                lookback_delta_ms,
-            );
-
-        let range_ms = subquery_end_ms.saturating_sub(subquery_start_ms);
-        QueryPlan {
-            sample_start_ms: range_start_ms,
-            sample_end_ms: range_end_ms,
-            path_kind: QueryPathKind::SubqueryVectorSelector {
-                range_ms,
-                aligned_start_ms,
-                step_ms,
-                lookback_delta_ms,
-                expected_steps,
-            },
-        }
-    }
-}
-
-/// Compute subquery time alignment and range extension.
+/// Read an instant vector selector: each series' latest sample within the
+/// lookback window ending at `eval_ts` (modifiers already applied).
 ///
-/// Returns `(aligned_start_ms, range_start_ms, range_end_ms, expected_steps)`.
+/// The reader applies the lookback itself, so a cluster picks each series'
+/// latest sample on the shards rather than shipping the window here.
+pub(crate) fn read_instant_vector<R: QueryReader + ?Sized>(
+    reader: &R,
+    selector: &VectorSelector,
+    eval_ts: Timestamp,
+    lookback_delta_ms: Timestamp,
+    options: QueryOptions,
+) -> EvalResult<ExprResult> {
+    let samples = reader
+        .query(
+            selector,
+            eval_ts,
+            options.with_lookback_ms(lookback_delta_ms),
+        )?
+        .into_iter()
+        .map(EvalSample::from)
+        .collect();
+    Ok(ExprResult::InstantVector(samples))
+}
+
+/// Read a matrix selector: each series' samples in `(end - range, end]`,
+/// carrying the window's range and end for the rollups that read them.
+pub(crate) fn read_matrix<R: QueryReader + ?Sized>(
+    reader: &R,
+    selector: &VectorSelector,
+    end_ms: Timestamp,
+    range_ms: Timestamp,
+    options: QueryOptions,
+) -> EvalResult<ExprResult> {
+    let start_ms = end_ms.saturating_sub(range_ms);
+    let series = read_left_open(reader, selector, start_ms, end_ms, options)?
+        .into_iter()
+        .map(|s| EvalSamples {
+            labels: s.labels,
+            drop_name: false,
+            range_ms: end_ms - start_ms,
+            values: s.samples.into(),
+            range_end_ms: end_ms,
+        })
+        .collect();
+    Ok(ExprResult::RangeVector(series))
+}
+
+/// The subquery vector-selector fast path: `selector` over the subquery
+/// window `(start_ms, end_ms]` stepped at `step_ms`, read once and reduced to
+/// each series' latest sample at every step, within the lookback.
 ///
-/// Uses `div_euclid` for correct floor division with negative timestamps
-/// (e.g. `-41ms / 10ms` → `-50ms`, not `-40ms`).
-pub(crate) fn compute_subquery_alignment(
-    subquery_start_ms: Timestamp,
-    subquery_end_ms: Timestamp,
+/// The read reaches back by `lookback_delta_ms` before the first step so that
+/// step has data; each series still carries the subquery's own range, not
+/// the extended read's.
+pub(crate) fn read_subquery_vector_selector<R: QueryReader + ?Sized>(
+    reader: &R,
+    selector: &VectorSelector,
+    start_ms: Timestamp,
+    end_ms: Timestamp,
     step_ms: Timestamp,
     lookback_delta_ms: Timestamp,
-) -> (Timestamp, Timestamp, Timestamp, usize) {
-    // The step multiple at or below the start, then the first one strictly after it. Saturating:
-    // near the ends of the range the multiple may not be representable.
-    let mut aligned_start_ms =
-        subquery_start_ms.saturating_sub(subquery_start_ms.rem_euclid(step_ms));
-    if aligned_start_ms <= subquery_start_ms {
-        aligned_start_ms = aligned_start_ms.saturating_add(step_ms);
+    options: QueryOptions,
+) -> EvalResult<ExprResult> {
+    let steps = SubquerySteps {
+        aligned_start_ms: align_subquery_start(start_ms, step_ms),
+        end_ms,
+        step_ms,
+        lookback_delta_ms,
+        range_ms: end_ms.saturating_sub(start_ms),
+    };
+    let read_start_ms = steps.aligned_start_ms.saturating_sub(lookback_delta_ms);
+    let series = read_left_open(reader, selector, read_start_ms, end_ms, options)?;
+    Ok(ExprResult::RangeVector(shape_subquery_results(
+        series, &steps,
+    )))
+}
+
+/// Each series' samples in `(start_ms, end_ms]`. The reader's start bound is
+/// inclusive, so it is asked from one past `start_ms`.
+fn read_left_open<R: QueryReader + ?Sized>(
+    reader: &R,
+    selector: &VectorSelector,
+    start_ms: Timestamp,
+    end_ms: Timestamp,
+    options: QueryOptions,
+) -> EvalResult<Vec<RangeSample<EvalLabels>>> {
+    Ok(reader.query_range(selector, start_ms.saturating_add(1), end_ms, options)?)
+}
+
+/// The first multiple of `step_ms` strictly after `start_ms`: where the steps
+/// of a subquery whose window starts at `start_ms` begin.
+///
+/// Floors with `rem_euclid`, so a negative timestamp aligns down, not toward
+/// zero (`-41` at step 10 floors to `-50`, so the steps begin at `-40`).
+/// Saturating: near the ends of the range the multiple may not be
+/// representable.
+pub(crate) fn align_subquery_start(start_ms: Timestamp, step_ms: Timestamp) -> Timestamp {
+    let floor = start_ms.saturating_sub(start_ms.rem_euclid(step_ms));
+    if floor <= start_ms {
+        floor.saturating_add(step_ms)
+    } else {
+        floor
     }
-    let expected_steps = grid_step_count(aligned_start_ms, subquery_end_ms, step_ms) as usize;
-    let range_start_ms = aligned_start_ms.saturating_sub(lookback_delta_ms);
-    let range_end_ms = subquery_end_ms;
-    (
-        aligned_start_ms,
-        range_start_ms,
-        range_end_ms,
-        expected_steps,
-    )
+}
+
+/// The step grid of the subquery fast path.
+struct SubquerySteps {
+    aligned_start_ms: Timestamp,
+    end_ms: Timestamp,
+    step_ms: Timestamp,
+    lookback_delta_ms: Timestamp,
+    /// The subquery's own range, which each output series carries.
+    range_ms: Timestamp,
 }
 
 /// Walk `steps` (non-decreasing timestamps) over `samples` (ascending by
@@ -179,153 +159,50 @@ pub(crate) fn for_each_step_sample<I, F>(
     }
 }
 
-/// Shape loaded data for the subquery vector-selector fast path: reduce each
-/// series to its latest sample at every subquery step, within the lookback
-/// window, dropping series left with no step.
+/// Reduce each series to its latest sample at every step of `steps`, within
+/// the lookback window, dropping series left with no step.
 ///
 /// Series are independent; a few short ones are shaped on the caller's
 /// thread, since a pool round trip would cost more than the work.
 fn shape_subquery_results(
     series_data: Vec<RangeSample<EvalLabels>>,
-    plan: &QueryPlan,
+    steps: &SubquerySteps,
 ) -> Vec<EvalSamples> {
-    let (range_ms, aligned_start_ms, step_ms, lookback_delta_ms, expected_steps) =
-        match &plan.path_kind {
-            QueryPathKind::SubqueryVectorSelector {
-                range_ms,
-                aligned_start_ms,
-                step_ms,
-                lookback_delta_ms,
-                expected_steps,
-            } => (
-                *range_ms,
-                *aligned_start_ms,
-                *step_ms,
-                *lookback_delta_ms,
-                *expected_steps,
-            ),
-            _ => return Vec::new(),
-        };
-
-    let subquery_end_ms = plan.sample_end_ms;
-
+    let expected_steps =
+        grid_step_count(steps.aligned_start_ms, steps.end_ms, steps.step_ms) as usize;
     let work = series_data.iter().map(|s| s.samples.len()).sum::<usize>()
         + expected_steps * series_data.len();
     let threads = request_par_threads(series_data.len(), work);
-    let range_vector: Vec<EvalSamples> = series_data
+    series_data
         .into_par_rayon()
         .num_threads(threads)
-        .filter_map(|sample| {
-            if sample.samples.is_empty() {
+        .filter_map(|series| {
+            if series.samples.is_empty() {
                 return None;
             }
-
             let mut step_samples = Vec::with_capacity(expected_steps);
-            let steps = step_times(aligned_start_ms, subquery_end_ms, step_ms);
             for_each_step_sample(
-                &sample.samples,
-                steps,
-                lookback_delta_ms,
-                |current_step_ms, latest| {
+                &series.samples,
+                step_times(steps.aligned_start_ms, steps.end_ms, steps.step_ms),
+                steps.lookback_delta_ms,
+                |step_ts, latest| {
                     if let Some(latest) = latest {
                         step_samples.push(Sample {
-                            timestamp: current_step_ms,
+                            timestamp: step_ts,
                             value: latest.value,
                         });
                     }
                 },
             );
-
-            if step_samples.is_empty() {
-                None
-            } else {
-                Some(EvalSamples {
-                    values: step_samples.into(),
-                    labels: sample.labels,
-                    range_ms,
-                    range_end_ms: subquery_end_ms,
-                    drop_name: false,
-                })
-            }
+            (!step_samples.is_empty()).then(|| EvalSamples {
+                values: step_samples.into(),
+                labels: series.labels,
+                range_ms: steps.range_ms,
+                range_end_ms: steps.end_ms,
+                drop_name: false,
+            })
         })
-        .collect();
-
-    range_vector
-}
-
-// ---------------------------------------------------------------------------
-// Unified pipeline orchestrator
-// ---------------------------------------------------------------------------
-
-/// Execute the shared selector pipeline for all evaluator-backed query paths.
-///
-/// Orchestrates: resolve metadata -> build work -> load samples -> shape results.
-/// Branching on `QueryPathKind` handles the behavioral differences between
-/// instant vector selectors, matrix selectors, and subquery fast paths.
-pub(crate) fn execute_selector_pipeline<R: QueryReader + ?Sized>(
-    reader: &R,
-    plan: &QueryPlan,
-    selector: &VectorSelector,
-    mut options: QueryOptions,
-) -> EvalResult<ExprResult> {
-    // Phase: LoadSamples
-    // Special-case the handling of instant vector query plans. Since we account for clustering, it makes sense
-    // to filter for the last item on the worker nodes instead of shipping the data only to filter
-    // out on the requester. The `query` method on the reader should handle this
-    if let QueryPathKind::InstantVector { lookback_delta_ms } = plan.path_kind {
-        options = options.with_lookback_ms(lookback_delta_ms);
-        let series_data = reader
-            .query(selector, plan.sample_end_ms, options)?
-            .into_iter()
-            .map(EvalSample::from)
-            .collect::<Vec<_>>();
-
-        let result = ExprResult::InstantVector(series_data);
-        return Ok(result);
-    };
-
-    // The QueryPlan.sample_start_ms is defined as an exclusive lower bound
-    // (timestamp > start). Underlying storage `query_range` / `TimeSeries::get_range`
-    // treats the start parameter as inclusive. Increment the start timestamp by
-    // 1ms to enforce the exclusive lower-bound semantics expected by the
-    // pipeline. Use saturating_add to avoid overflow on extreme values.
-    let query_start_inclusive = plan.sample_start_ms.saturating_add(1);
-
-    let raw_range_samples =
-        reader.query_range(selector, query_start_inclusive, plan.sample_end_ms, options)?;
-
-    // Phase: ShapeSamples
-    let result = match &plan.path_kind {
-        QueryPathKind::SubqueryVectorSelector { .. } => {
-            // For the subquery fast path the fetch range includes a backward
-            // extension by `lookback_delta_ms` so the first step has data.
-            // The raw samples therefore span more than the declared subquery
-            // range; we must apply the per-step sliding-window bucketing
-            // (`shape_subquery_results`) so that:
-            //   1. Only the sample most-recently-seen at each step is kept.
-            //   2. `range_ms` on the returned `EvalSamples` reflects the
-            //      actual subquery range (not the extended fetch range).
-            ExprResult::RangeVector(shape_subquery_results(raw_range_samples, plan))
-        }
-        _ => {
-            // Matrix selector: the fetch range equals the declared query range,
-            // so `range_ms` can be computed directly from the plan bounds.
-            let range = plan.sample_end_ms - plan.sample_start_ms;
-            let series: Vec<EvalSamples> = raw_range_samples
-                .into_iter()
-                .map(|s| EvalSamples {
-                    labels: s.labels,
-                    drop_name: false,
-                    range_ms: range,
-                    values: s.samples.into(),
-                    range_end_ms: plan.sample_end_ms,
-                })
-                .collect();
-            ExprResult::RangeVector(series)
-        }
-    };
-
-    Ok(result)
+        .collect()
 }
 
 #[cfg(test)]
@@ -349,68 +226,18 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Planning tests
+    // Alignment and shaping
     // -----------------------------------------------------------------------
 
     #[test]
-    fn instant_plan_spans_the_lookback_window() {
-        let plan = QueryPlan::for_instant_vector(500_000, 60_000);
-        assert_eq!(plan.sample_start_ms, 500_000 - 60_000);
-        assert_eq!(plan.sample_end_ms, 500_000);
+    fn subquery_steps_begin_strictly_after_the_window_start() {
+        // ceil to the next step: 15 -> 20; on a multiple, the next one.
+        assert_eq!(align_subquery_start(15, 10), 20);
+        assert_eq!(align_subquery_start(20, 10), 30);
+        // rem_euclid floors -41 to -50, so the steps begin at -40.
+        assert_eq!(align_subquery_start(-41, 10), -40);
+        assert_eq!(align_subquery_start(i64::MAX - 1, 10), i64::MAX);
     }
-
-    #[test]
-    fn subquery_plan_alignment() {
-        // subquery_start=15, end=55, step=10, lookback=20
-        // aligned_start = ceil_to_next_step(15, 10) = 20
-        // expected_steps = (55 - 20) / 10 + 1 = 4 (steps at 20, 30, 40, 50)
-        // range_start = 20 - 20 = 0
-        let plan = QueryPlan::for_subquery_vector_selector(15, 55, 10, 20);
-        match &plan.path_kind {
-            QueryPathKind::SubqueryVectorSelector {
-                range_ms,
-                aligned_start_ms,
-                step_ms,
-                lookback_delta_ms,
-                expected_steps,
-                ..
-            } => {
-                assert_eq!(*range_ms, 40);
-                assert_eq!(*aligned_start_ms, 20);
-                assert_eq!(*step_ms, 10);
-                assert_eq!(*lookback_delta_ms, 20);
-                assert_eq!(*expected_steps, 4);
-            }
-            _ => panic!("wrong path kind"),
-        }
-        assert_eq!(plan.sample_start_ms, 0);
-        assert_eq!(plan.sample_end_ms, 55);
-    }
-
-    #[test]
-    fn subquery_alignment_with_negative_timestamps() {
-        // subquery_start=-41, end=0, step=10, lookback=5
-        // div_euclid(-41, 10) = -5, aligned = -50, since -50 <= -41, aligned = -40
-        // expected_steps = (0 - (-40)) / 10 + 1 = 5
-        // range_start = -40 - 5 = -45
-        let plan = QueryPlan::for_subquery_vector_selector(-41, 0, 10, 5);
-        match &plan.path_kind {
-            QueryPathKind::SubqueryVectorSelector {
-                aligned_start_ms,
-                expected_steps,
-                ..
-            } => {
-                assert_eq!(*aligned_start_ms, -40);
-                assert_eq!(*expected_steps, 5);
-            }
-            _ => panic!("wrong path kind"),
-        }
-        assert_eq!(plan.sample_start_ms, -45);
-    }
-
-    // -----------------------------------------------------------------------
-    // Shaping tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn shape_subquery_step_bucketing() {
@@ -423,19 +250,15 @@ mod tests {
         )];
 
         // Steps at 10, 20, 30 with lookback=10
-        let plan = QueryPlan {
-            sample_start_ms: -5,
-            sample_end_ms: 30,
-            path_kind: QueryPathKind::SubqueryVectorSelector {
-                range_ms: 30,
-                aligned_start_ms: 10,
-                step_ms: 10,
-                lookback_delta_ms: 10,
-                expected_steps: 3,
-            },
+        let steps = SubquerySteps {
+            aligned_start_ms: 10,
+            end_ms: 30,
+            step_ms: 10,
+            lookback_delta_ms: 10,
+            range_ms: 30,
         };
 
-        let results = shape_subquery_results(bucket_data, &plan);
+        let results = shape_subquery_results(bucket_data, &steps);
         assert_eq!(results.len(), 1);
         let values = &results[0].values;
         assert_eq!(values.len(), 3);
@@ -502,22 +325,17 @@ mod tests {
 
     #[test]
     fn an_instant_read_takes_each_series_latest_sample_in_its_lookback() {
-        let plan = QueryPlan::for_instant_vector(55, 20);
-        let got =
-            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
-                .unwrap();
+        let got = read_instant_vector(&reader(), &selector("m"), 55, 20, QueryOptions::default())
+            .unwrap();
         // `b`'s only sample, at 5, is outside (35, 55].
         assert_eq!(by_series(got), vec![("a".to_string(), vec![(50, 50.0)])]);
     }
 
     /// The window excludes its start and includes its end, and each series
-    /// carries the plan's range and end for the rollups that read them.
+    /// carries the window's range and end for the rollups that read them.
     #[test]
     fn a_matrix_read_spans_the_left_open_window() {
-        let plan = QueryPlan::for_matrix(50, 30);
-        let got =
-            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
-                .unwrap();
+        let got = read_matrix(&reader(), &selector("m"), 50, 30, QueryOptions::default()).unwrap();
         let ExprResult::RangeVector(series) = &got else {
             panic!("expected a range vector")
         };
@@ -536,10 +354,16 @@ mod tests {
     /// lookback, with the subquery's own range rather than the extended read.
     #[test]
     fn a_subquery_read_reduces_each_series_to_its_steps() {
-        let plan = QueryPlan::for_subquery_vector_selector(40, 100, 20, 15);
-        let got =
-            execute_selector_pipeline(&reader(), &plan, &selector("m"), QueryOptions::default())
-                .unwrap();
+        let got = read_subquery_vector_selector(
+            &reader(),
+            &selector("m"),
+            40,
+            100,
+            20,
+            15,
+            QueryOptions::default(),
+        )
+        .unwrap();
         let ExprResult::RangeVector(series) = &got else {
             panic!("expected a range vector")
         };
