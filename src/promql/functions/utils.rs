@@ -11,7 +11,7 @@ pub(super) fn exact_arity_error(
     expected_args: usize,
     actual_args: usize,
 ) -> EvaluationError {
-    EvaluationError::InternalError(format!(
+    EvaluationError::ArgumentError(format!(
         "{function_name} requires exactly {expected_args} argument(s), got {actual_args}"
     ))
 }
@@ -21,7 +21,7 @@ pub(super) fn min_arity_error(
     min_args: usize,
     actual_args: usize,
 ) -> EvaluationError {
-    EvaluationError::InternalError(format!(
+    EvaluationError::ArgumentError(format!(
         "{function_name} requires at least {min_args} argument(s), got {actual_args}"
     ))
 }
@@ -31,7 +31,7 @@ pub(super) fn max_arity_error(
     max_args: usize,
     actual_args: usize,
 ) -> EvaluationError {
-    EvaluationError::InternalError(format!(
+    EvaluationError::ArgumentError(format!(
         "{function_name} accepts at most {max_args} argument(s), got {actual_args}"
     ))
 }

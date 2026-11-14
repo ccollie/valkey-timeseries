@@ -155,7 +155,7 @@ impl<'a> ArithOpContext<'a> {
             Some(modifier) => {
                 let card = match &modifier.card {
                     VectorMatchCardinality::ManyToMany => {
-                        return Err(EvaluationError::InternalError(
+                        return Err(EvaluationError::execution(
                             "many-to-many cardinality not supported for non-set operators"
                                 .to_string(),
                         ));
@@ -262,7 +262,7 @@ fn one_side_duplicate_error(
     if first > second {
         std::mem::swap(&mut first, &mut second);
     }
-    EvaluationError::InternalError(format!(
+    EvaluationError::execution(format!(
         "found duplicate series for the match group {group} on the {} hand-side of the \
          operation: [{first}, {second}];many-to-many matching not allowed: matching labels must \
          be unique on one side",
@@ -273,7 +273,7 @@ fn one_side_duplicate_error(
 /// Under one-to-one matching, a match key repeated on the "many" side.
 #[cold]
 fn many_side_duplicate_error() -> EvaluationError {
-    EvaluationError::InternalError(
+    EvaluationError::execution(
         "multiple matches for labels: many-to-one matching must be explicit (group_left/group_right)"
             .to_string(),
     )
@@ -553,7 +553,7 @@ fn eval_arith_ops_internal(
                 } else {
                     "multiple matches for labels: grouping labels must ensure unique matches"
                 };
-                return Err(EvaluationError::InternalError(msg.to_string()));
+                return Err(EvaluationError::execution(msg.to_string()));
             }
         }
     }
@@ -638,7 +638,7 @@ fn result_metric(
 fn validate_non_fill(expr: &BinaryExpr) -> EvalResult<()> {
     // Fill modifiers are not meaningful for set operators (or / and / unless).
     if has_fill_modifier(expr) {
-        return Err(EvaluationError::InternalError(
+        return Err(EvaluationError::execution(
             "fill modifiers (fill, fill_left, fill_right) are not supported on set operators (or, and, unless)".to_string(),
         ));
     }

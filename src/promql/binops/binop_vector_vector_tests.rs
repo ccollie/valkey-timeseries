@@ -1,4 +1,5 @@
 use super::*;
+use crate::promql::QueryError;
 use promql_parser::parser::token::{T_ADD, T_DIV, T_GTR, T_NEQ, TokenType};
 use promql_parser::parser::{BinModifier, BinaryExpr, Expr, NumberLiteral, VectorMatchFillValues};
 
@@ -531,7 +532,7 @@ fn test_fill_on_set_operator_returns_error() {
     let err = eval_binop_vector_vector(&expr, lhs, rhs);
     assert!(err.is_err(), "fill on set op should return an error");
     match err.unwrap_err() {
-        EvaluationError::InternalError(msg) => {
+        EvaluationError::Query(QueryError::Execution(msg)) => {
             assert!(
                 msg.contains("set operators"),
                 "error should mention set operators"
