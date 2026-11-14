@@ -16,8 +16,9 @@
 //!
 //! [`rollup_series_over_grid`] takes a list of window ends so that a caller with
 //! the whole grid in hand — the shard side of rollup push-down — evaluates every
-//! step in one pass over the series, while the local path passes a single window
-//! end. Both go through the same window construction, which is the point.
+//! step in one pass over the series, while the local per-step path evaluates one
+//! window with [`rollup_window_value`]. Both apply the same window rule, which is
+//! the point: `test_basic_and_vectorized_windows_agree` pins the two.
 
 use crate::common::threads::IntoParRayon;
 use crate::common::{Sample, Timestamp};
