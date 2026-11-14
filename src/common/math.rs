@@ -5,11 +5,15 @@
 /// the running sum, which the original Kahan algorithm (1965) did not address.
 ///
 /// Returns (new_sum, new_compensation)
+///
+/// Kept out of line for speed, not precision. Inlining cannot change the
+/// result — Rust neither reassociates floating-point operations nor contracts
+/// them into FMA without an explicit opt-in; Prometheus issue #16714 was Go
+/// fusing a multiply-add on arm64, and there is no multiply here — but an
+/// `#[inline(always)]` build measured no faster on the PromQL sums (the
+/// compensation chain is latency-bound) and up to 3 % slower on long ranges
+/// (2026-11-14). `aggregators::kahan` keeps its own inlined copy.
 #[inline(never)]
-// Important: do NOT inline.
-// Compiler reordering of floating-point operations can cause precision loss.
-// This was observed in Prometheus (issue #16714) and we lock the behavior
-// to maintain IEEE-754 semantics exactly.
 pub(crate) fn kahan_inc(inc: f64, sum: f64, c: f64) -> (f64, f64) {
     let t = sum + inc;
 
