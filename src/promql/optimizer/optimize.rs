@@ -21,6 +21,7 @@
 use crate::promql::optimizer::const_folding::fold_constants;
 use crate::promql::optimizer::filter_pushdown::pushdown_filters_in_place;
 use crate::promql::optimizer::utils::{expr_contains, is_null, is_number, is_op_with};
+use crate::promql::utils::map_children;
 use promql_parser::label::{Matcher, Matchers};
 use promql_parser::parser::token::{T_ADD, T_DIV, T_LAND, T_LOR, T_MUL, TokenType};
 use promql_parser::parser::{BinaryExpr, Expr, ParenExpr};
@@ -225,35 +226,6 @@ fn optimize_internal(expr: Expr) -> Expr {
                 }
             }
         }
-        Expr::Subquery(mut sq) => {
-            *sq.expr = optimize_internal(*sq.expr);
-            Expr::Subquery(sq)
-        }
-        Expr::Aggregate(mut agg) => {
-            *agg.expr = optimize_internal(*agg.expr);
-            if let Some(param) = agg.param {
-                let mut param = param;
-                *param = optimize_internal(*param);
-                agg.param = Some(param);
-            }
-            Expr::Aggregate(agg)
-        }
-        Expr::Call(mut call) => {
-            call.args.args = call
-                .args
-                .args
-                .into_iter()
-                .map(|mut arg| {
-                    *arg = optimize_internal(*arg);
-                    arg
-                })
-                .collect();
-            Expr::Call(call)
-        }
-        Expr::Unary(mut unary) => {
-            *unary.expr = optimize_internal(*unary.expr);
-            Expr::Unary(unary)
-        }
         Expr::VectorSelector(mut vs) => {
             // Simplify any label matchers within the vector selector
             vs.matchers = dedupe_matchers(vs.matchers);
@@ -263,8 +235,9 @@ fn optimize_internal(expr: Expr) -> Expr {
             mst.vs.matchers = dedupe_matchers(mst.vs.matchers);
             Expr::MatrixSelector(mst)
         }
+        // Its operands are optimized by `optimize_binary`, before its rules.
         Expr::Binary(binary) => optimize_binary(binary),
-        expr => expr,
+        expr => map_children(expr, optimize_internal),
     }
 }
 
