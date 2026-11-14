@@ -3,9 +3,8 @@ use crate::promql::functions::rollups::eval_series;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, EvalSamples, ExprResult};
 
-/// Generic aggregator for range vector functions. As opposed to `aggr_over_time`, this operates
-/// over the entire range rather than bucketed windows: each input series is reduced to a
-/// single output sample at the evaluation timestamp, empty series are skipped, and `f` must
+/// Generic aggregator for range vector functions. It operates over the entire range rather
+/// than bucketed windows: each input series is reduced to a single output sample at the evaluation timestamp, empty series are skipped, and `f` must
 /// implement PromQL float semantics exactly. See [`eval_series`].
 pub(super) fn eval_range<F>(
     ctx: &EvalContext,
@@ -138,8 +137,9 @@ mod deadline_tests {
         matches!(result.map_err(QueryError::from), Err(QueryError::Timeout))
     }
 
-    /// Every per-series range driver stops once the deadline has passed: a
-    /// long range over many series must not run every kernel to the end.
+    /// `rate`, `deriv` and `double_exponential_smoothing` stop once the
+    /// deadline has passed: a long range over many series must not run every
+    /// kernel to the end.
     #[test]
     fn rate_family_stops_at_a_passed_deadline() {
         let ctx = passed_ctx();
