@@ -2,7 +2,7 @@ use crate::common::time::system_time_to_millis;
 use crate::labels::{
     HasFingerprint, LABEL_SEP, LabelHasher, SeriesFingerprint, create_hasher, hash_key_value,
 };
-use crate::promql::engine::query_reader::{AggregationParam, GridAggregation, GridRollup};
+use crate::promql::engine::query_reader::{AggregationOperation, AggregationParam, GridRollup};
 use crate::promql::exec::aggregations::AggregationKind;
 use crate::promql::functions::RollupKind;
 use crate::promql::time::duration_ms;
@@ -265,7 +265,7 @@ enum AggregationParamKey {
 }
 
 impl AggregationKey {
-    pub(crate) fn of(aggregation: &GridAggregation) -> Self {
+    pub(crate) fn of(aggregation: &AggregationOperation) -> Self {
         let (without, mut labels) = match aggregation.modifier.as_ref() {
             Some(LabelModifier::Include(l)) => (false, l.labels.clone()),
             Some(LabelModifier::Exclude(l)) => (true, l.labels.clone()),
@@ -333,7 +333,7 @@ mod tests {
 
     fn by(kind: AggregationKind, labels: &[&str], without: bool) -> AggregationKey {
         let labels = Labels::new(labels.to_vec());
-        AggregationKey::of(&GridAggregation {
+        AggregationKey::of(&AggregationOperation {
             kind,
             modifier: Some(if without {
                 LabelModifier::Exclude(labels)
@@ -402,7 +402,7 @@ mod tests {
         assert_ne!(by(Sum, &["a"], false), by(Sum, &["a"], true));
         assert_ne!(by(Sum, &["a"], false), by(Topk, &["a"], false));
         let topk = |k: f64| {
-            AggregationKey::of(&GridAggregation {
+            AggregationKey::of(&AggregationOperation {
                 kind: Topk,
                 modifier: None,
                 param: Some(AggregationParam::Scalar(k)),

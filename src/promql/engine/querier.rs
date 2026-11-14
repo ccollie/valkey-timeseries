@@ -125,7 +125,7 @@ impl QueryReader for ValkeySeriesQuerier {
     ) -> QueryResult<AggregationOutcome> {
         // Only operators with a decomposable form can be evaluated at the
         // shards; the rest need the whole input on one node.
-        if aggregation.kind.pushdown_strategy().is_none() {
+        if aggregation.operation.kind.pushdown_strategy().is_none() {
             return Ok(AggregationOutcome::Unsupported);
         }
         // A single node has no shard to push the operator to: the raw vector

@@ -10,13 +10,14 @@ use crate::labels::filters::{
 };
 use crate::labels::try_regex_predicate;
 use crate::promql::RangeSample;
-use crate::promql::engine::query_reader::AggregationParam;
+use crate::promql::engine::query_reader::{AggregationOperation, AggregationParam};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::exec::partial_aggregation::AggregationPartial;
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::functions::RollupKind;
 use crate::promql::generated::{
     AggregationGrouping as ProtoAggregationGrouping, AggregationKind as ProtoAggregationKind,
+    AggregationOperation as ProtoAggregationOperation,
     AggregationPartialState as ProtoAggregationPartialState,
     RangeQueryResponse as ProtoRangeQueryResponse, RangeSample as ProtoRangeSample,
     RollupKind as ProtoRollupKind, SeriesSelector as ProtoSeriesSelector,
@@ -495,6 +496,38 @@ pub(in crate::promql) fn decode_pushdown_kind(
 ) -> Option<(AggregationKind, PushdownStrategy)> {
     let kind = AggregationKind::try_from(ProtoAggregationKind::try_from(kind).ok()?).ok()?;
     Some((kind, kind.pushdown_strategy()?))
+}
+
+impl From<&AggregationOperation> for ProtoAggregationOperation {
+    fn from(operation: &AggregationOperation) -> Self {
+        let (scalar_param, label_param) = aggregation_param_to_wire(operation.param.as_ref());
+        Self {
+            kind: ProtoAggregationKind::from(operation.kind) as i32,
+            grouping: operation.modifier.as_ref().map(Into::into),
+            scalar_param,
+            label_param,
+        }
+    }
+}
+
+/// A peer's operator, refused unless it is one that can be pushed down: a
+/// coordinator of this build sends no other.
+impl TryFrom<ProtoAggregationOperation> for AggregationOperation {
+    type Error = ValkeyError;
+
+    fn try_from(operation: ProtoAggregationOperation) -> ValkeyResult<Self> {
+        let (kind, _) = decode_pushdown_kind(operation.kind).ok_or_else(|| {
+            ValkeyError::String(format!(
+                "TSDB: aggregation kind {} cannot be pushed down",
+                operation.kind
+            ))
+        })?;
+        Ok(Self {
+            kind,
+            modifier: operation.grouping.map(LabelModifier::from),
+            param: aggregation_param_from_wire(operation.scalar_param, operation.label_param),
+        })
+    }
 }
 
 /// An aggregation parameter as the request's two optional fields.

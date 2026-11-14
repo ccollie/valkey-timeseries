@@ -36,18 +36,16 @@ use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
 use crate::promql::engine::fanout::shard_error;
 use crate::promql::engine::fanout::type_conversions::{
-    aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
-    decode_pushdown_kind, decode_range_series, packed_range_series, range_sample_to_proto,
+    decode_peer_partial, decode_range_series, packed_range_series, range_sample_to_proto,
     wrong_payload,
 };
 use crate::promql::engine::query_reader::{
-    GridAggregation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
+    AggregationOperation, GridOutcome, GridRequest, GridRollup, GridSeries, GridSink, SteppedPoint,
     SteppedSeries, grid_window_ends,
 };
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::functions::RollupKind;
 use crate::promql::generated::{
-    AggregationKind as ProtoAggregationKind, GridAggregation as ProtoGridAggregation,
     GridGroupPartial, GridQuery, GridQueryResponse, GridRollup as ProtoGridRollup,
     RollupKind as ProtoRollupKind, SeriesSelector as ProtoSeriesSelector,
 };
@@ -57,7 +55,6 @@ use crate::promql::time::{MAX_GRID_STEPS, grid_step_count};
 use crate::promql::{EvalLabels, QueryError, QueryResult};
 use crate::series::chunks::ChunkOps;
 use promql_parser::label::Matchers;
-use promql_parser::parser::LabelModifier;
 use std::sync::Arc;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -233,15 +230,7 @@ impl FanoutCommand for GridFanoutCommand {
                 scalar_param: rollup.param,
                 unit_ms: rollup.unit_ms,
             }),
-            aggregation: self.request.aggregation.as_ref().map(|agg| {
-                let (scalar_param, label_param) = aggregation_param_to_wire(agg.param.as_ref());
-                ProtoGridAggregation {
-                    kind: ProtoAggregationKind::from(agg.kind) as i32,
-                    grouping: agg.modifier.as_ref().map(Into::into),
-                    scalar_param,
-                    label_param,
-                }
-            }),
+            aggregation: self.request.aggregation.as_ref().map(Into::into),
             sample_timestamps: self.request.sample_timestamps,
         }
     }
@@ -396,21 +385,8 @@ fn decode_request(req: &GridQuery) -> ValkeyResult<GridRequest> {
         .transpose()?;
     let aggregation = req
         .aggregation
-        .as_ref()
-        .map(|agg| {
-            let (kind, _) = decode_pushdown_kind(agg.kind).ok_or_else(|| {
-                ValkeyError::String(format!(
-                    "TSDB: aggregation kind {} cannot be fused onto a grid push-down request",
-                    agg.kind
-                ))
-            })?;
-            let param = aggregation_param_from_wire(agg.scalar_param, agg.label_param.clone());
-            Ok::<_, ValkeyError>(GridAggregation {
-                kind,
-                modifier: agg.grouping.clone().map(LabelModifier::from),
-                param,
-            })
-        })
+        .clone()
+        .map(AggregationOperation::try_from)
         .transpose()?;
     // The shard walks this grid and materializes its window ends before any
     // series or point limit applies, so the peer's geometry is bounded here.

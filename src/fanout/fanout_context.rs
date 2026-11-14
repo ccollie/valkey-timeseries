@@ -6,7 +6,6 @@ use crate::error_consts;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{DetachedContext, MODULE_CONTEXT, Status, ValkeyError, ValkeyResult};
 
 /// The shard-local side of one fan-out request: the ACL user it executes as,
@@ -158,11 +157,6 @@ impl FanoutContext {
         // node's may differ, and a rule change mid-request applies from the next step.
         check_db_access(&guard, self.db)?;
         Ok(guard)
-    }
-
-    /// Log a warning without taking the GIL.
-    pub fn log_warning(&self, message: &str) {
-        self.ctx.log(ValkeyLogLevel::Warning, message);
     }
 }
 

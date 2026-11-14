@@ -8,8 +8,11 @@ use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::AggregationParam;
 use crate::promql::exec::aggregations::AggregationKind;
 use crate::promql::exec::pipeline::for_each_step_sample;
-use crate::promql::generated::GridSeries as ProtoGridSeries;
+use crate::promql::generated::{
+    AggregationKind as ProtoAggregationKind, GridSeries as ProtoGridSeries,
+};
 use crate::series::chunks::WIRE_COMPRESSION_MIN_SAMPLES;
+use promql_parser::parser::LabelModifier;
 
 const RANGE_MS: i64 = 60_000;
 const LOOKBACK_MS: i64 = 300_000;
@@ -92,7 +95,7 @@ fn fused_with(
     param: Option<AggregationParam>,
 ) -> GridRequest {
     GridRequest {
-        aggregation: Some(GridAggregation {
+        aggregation: Some(AggregationOperation {
             kind: agg,
             modifier: (!by.is_empty())
                 .then(|| LabelModifier::Include(promql_parser::label::Labels::new(by.to_vec()))),
@@ -621,7 +624,7 @@ fn fused_modifier(
     modifier: Option<LabelModifier>,
 ) -> GridRequest {
     GridRequest {
-        aggregation: Some(GridAggregation {
+        aggregation: Some(AggregationOperation {
             kind: agg,
             modifier,
             param: None,
