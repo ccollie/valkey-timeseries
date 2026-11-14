@@ -6,7 +6,7 @@ use crate::labels::{Labels, SeriesFingerprint};
 use crate::promql::EvalLabels;
 use crate::promql::engine::QueryReader;
 use crate::promql::engine::label_profile::{
-    LabelProfile, LabelProfileBuilder, ProfileStep, ProfileWalk, ProfileWindow, profiled_series_cap,
+    LabelProfile, LabelProfileBuilder, ProfileCollector, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_reader::{AggregationOutcome, AggregationRequest};
 use crate::promql::model::InstantSample;
@@ -226,20 +226,17 @@ impl QueryReader for MemorySeriesQuerier {
             .postings
             .postings_for_selectors(&[selector])
             .map_err(|e| QueryError::Execution(e.to_string()))?;
-        let mut walk = ProfileWalk::new(window, profiled_series_cap(&options));
-        let mut builder = LabelProfileBuilder::new();
+        let mut walk = ProfileCollector::new(window, profiled_series_cap(&options));
         for id in ids.iter() {
             let Some(series) = inner.series.get(&id) else {
                 continue;
             };
-            match walk.step(series) {
-                ProfileStep::Skip => {}
-                ProfileStep::Stop => return Ok(None),
-                ProfileStep::Take => {
-                    builder.add_series(series.labels.iter().map(|l| (l.name, l.value)))
-                }
+            if walk.visit(series).is_break() {
+                return Ok(None);
             }
         }
+        let mut builder = LabelProfileBuilder::new();
+        builder.add_taken(walk.take());
         Ok(Some(builder.finish()))
     }
 }
