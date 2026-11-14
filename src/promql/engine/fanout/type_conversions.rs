@@ -1,7 +1,6 @@
 use crate::commands::fanout_codec::chunks::{deserialize_chunk, serialize_chunk};
 use crate::commands::fanout_codec::generated::SymbolTable;
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::fanout::{FanoutError, NodeInfo};
 use crate::labels::HasFingerprint;
 use crate::labels::filters::{
@@ -12,6 +11,7 @@ use crate::labels::try_regex_predicate;
 use crate::promql::QueryError;
 use crate::promql::RangeSample;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
+use crate::promql::engine::querier::normalize_selector;
 use crate::promql::engine::query_reader::{AggregationOperation, AggregationParam};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::exec::partial_aggregation::AggregationPartial;
@@ -249,25 +249,12 @@ fn regex_predicate(value: &str, parsed: &Regex) -> PredicateMatch {
     })
 }
 
+/// Through [`normalize_selector`], the conversion the query path reads with,
+/// so a reader built on this one (the in-memory querier the conformance suite
+/// runs on) selects exactly what the query path would.
 impl From<&VectorSelector> for SeriesSelector {
     fn from(vs: &VectorSelector) -> Self {
-        // Convert from borrowed VectorSelector by reusing the existing From<&Matchers>
-        // implementation to build the base selector, then prepend the __name__ filter
-        let mut selector = SeriesSelector::from(&vs.matchers);
-        if let Some(ref name) = vs.name {
-            let name_filter = LabelFilter::equals(METRIC_NAME_LABEL.to_string(), name);
-            match &mut selector {
-                SeriesSelector::And(filters) => {
-                    filters.insert(0, name_filter);
-                }
-                SeriesSelector::Or(or_list) => {
-                    for filters in or_list.iter_mut() {
-                        filters.insert(0, name_filter.clone());
-                    }
-                }
-            }
-        }
-        selector
+        SeriesSelector::from(&normalize_selector(vs))
     }
 }
 
@@ -627,6 +614,7 @@ impl From<ProtoAggregationPartialState> for AggregationPartial {
 mod tests {
     use super::*;
     use crate::common::Sample;
+    use crate::common::constants::METRIC_NAME_LABEL;
     use crate::labels::filters::MatchOp;
     use crate::promql::generated::Label as ProtoLabel;
     use crate::series::chunks::ChunkOps;
