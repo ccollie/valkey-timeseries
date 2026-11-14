@@ -157,7 +157,6 @@ mod tests {
                 let (label_name_refs, label_value_refs) =
                     table.intern_eval(&EvalLabels::from_pairs(pairs));
                 ProtoInstantSample {
-                    labels: Vec::new(),
                     value,
                     timestamp,
                     label_name_refs,

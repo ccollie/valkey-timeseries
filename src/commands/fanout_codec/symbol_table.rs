@@ -7,8 +7,8 @@
 //!
 //! Three ways to produce the refs, one to consume them:
 //!
-//! - [`intern_labels`] rewrites owned `labels: Vec<Label>` in place (MRANGE and
-//!   the aggregated PromQL outputs, which are built as owned labels anyway).
+//! - [`intern_labels`] rewrites owned `labels: Vec<Label>` in place (MRANGE,
+//!   whose series are built as owned labels anyway).
 //! - [`SymbolTableBuilder`] interns straight from a series' [`MetricName`] (or
 //!   interned [`EvalLabels`]) by the identity of its interned `name=value`
 //!   entries: a hit is one integer lookup, and no owned strings are built for a
@@ -18,9 +18,11 @@
 //!   want owned `Label`s back (MRANGE); [`EvalLabelResolver`] goes straight to
 //!   evaluator labels for the PromQL paths.
 //!
-//! Both resolvers are safe to call on any response without the caller first
+//! Only MRANGE series still have an inline `labels` field ([`InlineLabels`]);
+//! the PromQL messages reserve its tag, so their refs are the only labels.
+//! [`resolve_labels`] is safe to call on any MRANGE response without first
 //! establishing that it was interned: an element whose ref arrays are empty
-//! keeps its inline `labels` rather than being emptied. They run on
+//! keeps its inline `labels` rather than being emptied. Both resolvers run on
 //! peer-controlled input, so a malformed index or ragged pair of arrays is an
 //! `Err`, never a panic (see the `rdb_load_len` rationale in
 //! `src/common/rdb.rs` for why fanout/RDB input is treated as untrusted
@@ -36,22 +38,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use valkey_module::{ValkeyError, ValkeyResult};
 
-/// A labelled wire element: owned `labels`, or two parallel ref arrays into
-/// the response's [`SymbolTable`].
+/// A labelled wire element: two parallel ref arrays into the response's
+/// [`SymbolTable`].
 pub trait SymbolTableRefs {
-    fn take_labels(&mut self) -> Vec<Label>;
     fn set_label_refs(&mut self, names: Vec<u32>, values: Vec<u32>);
     fn take_label_refs(&mut self) -> (Vec<u32>, Vec<u32>);
-    fn set_labels(&mut self, labels: Vec<Label>);
     /// How the element is named in a malformed-response error.
     fn describe(&self) -> String;
 }
 
-impl SymbolTableRefs for SeriesRangeResponse {
-    fn take_labels(&mut self) -> Vec<Label> {
-        std::mem::take(&mut self.labels)
-    }
+/// A wire element that can also carry its labels inline, as owned `Label`s.
+pub trait InlineLabels: SymbolTableRefs {
+    fn take_labels(&mut self) -> Vec<Label>;
+    fn set_labels(&mut self, labels: Vec<Label>);
+}
 
+impl SymbolTableRefs for SeriesRangeResponse {
     fn set_label_refs(&mut self, names: Vec<u32>, values: Vec<u32>) {
         self.label_name_refs = names;
         self.label_value_refs = values;
@@ -64,24 +66,26 @@ impl SymbolTableRefs for SeriesRangeResponse {
         )
     }
 
-    fn set_labels(&mut self, labels: Vec<Label>) {
-        self.labels = labels;
-    }
-
     fn describe(&self) -> String {
         format!("series '{}'", key_for_display(&self.key))
     }
 }
 
-/// The PromQL wire elements all carry `labels` plus the two ref arrays under
-/// the same field names; only how an error names them differs.
+impl InlineLabels for SeriesRangeResponse {
+    fn take_labels(&mut self) -> Vec<Label> {
+        std::mem::take(&mut self.labels)
+    }
+
+    fn set_labels(&mut self, labels: Vec<Label>) {
+        self.labels = labels;
+    }
+}
+
+/// The PromQL wire elements all carry the two ref arrays under the same field
+/// names; only how an error names them differs.
 macro_rules! promql_symbol_table_refs {
     ($($ty:ty => |$s:ident| $describe:expr;)+) => {$(
         impl SymbolTableRefs for $ty {
-            fn take_labels(&mut self) -> Vec<Label> {
-                std::mem::take(&mut self.labels)
-            }
-
             fn set_label_refs(&mut self, names: Vec<u32>, values: Vec<u32>) {
                 self.label_name_refs = names;
                 self.label_value_refs = values;
@@ -92,10 +96,6 @@ macro_rules! promql_symbol_table_refs {
                     std::mem::take(&mut self.label_name_refs),
                     std::mem::take(&mut self.label_value_refs),
                 )
-            }
-
-            fn set_labels(&mut self, labels: Vec<Label>) {
-                self.labels = labels;
             }
 
             fn describe(&self) -> String {
@@ -212,7 +212,7 @@ impl SymbolTableBuilder {
 /// An element with no labels gets empty ref arrays, which the resolvers read
 /// as "nothing to resolve" — so the round trip is still correct without
 /// needing a separate marker for the empty case.
-pub fn intern_labels<T: SymbolTableRefs>(series: &mut [T]) -> SymbolTable {
+pub fn intern_labels<T: InlineLabels>(series: &mut [T]) -> SymbolTable {
     let mut table = SymbolTable::default();
     let mut name_ids: HashMap<String, u32, ahash::RandomState> = HashMap::default();
     let mut value_ids: HashMap<String, u32, ahash::RandomState> = HashMap::default();
@@ -297,10 +297,7 @@ fn take_ref_pairs<T: SymbolTableRefs>(
 /// Total: safe to call on any response without first checking whether it was
 /// interned. An element whose ref arrays are both empty is left exactly as
 /// received, `labels` included, rather than being emptied.
-pub fn resolve_labels<T: SymbolTableRefs>(
-    series: &mut [T],
-    table: &SymbolTable,
-) -> ValkeyResult<()> {
+pub fn resolve_labels<T: InlineLabels>(series: &mut [T], table: &SymbolTable) -> ValkeyResult<()> {
     for s in series.iter_mut() {
         // Nothing to resolve. Returning early rather than assigning an empty
         // vec keeps this function from discarding `labels` when it is handed a
@@ -327,8 +324,7 @@ pub fn resolve_labels<T: SymbolTableRefs>(
 /// Each distinct `(name, value)` pair is interned once per response as a
 /// `name=value` [`InternedString`] (the form local series already carry) and every sample that
 /// references it takes a refcount bump, so a 500-series instant response costs
-/// ~500 interned strings instead of 4 000 `String` clones. An element that
-/// carries inline labels instead of refs is interned label by label.
+/// ~500 interned strings instead of 4 000 `String` clones.
 pub struct EvalLabelResolver<'a> {
     table: &'a SymbolTable,
     pairs: HashMap<u64, InternedString, ahash::RandomState>,
@@ -345,18 +341,13 @@ impl<'a> EvalLabelResolver<'a> {
         }
     }
 
-    /// The evaluator labels for one element, consuming its refs (or its
-    /// inline labels when it has none).
+    /// The evaluator labels for one element, consuming its refs. No refs is
+    /// a series with no labels.
     pub fn resolve<T: SymbolTableRefs>(&mut self, s: &mut T) -> ValkeyResult<EvalLabels> {
         let Some((names, values)) = take_ref_pairs(s)? else {
-            // Inline labels: interned all the same, so a consumer never sees
-            // a `Shared` set that every later label edit would materialize.
-            let labels = s
-                .take_labels()
-                .iter()
-                .map(|l| InternedString::new_pair(&l.name, &l.value))
-                .collect();
-            return Ok(EvalLabels::from_interned_shared(labels));
+            // Interned all the same, so a consumer never sees a `Shared` set
+            // that every later label edit would materialize.
+            return Ok(EvalLabels::from_interned_shared(Arc::from([])));
         };
         // Check every ref first so the fill below cannot fail: an infallible
         // `TrustedLen` iterator collects straight into the `Arc<[_]>`, one
@@ -492,29 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn instant_samples_roundtrip_through_symbol_table() {
-        let mut samples = vec![InstantSample {
-            labels: vec![Label {
-                name: "region".into(),
-                value: "us-east-1".into(),
-            }],
-            value: 1.0,
-            timestamp: 42,
-            label_name_refs: Vec::new(),
-            label_value_refs: Vec::new(),
-        }];
-
-        let table = intern_labels(&mut samples);
-        assert!(samples[0].labels.is_empty());
-        assert_eq!(table.names, vec!["region"]);
-        assert_eq!(table.values, vec!["us-east-1"]);
-
-        resolve_labels(&mut samples, &table).expect("resolve");
-        assert_eq!(samples[0].labels[0].name, "region");
-        assert_eq!(samples[0].labels[0].value, "us-east-1");
-    }
-
-    #[test]
     fn out_of_range_name_ref_rejected() {
         let mut batch = vec![SeriesRangeResponse {
             label_name_refs: vec![5],
@@ -553,40 +521,30 @@ mod tests {
         assert!(msg.contains("series 'a'"), "{msg}");
         assert!(msg.contains("value ref 7"), "{msg}");
     }
-    fn instant(id: u32, labels: Vec<(&str, &str)>) -> InstantSample {
+
+    /// An instant sample at `42 + id` with `refs` as its label refs.
+    fn instant(id: u32, (names, values): (Vec<u32>, Vec<u32>)) -> InstantSample {
         InstantSample {
-            labels: labels
-                .into_iter()
-                .map(|(name, value)| Label {
-                    name: name.into(),
-                    value: value.into(),
-                })
-                .collect(),
             value: 1.0,
             timestamp: 42 + i64::from(id),
-            label_name_refs: Vec::new(),
-            label_value_refs: Vec::new(),
+            label_name_refs: names,
+            label_value_refs: values,
         }
     }
 
     #[test]
-    fn eval_label_resolver_matches_owned_resolution() {
-        let mut samples = vec![
-            instant(
-                0,
-                vec![("__name__", "cpu"), ("host", "h1"), ("region", "us")],
-            ),
-            instant(
-                1,
-                vec![("__name__", "cpu"), ("host", "h2"), ("region", "us")],
-            ),
-            instant(2, vec![]),
+    fn eval_label_resolver_matches_the_labels_interned() {
+        let expected = [
+            EvalLabels::from_pairs(&[("__name__", "cpu"), ("host", "h1"), ("region", "us")]),
+            EvalLabels::from_pairs(&[("__name__", "cpu"), ("host", "h2"), ("region", "us")]),
+            EvalLabels::from_pairs(&[]),
         ];
-        let expected: Vec<EvalLabels> = samples
-            .iter()
-            .map(|s| EvalLabels::shared(s.labels.iter().cloned().map(crate::Label::from).collect()))
+        let mut builder = SymbolTableBuilder::default();
+        let samples: Vec<InstantSample> = (0..)
+            .zip(&expected)
+            .map(|(id, labels)| instant(id, builder.intern_eval(labels)))
             .collect();
-        let table = intern_labels(&mut samples);
+        let table = builder.finish();
 
         let mut resolver = EvalLabelResolver::new(&table);
         let resolved: Vec<EvalSample> = samples
@@ -602,16 +560,7 @@ mod tests {
         // Every distinct pair was interned exactly once and is shared by index.
         assert_eq!(resolver.pairs.len(), 4, "{:?}", resolver.pairs.keys());
         assert!(matches!(resolved[0].labels, EvalLabels::Interned(_)));
-    }
-
-    #[test]
-    fn eval_label_resolver_accepts_inline_labels() {
-        // A peer that did not intern ships `labels` and no refs.
-        let sample = instant(0, vec![("region", "us")]);
-        let table = SymbolTable::default();
-        let mut resolver = EvalLabelResolver::new(&table);
-        let got = resolver.resolve_sample(sample).expect("resolve");
-        assert_eq!(got.labels, EvalLabels::from_pairs(&[("region", "us")]));
+        assert!(resolved[2].labels.is_empty());
     }
 
     #[test]
@@ -625,11 +574,7 @@ mod tests {
             (vec![0], vec![9], "value ref 9"),
             (vec![0, 0], vec![0], "2 label name refs but 1 value refs"),
         ] {
-            let sample = InstantSample {
-                label_name_refs: names,
-                label_value_refs: values,
-                ..instant(0, vec![])
-            };
+            let sample = instant(0, (names, values));
             let err = EvalLabelResolver::new(&table)
                 .resolve_sample(sample)
                 .expect_err("malformed refs must be rejected");
@@ -701,11 +646,7 @@ mod tests {
 
         // Resolving through the table gives the same labels the owned path
         // would have shipped.
-        let mut sample = InstantSample {
-            label_name_refs: rb.0,
-            label_value_refs: rb.1,
-            ..instant(1, vec![])
-        };
+        let mut sample = instant(1, rb);
         let got = EvalLabelResolver::new(&table)
             .resolve(&mut sample)
             .expect("resolve");

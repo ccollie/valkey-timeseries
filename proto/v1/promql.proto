@@ -33,15 +33,16 @@ import "v1/filters.proto";
 ///
 /// Returned by instant (point-in-time) PromQL queries.
 message InstantSample {
-  /// The labels identifying this series.
-  repeated Label labels = 1;
+  /// Once inline labels; every label now travels as a ref.
+  reserved 1;
+  reserved "labels";
   /// The value of the sample.
   double value = 2;
   /// Timestamp in milliseconds since Unix epoch.
   int64 timestamp = 3;
-  /// Interned label references into `InstantQueryResponse.labels`: parallel
-  /// packed arrays, one entry per label (see `SymbolTable`). Empty means the
-  /// labels travel inline in `labels`.
+  /// The labels identifying this series, as references into
+  /// `InstantQueryResponse.labels`: parallel packed arrays, one entry per
+  /// label (see `SymbolTable`). Empty means the series has no labels.
   repeated uint32 label_name_refs = 4;
   repeated uint32 label_value_refs = 5;
 }
@@ -62,16 +63,17 @@ message InstantQueryResponse {
 ///
 /// Returned by range PromQL queries.
 message RangeSample {
-  /// The labels identifying this series.
-  repeated Label labels = 1;
+  /// Once inline labels; every label now travels as a ref.
+  reserved 1;
+  reserved "labels";
   /// The samples, as the chunk codec `TS.MRANGE` fans out with: Chimp from
   /// `WIRE_COMPRESSION_MIN_SAMPLES` up, uncompressed below it. Around 5-6
   /// bytes per sample on typical telemetry.
   SampleData data = 2;
-  /// Interned label references into the enclosing response's symbol table
-  /// (`RangeQueryResponse.labels` / `GridQueryResponse.labels`): parallel
-  /// packed arrays, one entry per label (see `SymbolTable`). Empty means the
-  /// labels travel inline in `labels`.
+  /// The labels identifying this series, as references into the enclosing
+  /// response's symbol table (`RangeQueryResponse.labels` /
+  /// `GridQueryResponse.labels`): parallel packed arrays, one entry per label
+  /// (see `SymbolTable`). Empty means the series has no labels.
   repeated uint32 label_name_refs = 3;
   repeated uint32 label_value_refs = 4;
 }
@@ -155,7 +157,9 @@ message AggregationPartialState {
 /// One (group, shard) partial: the group's label set as computed by the
 /// request's grouping modifier, and the shard's accumulated state for it.
 message GroupPartial {
-  repeated Label labels = 1;
+  /// Once inline labels; every label now travels as a ref.
+  reserved 1;
+  reserved "labels";
   AggregationPartialState state = 2;
   /// Label references into the response's symbol table, as on `RangeSample`.
   repeated uint32 label_name_refs = 3;
@@ -303,7 +307,9 @@ message GridQuery {
 /// never present with a NaN value. That distinction is the result, so it has
 /// to survive the wire: NaN is a legitimate rolled-up value.
 message GridSeries {
-  repeated Label labels = 1;
+  /// Once inline labels; every label now travels as a ref.
+  reserved 1;
+  reserved "labels";
   bytes presence = 2;
   repeated double values = 3;
   /// For a stepped selection asked for `sample_timestamps`: how far before its

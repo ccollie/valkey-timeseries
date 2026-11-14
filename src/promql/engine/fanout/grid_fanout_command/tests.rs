@@ -139,20 +139,21 @@ fn node(port: u16) -> NodeInfo {
 /// conjured a group of its own for the step.
 #[test]
 fn test_partial_without_samples_is_rejected() {
-    use crate::promql::generated::{AggregationPartialState, Label as ProtoLabel};
+    use crate::promql::generated::{AggregationPartialState, SymbolTable};
     let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
     let step_ts = request.window_ends()[0];
     let response = |state: Option<AggregationPartialState>| GridQueryResponse {
         series: Vec::new(),
         partials: vec![GroupPartial {
-            labels: vec![ProtoLabel {
-                name: "job".to_string(),
-                value: "z".to_string(),
-            }],
+            label_name_refs: vec![0],
+            label_value_refs: vec![0],
             step_ts,
             state,
-            ..Default::default()
         }],
+        labels: Some(SymbolTable {
+            names: vec!["job".to_string()],
+            values: vec!["z".to_string()],
+        }),
         ..Default::default()
     };
     for (what, state) in [
