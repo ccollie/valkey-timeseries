@@ -458,12 +458,8 @@ pub(in crate::promql) fn decode_peer_partial(
     target: &NodeInfo,
     query: impl std::fmt::Display,
 ) -> Result<AggregationPartial, FanoutError> {
-    decode_partial_state(state).map_err(|what| {
-        FanoutError::custom(format!(
-            "TSDB: peer {} sent {what} for {query}",
-            target.socket_address
-        ))
-    })
+    decode_partial_state(state)
+        .map_err(|what| super::peer_fault(target, format_args!("sent {what} for {query}")))
 }
 
 /// A peer answered a push-down in the wrong form: `count` items of `payload`
@@ -478,10 +474,10 @@ pub(in crate::promql) fn wrong_payload(
     query: impl std::fmt::Display,
     expected: &str,
 ) -> FanoutError {
-    FanoutError::custom(format!(
-        "TSDB: peer {} returned {count} {payload} for {query}, which ships {expected}",
-        target.socket_address
-    ))
+    super::peer_fault(
+        target,
+        format_args!("returned {count} {payload} for {query}, which ships {expected}"),
+    )
 }
 
 /// Decode an aggregation operator a peer asks this node to push down, and how
