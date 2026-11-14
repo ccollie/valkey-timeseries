@@ -10,7 +10,7 @@ use crate::promql::error::QueryError;
 use crate::promql::exec::planner::{PlannedQuery, PreloadGrid};
 use crate::promql::exec::preloader::Preloader;
 use crate::promql::exec::types::{EvalLabels, SeriesMap};
-use crate::promql::exec::utils::merge_step_into_series_map;
+use crate::promql::exec::utils::{merge_step_into_series_map, step_threads};
 use crate::promql::model::{InstantSample, QueryValue, RangeSample};
 use crate::promql::optimizer::{optimize_expr, simplify_expr};
 use crate::promql::time::duration_ms;
@@ -226,8 +226,10 @@ pub fn evaluate_range(
             break;
         }
 
+        let threads = step_threads(chunk.len());
         let chunk_results: Vec<(Timestamp, ExprResult)> = chunk
             .into_par_rayon()
+            .num_threads(threads)
             .map(eval_step)
             .into_fallible()
             .collect()?;

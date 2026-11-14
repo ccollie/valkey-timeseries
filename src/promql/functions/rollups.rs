@@ -20,7 +20,7 @@
 //! window with [`rollup_window_value`]. Both apply the same window rule, which is
 //! the point: `test_basic_and_vectorized_windows_agree` pins the two.
 
-use crate::common::threads::IntoParRayon;
+use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::promql::deadline::SERIES_WORK;
 use crate::promql::functions::types::RollupWindow;
@@ -46,8 +46,11 @@ where
     F: Fn(&EvalSamples) -> Option<f64> + Sync,
 {
     let deadline = ctx.deadline;
+    let work = series.iter().map(|s| s.values.len()).sum();
+    let threads = request_par_threads(series.len(), work);
     series
         .into_par_rayon()
+        .num_threads(threads)
         .map(|series| -> EvalResult<Option<EvalSample>> {
             deadline.checkpoint(series.values.len() + SERIES_WORK)?;
             if series.values.is_empty() {

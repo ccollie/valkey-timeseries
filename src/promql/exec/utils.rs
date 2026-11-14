@@ -89,3 +89,17 @@ pub(in crate::promql) fn strip_parens(expr: &Expr) -> &Expr {
     }
     current
 }
+
+/// Fewer evaluation steps than this — a range query's or a subquery's — are
+/// evaluated on the calling thread: handing them to the pool costs more than
+/// it saves.
+pub(in crate::promql) const PARALLEL_STEP_THRESHOLD: usize = 4;
+
+/// Threads for evaluating `steps` steps at once: see [`PARALLEL_STEP_THRESHOLD`].
+pub(in crate::promql) fn step_threads(steps: usize) -> usize {
+    if steps < PARALLEL_STEP_THRESHOLD {
+        1
+    } else {
+        0
+    }
+}
