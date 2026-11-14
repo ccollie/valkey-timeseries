@@ -1191,8 +1191,10 @@ impl LocalRead {
             }
         };
 
-        if options.deadline.is_some_and(|d| current_time_millis() > d) {
-            deliver_task_result(&responder, Err(QueryError::Timeout));
+        // Checked as before every hold: a read whose deadline passed, whose client went,
+        // or that would add to memory past the limit is not planned at all.
+        if let Err(err) = Deadline::from_options(&options).check() {
+            deliver_task_result(&responder, Err(err));
             return None;
         }
         let selector = SeriesSelector::from(&*matchers);
