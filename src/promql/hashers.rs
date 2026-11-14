@@ -140,6 +140,15 @@ pub(in crate::promql) type FingerprintHashSet =
 #[derive(Default)]
 pub struct FingerprintHasher(u64);
 
+/// A 128-bit fingerprint folded to the 64 bits a map hashes by: the halves
+/// XORed, the upper one rotated so equal halves do not cancel.
+#[inline]
+pub(in crate::promql) fn fold_fingerprint(fingerprint: u128) -> u64 {
+    let lower = fingerprint as u64;
+    let upper = (fingerprint >> 64) as u64;
+    lower ^ upper.rotate_left(32)
+}
+
 impl Hasher for FingerprintHasher {
     fn finish(&self) -> u64 {
         self.0
@@ -160,9 +169,7 @@ impl Hasher for FingerprintHasher {
     }
 
     fn write_u128(&mut self, value: u128) {
-        let lower = value as u64;
-        let upper = (value >> 64) as u64;
-        self.0 = lower ^ upper.rotate_left(32);
+        self.0 = fold_fingerprint(value);
     }
 
     fn write_usize(&mut self, value: usize) {
