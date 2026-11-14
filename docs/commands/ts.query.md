@@ -162,6 +162,15 @@ At most `ts-promql-max-concurrent-queries` (default 8) queries run at once; up t
 query that would load more than `ts-promql-max-samples-per-query` samples (default 50,000,000). See
 [Configuration and safeguards](../topics/promql.md#configuration-and-safeguards).
 
+### Series identity
+
+PromQL identifies a series by its label set, so no two keys a query reads may carry the same labels.
+A query that reads two such keys fails (see [Errors](#errors)). There is one exception in a cluster:
+when an aggregation is pushed down to the shards (as in `sum by (job) (rate(x[5m]))`), two such keys on
+different shards are aggregated as two series and not refused, because the coordinator receives
+only each shard's per-group partials. Give every key a distinct label set. See
+[Series identity](../topics/promql.md#series-identity).
+
 ### Errors
 
 | Condition | Error |
