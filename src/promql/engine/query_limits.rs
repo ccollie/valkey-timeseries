@@ -2,7 +2,7 @@ use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::promql::engine::sample_budget::{SampleBudget, too_many_samples};
 use crate::promql::{QueryError, QueryResult};
-use crate::series::RangeSnapshot;
+use crate::series::{RangeSnapshot, TimeSeries};
 
 pub(crate) const MAX_SERIES_ERROR_MSG: &str = error_consts::PROMQL_MAX_SERIES_ERROR;
 pub(crate) const MAX_POINTS_PER_SERIES_ERROR_MSG: &str =
@@ -86,6 +86,53 @@ pub(in crate::promql) fn decode_within_budget(
     }
     // At least one sample past the limit, so never the contradictory `limit > limit`.
     Err(too_many_samples(loaded.max(limit + 1), limit))
+}
+
+/// Under the lock: copy the chunks `[start, end]` touches in each of
+/// `series`, skipping a series with none, as `(label(series), snapshot)`.
+///
+/// Refused once the samples copied so far — at least
+/// [`RangeSnapshot::min_samples`] each — would take `budget` past its limit,
+/// before the rest of the batch is copied.
+pub(in crate::promql) fn copy_snapshots<'s, T>(
+    series: impl IntoIterator<Item = &'s TimeSeries>,
+    start: Timestamp,
+    end: Timestamp,
+    budget: &SampleBudget,
+    label: impl Fn(&TimeSeries) -> T,
+) -> QueryResult<Vec<(T, RangeSnapshot)>> {
+    let series = series.into_iter();
+    let mut copied = Vec::with_capacity(series.size_hint().0);
+    let mut pending = 0usize;
+    for s in series {
+        let snapshot = s.snapshot_range(start, end);
+        if snapshot.is_empty() {
+            continue;
+        }
+        pending = pending.saturating_add(snapshot.min_samples());
+        budget.check_ahead(pending)?;
+        copied.push((label(s), snapshot));
+    }
+    Ok(copied)
+}
+
+/// Off the lock: decode one series' `snapshot` and charge its samples to
+/// `budget` — refused without decoding once the budget is spent
+/// ([`decode_within_budget`]), and streamed against `max_points` per series
+/// ([`get_snapshot_range`]). `None` when the budget declines it or nothing
+/// lies inside the span: a snapshot with chunks can still hold nothing there,
+/// since the chunks only overlap it.
+pub(in crate::promql) fn decode_snapshot(
+    budget: &SampleBudget,
+    snapshot: &RangeSnapshot,
+    max_points: Option<usize>,
+) -> QueryResult<Option<Vec<Sample>>> {
+    if !decode_within_budget(budget, snapshot)? {
+        return Ok(None);
+    }
+    let samples = get_snapshot_range(snapshot, max_points)?;
+    budget.charge(samples.len())?;
+    Ok((!samples.is_empty()).then_some(samples))
 }
 
 pub(in crate::promql) fn validate_max_points(

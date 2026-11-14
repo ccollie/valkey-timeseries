@@ -24,8 +24,8 @@ use crate::promql::engine::sample_budget::{SampleBudget, validate_max_samples};
 use crate::promql::engine::{
     AggregationFanoutCommand, GridFanoutCommand, InstantVectorParams,
     InstantVectorSelectorFanoutCommand, LabelProfileFanoutCommand,
-    RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, decode_range_series,
-    decode_within_budget, exceeds_max_series, get_snapshot_range, instant_lookback_start_ms,
+    RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, copy_snapshots,
+    decode_range_series, decode_snapshot, exceeds_max_series, instant_lookback_start_ms,
     validate_max_points, validate_max_series,
 };
 use crate::promql::{InstantSample, QueryError, QueryOptions, QueryResult, RangeSample};
@@ -1099,14 +1099,12 @@ enum ReadState {
     Instant {
         start: Timestamp,
         end: Timestamp,
-        aggregation: bool,
         samples: Vec<InstantSample<EvalLabels>>,
     },
     /// The samples in `[start, end]` of every series that has any.
     Range {
         start: Timestamp,
         end: Timestamp,
-        grid: bool,
         budget: SampleBudget,
         ranges: Vec<RangeSample<EvalLabels>>,
     },
@@ -1161,49 +1159,27 @@ impl LocalRead {
                     // PromQL's lookback window is (timestamp - lookback, timestamp].
                     start: instant_lookback_start_ms(iqc.timestamp, lookback_ms),
                     end: iqc.timestamp,
-                    aggregation: false,
                     samples: Vec::new(),
                 };
                 (iqc.matchers, iqc.options, state)
             }
-            SelectorTaskKind::Aggregation(ac) => {
-                // Single node: there is no shard to push the operator to, so the
-                // raw vector goes back and the caller aggregates it off the lock.
-                let lookback_ms = ac.options.lookback_delta.as_millis() as Timestamp;
-                let state = ReadState::Instant {
-                    start: instant_lookback_start_ms(ac.timestamp, lookback_ms),
-                    end: ac.timestamp,
-                    aggregation: true,
-                    samples: Vec::new(),
-                };
-                (ac.matchers, ac.options, state)
+            // Push-down needs shards: a single node's querier answers both
+            // itself, with an ordinary read (`ValkeySeriesQuerier`).
+            SelectorTaskKind::Aggregation(_) | SelectorTaskKind::Grid(_) => {
+                let err = QueryError::Execution(
+                    "a push-down task reached a single node's local read".to_string(),
+                );
+                deliver_task_result(&responder, Err(err));
+                return None;
             }
             SelectorTaskKind::Range(rc) => {
                 let state = ReadState::Range {
                     start: rc.start_timestamp,
                     end: rc.end_timestamp,
-                    grid: false,
                     budget: SampleBudget::new(rc.options.max_samples),
                     ranges: Vec::new(),
                 };
                 (rc.matchers, rc.options, state)
-            }
-            SelectorTaskKind::Grid(gc) => {
-                // Single node: same reasoning as the aggregation task — read the
-                // spans and let the caller evaluate them off the lock.
-                let Some((start, end)) = gc.request.fetch_bounds() else {
-                    let empty = SelectorOutput::Grid(GridOutcome::Raw(Vec::new()));
-                    deliver_task_result(&responder, Ok(empty));
-                    return None;
-                };
-                let state = ReadState::Range {
-                    start,
-                    end,
-                    grid: true,
-                    budget: SampleBudget::new(gc.options.max_samples),
-                    ranges: Vec::new(),
-                };
-                (gc.matchers, gc.options, state)
             }
             SelectorTaskKind::Profile(pc) => {
                 let state = ReadState::Profile {
@@ -1315,21 +1291,14 @@ impl LocalRead {
                         s.range_copy_bytes(start, end)
                     });
                     cursor.next_batch_within(ctx, &limit, &mut |_, batch| {
-                        let mut copied = Vec::with_capacity(batch.len());
-                        let mut pending = 0usize;
-                        for (s, _) in batch.iter() {
-                            let snapshot = s.snapshot_range(start, end);
-                            if snapshot.is_empty() {
-                                continue;
-                            }
-                            pending = pending.saturating_add(snapshot.min_samples());
-                            if let Err(err) = budget.check_ahead(pending) {
-                                over_budget = Some(err);
-                                break;
-                            }
-                            copied.push((EvalLabels::interned(&s.labels), snapshot));
-                        }
-                        Ok(copied)
+                        let series = batch.iter().map(|(s, _)| &**s);
+                        Ok(copy_snapshots(series, start, end, budget, |s| {
+                            EvalLabels::interned(&s.labels)
+                        })
+                        .unwrap_or_else(|err| {
+                            over_budget = Some(err);
+                            Vec::new()
+                        }))
                     })?
                 }
                 ReadState::Profile {
@@ -1404,11 +1373,7 @@ impl LocalRead {
     /// Every series is read: apply the series-count limit and answer.
     fn finish(self) {
         let result = match self.state {
-            ReadState::Instant {
-                samples,
-                aggregation,
-                ..
-            } => {
+            ReadState::Instant { samples, .. } => {
                 // Bound what the query returns, not what the selector matched: a
                 // series whose latest sample predates the lookback window
                 // contributes nothing, so it must not count against the limit.
@@ -1417,28 +1382,16 @@ impl LocalRead {
                 validate_max_series(samples.len(), self.options.max_series)
                     .map_err(warned)
                     .and_then(|()| unique_series(samples.iter().map(|s| &s.labels)))
-                    .map(|()| {
-                        if aggregation {
-                            SelectorOutput::Aggregation(AggregationOutcome::Raw(samples))
-                        } else {
-                            SelectorOutput::Vector(samples)
-                        }
-                    })
+                    .map(|()| SelectorOutput::Vector(samples))
             }
-            ReadState::Range { ranges, grid, .. } => {
+            ReadState::Range { ranges, .. } => {
                 // The series the query returns, as above. This is also the path
                 // a single-node grid query takes, so it must agree with the
                 // pushed-down one about which queries `max_series` rejects.
                 validate_max_series(ranges.len(), self.options.max_series)
                     .map_err(warned)
                     .and_then(|()| unique_series(ranges.iter().map(|s| &s.labels)))
-                    .map(|()| {
-                        if grid {
-                            SelectorOutput::Grid(GridOutcome::Raw(ranges))
-                        } else {
-                            SelectorOutput::Matrix(ranges)
-                        }
-                    })
+                    .map(|()| SelectorOutput::Matrix(ranges))
             }
             ReadState::Profile {
                 builder, overflow, ..
@@ -1467,27 +1420,17 @@ fn decode_snapshot_batch(
     let max_points = options.max_points_per_series;
     series
         .into_par_on(&MATERIALIZE_POOL)
-        .filter_map(|(labels, snapshot)| {
-            match decode_within_budget(budget, &snapshot) {
-                Ok(true) => {}
-                Ok(false) => return None,
-                Err(err) => return Some(Err(err)),
-            }
-            let samples = match get_snapshot_range(&snapshot, max_points) {
-                Ok(samples) => samples,
-                Err(err) => {
-                    return Some(Err(warned(err)));
-                }
-            };
-            if let Err(err) = budget.charge(samples.len()) {
-                return Some(Err(err));
-            }
-            if samples.is_empty() {
-                return None;
-            }
-            Some(Ok(RangeSample { samples, labels }))
-        })
+        .map(
+            |(labels, snapshot)| match decode_snapshot(budget, &snapshot, max_points) {
+                Ok(samples) => Ok(samples.map(|samples| RangeSample { samples, labels })),
+                // The per-series point limit, logged as the other limits here are;
+                // the budget's own errors are not.
+                Err(err @ QueryError::Execution(_)) => Err(warned(err)),
+                Err(err) => Err(err),
+            },
+        )
         .into_fallible()
+        .filter_map(|series| series)
         .collect::<Vec<_>>()
 }
 

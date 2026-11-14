@@ -128,6 +128,13 @@ impl QueryReader for ValkeySeriesQuerier {
         if aggregation.kind.pushdown_strategy().is_none() {
             return Ok(AggregationOutcome::Unsupported);
         }
+        // A single node has no shard to push the operator to: the raw vector
+        // goes back, and the caller aggregates it.
+        if !self.clustered {
+            return Ok(AggregationOutcome::Raw(
+                self.query(selector, timestamp, options)?,
+            ));
+        }
         let matchers = self.normalized.get(selector);
         SERIES_SELECTOR.query_aggregation(
             matchers,
@@ -148,10 +155,10 @@ impl QueryReader for ValkeySeriesQuerier {
         // The toggle governs shipping the grid to *shards*: off, the raw span
         // comes back through the ordinary range fanout and the caller evaluates
         // it with the kernels a shard would have used — the same answer, at the
-        // transfer the push-down saves. On a single node the request is
-        // answered locally (`GridOutcome::Raw`) either way, which is also the
+        // transfer the push-down saves. A single node has no shard to ship it
+        // to, so it answers with the raw span either way, which is also the
         // path the in-memory querier gives the PromQL conformance suite.
-        if self.clustered && !crate::config::is_fanout_rollup_pushdown_enabled() {
+        if self.answers_grids_raw() {
             return raw_grid_read(self, selector, request, options);
         }
         let matchers = self.normalized.get(selector);
