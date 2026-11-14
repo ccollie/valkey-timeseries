@@ -1,5 +1,7 @@
 use crate::promql::binops::apply_binary_op;
-use crate::promql::functions::{DateTimePart, PromqlFunctionKind, datetime_from_seconds};
+use crate::promql::functions::{
+    DateTimePart, PromqlFunctionKind, datetime_from_seconds, unary_math_kernel,
+};
 use num_traits::FloatConst;
 use promql_parser::parser::token::TokenType;
 use promql_parser::parser::{
@@ -101,37 +103,19 @@ fn get_single_scalar_arg(fe: &Call) -> Option<f64> {
 fn simplify_math_fn(fe: &Call, func: PromqlFunctionKind) -> Option<f64> {
     use PromqlFunctionKind::*;
     let arg = get_single_scalar_arg(fe)?;
+    // The kernel the function itself evaluates with: `sgn(-0)` is 0, not -1,
+    // and `cosh(710)` overflows to +Inf as Go's does.
+    if let Some(kernel) = unary_math_kernel(func) {
+        return Some(kernel(arg));
+    }
     match func {
-        Abs => Some(arg.abs()),
-        Acos => Some(arg.acos()),
-        Acosh => Some(arg.acosh()),
-        Asin => Some(arg.asin()),
-        Asinh => Some(arg.asinh()),
-        Atan => Some(arg.atan()),
-        Atanh => Some(arg.atanh()),
-        Ceil => Some(arg.ceil()),
-        Cos => Some(arg.cos()),
-        Cosh => Some(arg.cosh()),
         DayOfMonth => extract_datetime_part(arg, DateTimePart::DayOfMonth),
         DayOfWeek => extract_datetime_part(arg, DateTimePart::DayOfWeek),
         DayOfYear => extract_datetime_part(arg, DateTimePart::DayOfYear),
         DaysInMonth => extract_datetime_part(arg, DateTimePart::DaysInMonth),
-        Deg => Some(arg.to_degrees()),
-        Exp => Some(arg.exp()),
-        Floor => Some(arg.floor()),
         Hour => extract_datetime_part(arg, DateTimePart::Hour),
-        Ln => Some(arg.ln()),
-        Log2 => Some(arg.log2()),
-        Log10 => Some(arg.log10()),
         Minute => extract_datetime_part(arg, DateTimePart::Minute),
         Month => extract_datetime_part(arg, DateTimePart::Month),
-        Rad => Some(arg.to_radians()),
-        Sgn => Some(arg.signum()),
-        Sin => Some(arg.sin()),
-        Sinh => Some(arg.sinh()),
-        Sqrt => Some(arg.sqrt()),
-        Tan => Some(arg.tan()),
-        Tanh => Some(arg.tanh()),
         Year => extract_datetime_part(arg, DateTimePart::Year),
         _ => None,
     }
@@ -385,6 +369,27 @@ mod tests {
 
         // tanh
         test_math_fn("tanh", 1.0, 1_f64.tanh());
+    }
+
+    /// A folded math function gives what evaluating it gives, bit for bit —
+    /// signed zeros and overflow included, where Rust's own `signum`/`cosh`
+    /// differ from PromQL's.
+    #[test]
+    fn folding_a_math_function_matches_evaluating_it() {
+        let folded = |q: &str| match fold_constants(parse(q).expect("parse failed")) {
+            Expr::NumberLiteral(n) => n.val,
+            other => panic!("{q} did not fold: {}", other.prettify()),
+        };
+        // (query, what the function returns unoptimized)
+        for (q, expected) in [
+            ("scalar(sgn(vector(0)))", 0.0_f64),
+            ("scalar(sgn(vector(-0)))", 0.0),
+            ("scalar(sgn(vector(-3)))", -1.0),
+            ("scalar(cosh(vector(710)))", f64::INFINITY),
+            ("scalar(sinh(vector(-710)))", f64::NEG_INFINITY),
+        ] {
+            assert_eq!(folded(q).to_bits(), expected.to_bits(), "{q}");
+        }
     }
 
     fn test_date_part_fn(name: &str, epoch_secs: f64, part: DateTimePart) {

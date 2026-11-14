@@ -23,6 +23,7 @@ pub(crate) mod utils;
 
 pub(in crate::promql) use date_functions::{DateTimePart, datetime_from_seconds};
 pub(crate) use function_list::*;
+pub(in crate::promql) use math_functions::unary_math_kernel;
 pub use rollup_functions::RollupKind;
 pub(in crate::promql) use rollups::window_range;
 pub(in crate::promql) use state::parse_unit;

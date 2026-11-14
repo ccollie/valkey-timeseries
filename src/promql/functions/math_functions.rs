@@ -1,5 +1,6 @@
 use super::go_compat::{cosh, sinh};
 use crate::promql::common::math::{max_ignore_nan, max_with_nan, min_ignore_nan, min_with_nan};
+use crate::promql::functions::PromqlFunctionKind;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
     exact_arity_error, map_scalar_or_vector, three_args, two_args,
@@ -36,29 +37,49 @@ macro_rules! make_unary_function {
     };
 }
 
-make_unary_function!(AbsFunction, f64::abs);
-make_unary_function!(AcosFunction, f64::acos);
-make_unary_function!(AcoshFunction, f64::acosh);
-make_unary_function!(AsinFunction, f64::asin);
-make_unary_function!(AsinhFunction, f64::asinh);
-make_unary_function!(AtanFunction, f64::atan);
-make_unary_function!(AtanhFunction, f64::atanh);
-make_unary_function!(CeilFunction, f64::ceil);
-make_unary_function!(CosFunction, f64::cos);
-make_unary_function!(CoshFunction, cosh);
-make_unary_function!(DegFunction, f64::to_degrees);
-make_unary_function!(ExpFunction, f64::exp);
-make_unary_function!(FloorFunction, f64::floor);
-make_unary_function!(LnFunction, f64::ln);
-make_unary_function!(Log10Function, f64::log10);
-make_unary_function!(Log2Function, f64::log2);
-make_unary_function!(RadFunction, f64::to_radians);
-make_unary_function!(SgnFunction, promql_sgn);
-make_unary_function!(SinFunction, f64::sin);
-make_unary_function!(SinhFunction, sinh);
-make_unary_function!(SqrtFunction, f64::sqrt);
-make_unary_function!(TanFunction, f64::tan);
-make_unary_function!(TanhFunction, f64::tanh);
+/// Every unary math function: its kind, the struct that evaluates it, and the
+/// kernel that struct applies — which [`unary_math_kernel`] hands to constant
+/// folding, so a folded constant and an evaluated one cannot differ.
+macro_rules! unary_math_functions {
+    ( $( $kind: ident => $name: ident, $rf: expr; )* ) => {
+        $( make_unary_function!($name, $rf); )*
+
+        /// The kernel the unary math function `kind` applies to each value,
+        /// or `None` when `kind` is not one.
+        pub(in crate::promql) fn unary_math_kernel(kind: PromqlFunctionKind) -> Option<fn(f64) -> f64> {
+            match kind {
+                $( PromqlFunctionKind::$kind => Some($rf), )*
+                _ => None,
+            }
+        }
+    };
+}
+
+unary_math_functions! {
+    Abs => AbsFunction, f64::abs;
+    Acos => AcosFunction, f64::acos;
+    Acosh => AcoshFunction, f64::acosh;
+    Asin => AsinFunction, f64::asin;
+    Asinh => AsinhFunction, f64::asinh;
+    Atan => AtanFunction, f64::atan;
+    Atanh => AtanhFunction, f64::atanh;
+    Ceil => CeilFunction, f64::ceil;
+    Cos => CosFunction, f64::cos;
+    Cosh => CoshFunction, cosh;
+    Deg => DegFunction, f64::to_degrees;
+    Exp => ExpFunction, f64::exp;
+    Floor => FloorFunction, f64::floor;
+    Ln => LnFunction, f64::ln;
+    Log10 => Log10Function, f64::log10;
+    Log2 => Log2Function, f64::log2;
+    Rad => RadFunction, f64::to_radians;
+    Sgn => SgnFunction, promql_sgn;
+    Sin => SinFunction, f64::sin;
+    Sinh => SinhFunction, sinh;
+    Sqrt => SqrtFunction, f64::sqrt;
+    Tan => TanFunction, f64::tan;
+    Tanh => TanhFunction, f64::tanh;
+}
 
 /// Pi function: returns PI encoded as a single-sample vector.
 #[derive(Copy, Clone)]
