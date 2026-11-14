@@ -1,9 +1,6 @@
 use crate::common::Timestamp;
-use crate::promql::{
-    EvalContext, EvalResult, EvalSample, EvalSamples, EvaluationError, ExprResult,
-};
+use crate::promql::{EvalContext, EvalResult, EvaluationError, ExprResult};
 use promql_parser::parser::Expr;
-use promql_parser::parser::value::ValueType;
 use std::ops::Deref;
 
 /// What a function sees at its call site: the evaluation context, plus the
@@ -42,86 +39,10 @@ impl<'a> Deref for FunctionCallContext<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum PromQLArg {
-    String(String),
-    InstantVector(Vec<EvalSample>),
-    Scalar(f64),
-    RangeVector(Vec<EvalSamples>),
-}
-
-impl PromQLArg {
-    pub fn into_instant_vector(self) -> EvalResult<Vec<EvalSample>> {
-        match self {
-            Self::InstantVector(s) => Ok(s),
-            _ => Err(EvaluationError::InternalError(
-                "expected instant vector".to_string(),
-            )),
-        }
-    }
-
-    pub fn into_scalar(self) -> EvalResult<f64> {
-        match self {
-            Self::Scalar(s) => Ok(s),
-            _ => Err(EvaluationError::InternalError(
-                "expected scalar".to_string(),
-            )),
-        }
-    }
-
-    pub fn into_range_vector(self) -> EvalResult<Vec<EvalSamples>> {
-        match self {
-            Self::RangeVector(samples) => Ok(samples),
-            _ => Err(EvaluationError::InternalError(
-                "expected range vector".to_string(),
-            )),
-        }
-    }
-
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            PromQLArg::String(_) => ValueType::String,
-            PromQLArg::Scalar(_) => ValueType::Scalar,
-            PromQLArg::InstantVector(_) => ValueType::Vector,
-            PromQLArg::RangeVector(_) => ValueType::Matrix,
-        }
-    }
-}
-
-impl From<ExprResult> for PromQLArg {
-    fn from(value: ExprResult) -> Self {
-        match value {
-            ExprResult::String(x) => Self::String(x),
-            ExprResult::Scalar(x) => Self::Scalar(x),
-            ExprResult::InstantVector(x) => Self::InstantVector(x),
-            ExprResult::RangeVector(x) => Self::RangeVector(x),
-        }
-    }
-}
-
-impl From<f64> for PromQLArg {
-    fn from(value: f64) -> Self {
-        Self::Scalar(value)
-    }
-}
-
-impl From<usize> for PromQLArg {
-    fn from(value: usize) -> Self {
-        Self::Scalar(value as f64)
-    }
-}
-
-impl From<String> for PromQLArg {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-impl From<&str> for PromQLArg {
-    fn from(value: &str) -> Self {
-        Self::String(value.to_string())
-    }
-}
+/// A function argument, once evaluated: the same four value types an
+/// expression evaluates to, so the evaluator passes its results through as
+/// they are.
+pub(crate) type PromQLArg = ExprResult;
 
 /// Trait for PromQL functions
 pub(crate) trait PromQLFunction {

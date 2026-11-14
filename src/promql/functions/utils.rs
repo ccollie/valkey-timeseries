@@ -98,7 +98,8 @@ pub(in crate::promql) fn is_valid_label_name(label: &str) -> bool {
 pub(super) fn expect_string(value: PromQLArg, func: &str, arg_name: &str) -> EvalResult<String> {
     let PromQLArg::String(s) = value else {
         return Err(EvaluationError::ArgumentError(format!(
-            "{func} expects a string for {arg_name} argument, got {value:?}"
+            "{func} expects a string for {arg_name} argument, got {:?}",
+            value.value_type()
         )));
     };
     Ok(s)
@@ -108,7 +109,8 @@ pub(super) fn expect_instant_vector(value: PromQLArg, func: &str) -> EvalResult<
     match value {
         PromQLArg::InstantVector(v) => Ok(v),
         other => Err(EvaluationError::ArgumentError(format!(
-            "{func} expects instant vector, got {other:?}"
+            "{func} expects instant vector, got {:?}",
+            other.value_type()
         ))),
     }
 }
@@ -117,7 +119,8 @@ pub(super) fn expect_range_vector(value: PromQLArg, func: &str) -> EvalResult<Ve
     match value {
         PromQLArg::RangeVector(v) => Ok(v),
         other => Err(EvaluationError::ArgumentError(format!(
-            "{func} expects range vector, got {other:?}"
+            "{func} expects range vector, got {:?}",
+            other.value_type()
         ))),
     }
 }
@@ -158,7 +161,8 @@ pub(super) fn map_scalar_or_vector(
             Ok(ExprResult::InstantVector(vector))
         }
         other => Err(EvaluationError::ArgumentError(format!(
-            "function expects scalar or instant vector, got {other:?}"
+            "function expects scalar or instant vector, got {:?}",
+            other.value_type()
         ))),
     }
 }

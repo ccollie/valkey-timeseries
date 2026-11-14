@@ -8,6 +8,7 @@ use crate::labels::{
 };
 use crate::promql::exec::bitset::BitSet;
 use crate::promql::hashers::{GridPreloadKey, MatrixPreloadKey, PreloadKey};
+use crate::promql::{EvalResult, EvaluationError};
 use ahash::RandomState;
 use enquote::enquote;
 use promql_parser::parser::LabelModifier;
@@ -1182,13 +1183,34 @@ pub(crate) enum ExprResult {
 }
 
 impl ExprResult {
-    #[cfg(test)]
-    /// Extract the instant vector samples, returning None if this is a scalar or range vector result
-    pub(crate) fn into_instant_vector(self) -> Option<Vec<EvalSample>> {
+    /// The instant vector this holds, or an internal error: for a value the
+    /// evaluator has already type-checked.
+    pub(crate) fn into_instant_vector(self) -> EvalResult<Vec<EvalSample>> {
         match self {
-            ExprResult::InstantVector(samples) => Some(samples),
-            _ => None,
+            ExprResult::InstantVector(samples) => Ok(samples),
+            other => Err(other.not_a("instant vector")),
         }
+    }
+
+    /// The scalar this holds, or an internal error: see [`Self::into_instant_vector`].
+    pub(crate) fn into_scalar(self) -> EvalResult<f64> {
+        match self {
+            ExprResult::Scalar(value) => Ok(value),
+            other => Err(other.not_a("scalar")),
+        }
+    }
+
+    /// The range vector this holds, or an internal error: see
+    /// [`Self::into_instant_vector`].
+    pub(crate) fn into_range_vector(self) -> EvalResult<Vec<EvalSamples>> {
+        match self {
+            ExprResult::RangeVector(series) => Ok(series),
+            other => Err(other.not_a("range vector")),
+        }
+    }
+
+    fn not_a(&self, expected: &str) -> EvaluationError {
+        EvaluationError::InternalError(format!("expected {expected}, got {:?}", self.value_type()))
     }
 
     #[cfg(test)]

@@ -592,7 +592,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 )));
             }
 
-            evaluated_args.push(arg_result.into());
+            evaluated_args.push(arg_result);
         }
 
         Ok(evaluated_args)

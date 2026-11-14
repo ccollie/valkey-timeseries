@@ -90,7 +90,8 @@ fn sort_by_label(args: Vec<PromQLArg>, desc: bool) -> EvalResult<ExprResult> {
     for arg in args_iter {
         let PromQLArg::String(label) = arg else {
             return Err(EvaluationError::ArgumentError(format!(
-                "expected label name as argument to {func_name}, got {arg:?}"
+                "expected label name as argument to {func_name}, got {:?}",
+                arg.value_type()
             )));
         };
         label_names.push(label);
