@@ -89,18 +89,13 @@ fn handle_number_number(ln: f64, rn: f64, op: TokenType, is_bool: bool) -> Expr 
 }
 
 fn get_single_scalar_arg(fe: &Call) -> Option<f64> {
-    if fe.args.len() == 1 {
-        match &*fe.args.args[0] {
-            Expr::NumberLiteral(n) => return Some(n.val),
-            Expr::Call(fe) if fe.func.name == "vector" && fe.args.len() == 1 => {
-                if let Expr::NumberLiteral(n) = &*fe.args.args[0] {
-                    return Some(n.val);
-                }
-            }
-            _ => {}
-        }
+    match fe.args.args.as_slice() {
+        [arg] => match &**arg {
+            Expr::NumberLiteral(n) => Some(n.val),
+            _ => None,
+        },
+        _ => None,
     }
-    None
 }
 
 fn simplify_math_fn(fe: &Call, func: PromqlFunctionKind) -> Option<f64> {
@@ -191,8 +186,8 @@ fn unwrap_vectors(expr: Expr) -> Expr {
 
 fn handle_function_expr(fe: Call) -> Expr {
     use PromqlFunctionKind::*;
-    // const-simplify function arguments first so we can simplify calls like
-    // `scalar(9 + vector(4))` -> `scalar(9 + 4)` -> `scalar(13)` -> `13`
+    // Fold the arguments first, whatever the call. Unwrapping `vector(...)`
+    // is `unwrap_vectors`' job, and happens only under `scalar(...)` below.
     let mut fe = fe;
     fe.args.args = fe
         .args
