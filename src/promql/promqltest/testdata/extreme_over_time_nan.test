@@ -1,0 +1,44 @@
+# NaN inside a min/max/range/ts_of_* window. A NaN is replaced by any later
+# real value and ignored after one; an all-NaN window stays NaN for the value
+# functions, and answers its last timestamp for ts_of_min/ts_of_max.
+
+load 1m
+	metric{s="nan_first"} NaN 3 1 2
+	metric{s="nan_mid"} 3 NaN 1 2
+	metric{s="all_nan"} NaN NaN NaN
+
+eval instant at 3m min_over_time(metric[5m])
+	{s="nan_first"} 1
+	{s="nan_mid"} 1
+	{s="all_nan"} NaN
+
+eval instant at 3m max_over_time(metric[5m])
+	{s="nan_first"} 3
+	{s="nan_mid"} 3
+	{s="all_nan"} NaN
+
+eval instant at 3m range_over_time(metric[5m])
+	{s="nan_first"} 2
+	{s="nan_mid"} 2
+	{s="all_nan"} NaN
+
+eval instant at 3m ts_of_min_over_time(metric[5m])
+	{s="nan_first"} 120
+	{s="nan_mid"} 120
+	{s="all_nan"} 120
+
+eval instant at 3m ts_of_max_over_time(metric[5m])
+	{s="nan_first"} 60
+	{s="nan_mid"} 0
+	{s="all_nan"} 120
+
+# Equal values: ts_of_* keeps the last of them.
+clear
+load 1m
+	metric 2 1 2 1
+
+eval instant at 3m ts_of_min_over_time(metric[5m])
+	{} 180
+
+eval instant at 3m ts_of_max_over_time(metric[5m])
+	{} 120
