@@ -4093,8 +4093,8 @@ mod tests {
             _options: QueryOptions,
         ) -> crate::promql::QueryResult<AggregationOutcome> {
             self.offered.lock().unwrap().push((
-                aggregation.kind,
-                aggregation.param.clone(),
+                aggregation.operation.kind,
+                aggregation.operation.param.clone(),
                 timestamp,
                 aggregation.eval_timestamp,
             ));

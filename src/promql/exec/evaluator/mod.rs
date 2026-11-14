@@ -9,7 +9,7 @@ use crate::common::time::system_time_to_millis;
 use crate::promql::binops::eval_binary_expr;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::{
-    AggregationOutcome, AggregationParam, AggregationRequest, GridAggregation, GridOutcome,
+    AggregationOperation, AggregationOutcome, AggregationParam, AggregationRequest, GridOutcome,
     GridRequest, GridRollup,
 };
 use crate::promql::engine::sample_budget::SampleBudget;

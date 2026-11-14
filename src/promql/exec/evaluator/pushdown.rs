@@ -144,9 +144,11 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         };
 
         let request = AggregationRequest {
-            kind,
-            modifier: aggregate.modifier.clone(),
-            param,
+            operation: AggregationOperation {
+                kind,
+                modifier: aggregate.modifier.clone(),
+                param,
+            },
             // The output carries the query's evaluation timestamp even when the
             // input is selected at a shifted one.
             eval_timestamp: ctx.evaluation_ts,
@@ -170,8 +172,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 // The source selected but did not aggregate; finish the job.
                 apply_aggregation(
                     kind,
-                    request.modifier.as_ref(),
-                    request.param.as_ref().map(AggregationParam::to_expr_result),
+                    request.operation.modifier.as_ref(),
+                    request
+                        .operation
+                        .param
+                        .as_ref()
+                        .map(AggregationParam::to_expr_result),
                     samples.into_iter().map(EvalSample::from).collect(),
                     ctx.evaluation_ts,
                     &ctx.deadline,
@@ -338,7 +344,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         &self,
         vs: &VectorSelector,
         rollup: GridRollup,
-        aggregation: Option<GridAggregation>,
+        aggregation: Option<AggregationOperation>,
         ctx: &EvalContext,
         drop_name: bool,
     ) -> EvalResult<Option<ExprResult>> {
@@ -440,7 +446,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 /// counts for `count_values`; `quantile` has none — and its parameter, where
 /// it takes one, must be a literal the request can carry. `topk(scalar(x), y)`
 /// is evaluated here.
-pub(super) fn fusable_aggregation(aggregate: &AggregateExpr) -> Option<GridAggregation> {
+pub(super) fn fusable_aggregation(aggregate: &AggregateExpr) -> Option<AggregationOperation> {
     let kind = AggregationKind::try_from(aggregate.op).ok()?;
     kind.pushdown_strategy()?;
     let param = match aggregate.param.as_deref() {
@@ -449,7 +455,7 @@ pub(super) fn fusable_aggregation(aggregate: &AggregateExpr) -> Option<GridAggre
         Some(Expr::StringLiteral(s)) => Some(AggregationParam::Label(s.val.clone())),
         Some(_) => return None,
     };
-    Some(GridAggregation {
+    Some(AggregationOperation {
         kind,
         modifier: aggregate.modifier.clone(),
         param,
@@ -466,7 +472,7 @@ pub(super) fn stepped_aggregation_key(aggregate: &AggregateExpr) -> Option<GridP
 /// [`fusable_aggregation`].
 pub(super) fn stepped_key(
     aggregate: &AggregateExpr,
-    aggregation: &GridAggregation,
+    aggregation: &AggregationOperation,
 ) -> Option<GridPreloadKey> {
     let Expr::VectorSelector(vs) = strip_parens(&aggregate.expr) else {
         return None;

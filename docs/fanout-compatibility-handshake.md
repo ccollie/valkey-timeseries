@@ -96,9 +96,12 @@ document](topics/fanout-compatibility-handshake.md).
 
 ### TS.QUERY — PromQL aggregation
 
-`AggregationQueryResponse`: one flag, `applied`. True and the response carries
-the reduced result; false and it carries the raw instant vector for the
-coordinator to aggregate. See `src/promql/engine/fanout/aggregation_fanout_command.rs`.
+No handshake, for the reason the grid query below has none: a shard refuses an
+operator it cannot push down as a malformed request, and the coordinator
+rejects a response whose shape contradicts the operator's strategy — samples for
+a reduction, partial states for a selection. The operator itself is the same
+`AggregationOperation` message a grid query fuses. See
+`src/promql/engine/fanout/aggregation_fanout_command.rs`.
 
 ### TS.QUERY / TS.QUERYRANGE — PromQL grid queries
 

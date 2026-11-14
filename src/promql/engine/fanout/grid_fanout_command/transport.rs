@@ -4,7 +4,7 @@
 
 use crate::labels::InternedLabel;
 use crate::promql::EvalLabels;
-use crate::promql::engine::query_reader::{GridAggregation, GridRequest};
+use crate::promql::engine::query_reader::{AggregationOperation, GridRequest};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy};
 use crate::promql::hashers::{FingerprintHashMap, FingerprintHashSet};
 use crate::promql::model::RangeSample;
@@ -210,7 +210,7 @@ pub(super) fn staged_groups<'a>(
 }
 
 /// The fused reduction a request answers in partials, if it does.
-fn reduction(request: &GridRequest) -> Option<&GridAggregation> {
+fn reduction(request: &GridRequest) -> Option<&AggregationOperation> {
     request
         .aggregation
         .as_ref()

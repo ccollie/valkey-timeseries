@@ -124,17 +124,11 @@ message AggregationQuery {
   /// Instant-vector parameters (selector, evaluation timestamp, lookback,
   /// limits) — identical in meaning to a plain `InstantQuery`.
   InstantQuery query = 1;
-  AggregationKind kind = 2;
-  optional AggregationGrouping grouping = 3;
-  /// Numeric operator parameter: K for topk/bottomk/limitk, the ratio for
-  /// limit_ratio. Absent for the parameterless operators.
-  optional double scalar_param = 4;
-  /// String operator parameter: the destination label for count_values.
-  optional string label_param = 5;
+  AggregationOperation operation = 2;
   /// Timestamp the aggregated output is stamped with — the query's evaluation
   /// timestamp. It differs from `query.timestamp` (which selects the input)
   /// when the selector carries an `@` or `offset` modifier.
-  int64 eval_timestamp = 6;
+  int64 eval_timestamp = 3;
 }
 
 /// Mergeable accumulator for one aggregation group. Field meaning depends on
@@ -229,16 +223,18 @@ message GridRollup {
   optional int64 unit_ms = 4;
 }
 
-/// An outer aggregation fused onto a grid query: the `sum by (job)` of
-/// `sum by (job) (rate(m[5m]))` or of `sum by (job) (m)`. The shard groups
-/// its per-series values as well as computing them, so what crosses the wire is
-/// one partial per group per step rather than one value per *series* per step.
+/// An aggregation operator a shard applies: that of an `AggregationQuery`, or
+/// an outer aggregation fused onto a grid query — the `sum by (job)` of
+/// `sum by (job) (rate(m[5m]))` or of `sum by (job) (m)`. Fused, the shard
+/// groups its per-series values as well as computing them, so what crosses the
+/// wire is one partial per group per step rather than one value per *series*
+/// per step.
 ///
 /// The reducing operators ship one partial per group per step. The selecting
 /// and counting ones (topk and friends, count_values) are fused too, shipping
 /// their per-step picks or counts as candidates the coordinator re-selects or
 /// sums (`SteppedSelection`).
-message GridAggregation {
+message AggregationOperation {
   AggregationKind kind = 1;
   optional AggregationGrouping grouping = 2;
   /// Numeric operator parameter: K for topk/bottomk/limitk, the ratio for
@@ -284,7 +280,7 @@ message GridQuery {
   /// coordinator separately bounds the points it accepts back.
   uint64 max_points_per_series = 8;
   optional GridRollup rollup = 9;
-  optional GridAggregation aggregation = 10;
+  optional AggregationOperation aggregation = 10;
   /// Whether a stepped selection must carry each pick's own timestamp
   /// (`GridSeries.sample_lag`). Only `timestamp()` observes it; every other
   /// consumer stamps a value with its step, so the column is left out unless
@@ -403,16 +399,8 @@ message AggregationQueryResponse {
   /// stdvar): one mergeable partial per group the shard saw.
   repeated AggregationGroupPartial partials = 1;
   /// Set for the selection operators (topk/bottomk/limitk/limit_ratio) and
-  /// count_values: the shard's locally selected/counted samples. Also carries
-  /// the raw instant vector when `applied` is false.
+  /// count_values: the shard's locally selected/counted samples.
   repeated InstantSample samples = 2;
   /// The symbol table the label refs of `samples` and `partials` index into.
   SymbolTable labels = 3;
-  /// Compatibility handshake: true when the shard applied the requested
-  /// aggregation. A shard that does not recognize the requested `kind` (a
-  /// newer coordinator during a rolling upgrade) returns the raw instant
-  /// vector in `samples` with `applied` false, and the coordinator aggregates
-  /// it itself. Absent on a pre-handshake peer (proto3 decodes as false),
-  /// which is exactly the right interpretation.
-  bool applied = 4;
 }

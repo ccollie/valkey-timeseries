@@ -26,7 +26,7 @@ use crate::common::{Sample, Timestamp};
 use crate::labels::{HasFingerprint, SeriesFingerprint};
 use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
-use crate::promql::engine::query_reader::{AggregationParam, GridAggregation, GridSeries};
+use crate::promql::engine::query_reader::{AggregationOperation, AggregationParam, GridSeries};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply_aggregation};
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::hashers::FingerprintHashMap;
@@ -588,14 +588,14 @@ impl SteppedPartialGroups {
 /// [`Self::run_steps`] per step, kept ordered so the output is chronological
 /// without a sort.
 pub(in crate::promql) struct SteppedSelection {
-    aggregation: GridAggregation,
+    aggregation: AggregationOperation,
     /// Per step: the candidates so far — the operator's output from whoever
     /// ran it (a shard, or [`Self::apply_grid`] here).
     steps: BTreeMap<Timestamp, Vec<EvalSample>>,
 }
 
 impl SteppedSelection {
-    pub fn new(aggregation: GridAggregation) -> Self {
+    pub fn new(aggregation: AggregationOperation) -> Self {
         Self {
             aggregation,
             steps: BTreeMap::new(),
@@ -687,7 +687,7 @@ impl SteppedSelection {
                     Self::run_with(aggregation, candidates, step_ts, deadline)?
                 }
                 // Counts from different parties add.
-                PushdownStrategy::CountValues => merge_count_values(candidates),
+                PushdownStrategy::CountValues => merge_count_values(candidates, deadline)?,
                 PushdownStrategy::Reduce => unreachable!("a reduction folds as partial states"),
             };
             for sample in output {
@@ -709,7 +709,7 @@ impl SteppedSelection {
     }
 
     fn run_with(
-        aggregation: &GridAggregation,
+        aggregation: &AggregationOperation,
         samples: Vec<EvalSample>,
         step_ts: Timestamp,
         deadline: &Deadline,
@@ -794,10 +794,14 @@ impl SteppedSelection {
 /// Each shard counted only the samples it holds, so a value observed on several
 /// shards arrives as several samples with identical labels (the group labels
 /// plus the destination label). Counts are exact integers in `f64`, so summing
-/// them is exact.
-pub(in crate::promql) fn merge_count_values(samples: Vec<EvalSample>) -> Vec<EvalSample> {
+/// them is exact. `deadline` is checked per sample, each one label set hashed.
+pub(in crate::promql) fn merge_count_values(
+    samples: Vec<EvalSample>,
+    deadline: &Deadline,
+) -> EvalResult<Vec<EvalSample>> {
     let mut counts: FingerprintHashMap<EvalSample> = FingerprintHashMap::default();
     for sample in samples {
+        deadline.checkpoint(SERIES_WORK)?;
         let key = sample.labels.fingerprint();
         match counts.get_mut(&key) {
             Some(existing) => existing.value += sample.value,
@@ -806,7 +810,7 @@ pub(in crate::promql) fn merge_count_values(samples: Vec<EvalSample>) -> Vec<Eva
             }
         }
     }
-    counts.into_iter().map(|(_, sample)| sample).collect()
+    Ok(counts.into_iter().map(|(_, sample)| sample).collect())
 }
 
 #[cfg(test)]
@@ -1019,12 +1023,16 @@ mod tests {
     /// count_values counts are summed across shards by output label set.
     #[test]
     fn test_merge_count_values_sums_by_labelset() {
-        let merged = merge_count_values(vec![
-            sample(&[("job", "a"), ("v", "1")], 2.0),
-            sample(&[("job", "a"), ("v", "1")], 3.0),
-            sample(&[("job", "a"), ("v", "2")], 1.0),
-            sample(&[("job", "b"), ("v", "1")], 4.0),
-        ]);
+        let merged = merge_count_values(
+            vec![
+                sample(&[("job", "a"), ("v", "1")], 2.0),
+                sample(&[("job", "a"), ("v", "1")], 3.0),
+                sample(&[("job", "a"), ("v", "2")], 1.0),
+                sample(&[("job", "b"), ("v", "1")], 4.0),
+            ],
+            &Deadline::default(),
+        )
+        .unwrap();
         assert_eq!(
             sorted(merged),
             vec![
@@ -1165,7 +1173,7 @@ mod tests {
     /// re-selecting over them each stop at a passed deadline.
     #[test]
     fn stepped_selection_stops_at_a_passed_deadline() {
-        let topk = GridAggregation {
+        let topk = AggregationOperation {
             kind: AggregationKind::Topk,
             modifier: None,
             param: Some(AggregationParam::Scalar(1.0)),

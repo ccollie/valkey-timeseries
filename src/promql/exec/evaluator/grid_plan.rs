@@ -27,7 +27,7 @@ pub(super) type RollupPreload<'e> = (
     GridPreloadKey,
     GridRollup,
     &'e MatrixSelector,
-    Option<GridAggregation>,
+    Option<AggregationOperation>,
 );
 
 /// What the preload phase may read for one expression over one grid.
@@ -36,7 +36,7 @@ pub(super) struct GridPlan<'e> {
     pub(super) sample_timestamps: bool,
     /// Every fusable aggregation directly over a bare vector selector, in the
     /// order met: its stepped grid key, the selector and the aggregation.
-    pub(super) stepped: Vec<(GridPreloadKey, &'e VectorSelector, GridAggregation)>,
+    pub(super) stepped: Vec<(GridPreloadKey, &'e VectorSelector, AggregationOperation)>,
     /// Every vector selector evaluated at this grid, in the order met, with
     /// the stepped aggregation key that covers it when it is the operand of
     /// one: if that aggregation's grid is cached, the selector is not read.

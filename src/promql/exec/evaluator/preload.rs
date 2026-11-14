@@ -521,7 +521,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         key: GridPreloadKey,
         rollup: GridRollup,
         matrix: &MatrixSelector,
-        aggregation: Option<GridAggregation>,
+        aggregation: Option<AggregationOperation>,
         grid: &PreloadGrid,
     ) -> EvalResult<()> {
         let Some((request, window_ends)) =
@@ -588,7 +588,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         vs: &VectorSelector,
         grid: &PreloadGrid,
         rollup: Option<GridRollup>,
-        aggregation: Option<GridAggregation>,
+        aggregation: Option<AggregationOperation>,
     ) -> Option<(GridRequest, Vec<Timestamp>)> {
         let window_ends = self.resolved_window_ends(vs, grid);
         let (&first, &last) = (window_ends.first()?, window_ends.last()?);
@@ -788,7 +788,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         &self,
         key: GridPreloadKey,
         vs: &VectorSelector,
-        aggregation: GridAggregation,
+        aggregation: AggregationOperation,
         grid: &PreloadGrid,
     ) -> EvalResult<bool> {
         let Some((request, window_ends)) = self.grid_request(vs, grid, None, Some(aggregation))

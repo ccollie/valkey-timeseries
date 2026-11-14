@@ -10,10 +10,8 @@
 //! `MRangeFanoutCommand`, and follows the same three rules:
 //!
 //! * The coordinator decides whether to push down; shards obey the request.
-//! * Responses are self-describing: a shard that cannot apply the operator says
-//!   so (`applied == false`) and returns its raw instant vector, which the
-//!   coordinator aggregates itself. Mixed-version clusters degrade instead of
-//!   returning wrong answers.
+//! * A shard refuses an operator it cannot push down rather than answer
+//!   something else: what comes back is always the reduced or selected output.
 //! * The reduction the coordinator performs on the shards' output equals the
 //!   single-node aggregation over the concatenated input; see
 //!   [`crate::promql::exec::partial_aggregation`] for the per-operator argument.
@@ -24,21 +22,18 @@ use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutErr
 use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_instant_eval_samples, shard_read};
-use crate::promql::engine::fanout::type_conversions::{
-    aggregation_param_from_wire, aggregation_param_to_wire, decode_peer_partial,
-    decode_pushdown_kind, wrong_payload,
+use crate::promql::engine::fanout::type_conversions::{decode_peer_partial, wrong_payload};
+use crate::promql::engine::query_reader::{
+    AggregationOperation, AggregationParam, AggregationRequest,
 };
-use crate::promql::engine::query_reader::{AggregationParam, AggregationRequest};
 use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply_aggregation};
 use crate::promql::exec::partial_aggregation::{PartialGroups, merge_count_values};
 use crate::promql::generated::{
-    AggregationGroupPartial, AggregationKind as ProtoAggregationKind, AggregationQuery,
-    AggregationQueryResponse, InstantQuery, InstantSample as ProtoInstantSample,
-    SeriesSelector as ProtoSeriesSelector,
+    AggregationGroupPartial, AggregationQuery, AggregationQueryResponse, InstantQuery,
+    InstantSample as ProtoInstantSample, SeriesSelector as ProtoSeriesSelector,
 };
 use crate::promql::{EvalResult, EvalSample, QueryError};
 use promql_parser::label::Matchers;
-use promql_parser::parser::LabelModifier;
 use std::sync::Arc;
 use valkey_module::ValkeyResult;
 
@@ -88,9 +83,6 @@ pub(in crate::promql) struct AggregationFanoutCommand {
     aggregation: AggregationRequest,
     /// Where the shards' output goes, by the operator's strategy.
     sink: AggregationSink,
-    /// Raw instant-vector samples from a shard that did not apply the operator
-    /// (`applied == false`), folded in by [`Self::into_result`].
-    raw: Vec<EvalSample>,
     /// Latched when a peer rejected the operation outright — an older node with
     /// no aggregation push-down at all. The caller retries without push-down
     /// rather than failing the query.
@@ -115,9 +107,8 @@ impl AggregationFanoutCommand {
     ) -> Self {
         Self {
             vector,
-            sink: AggregationSink::for_kind(aggregation.kind),
+            sink: AggregationSink::for_kind(aggregation.operation.kind),
             aggregation,
-            raw: Vec::new(),
             unsupported_peer: false,
             deadline,
             stopped: None,
@@ -137,41 +128,24 @@ impl AggregationFanoutCommand {
         }
         let deadline = &self.deadline;
         let AggregationRequest {
-            kind,
-            ref modifier,
-            ref param,
+            operation:
+                AggregationOperation {
+                    kind,
+                    ref modifier,
+                    ref param,
+                },
             eval_timestamp: eval_time,
         } = self.aggregation;
-        let raw = std::mem::take(&mut self.raw);
 
         match self.sink {
-            AggregationSink::Partials(mut partials) => {
-                // A shard that shipped raw samples is compensated by running
-                // the shard-side accumulation here.
-                if !raw.is_empty() {
-                    partials.accumulate(modifier.as_ref(), raw, deadline)?;
-                }
-                Ok(partials.finalize(eval_time))
-            }
-            AggregationSink::Candidates(mut candidates) => {
-                let param = param.as_ref().map(AggregationParam::to_expr_result);
+            AggregationSink::Partials(partials) => Ok(partials.finalize(eval_time)),
+            AggregationSink::Candidates(candidates) => {
                 if kind.pushdown_strategy() == Some(PushdownStrategy::CountValues) {
-                    if !raw.is_empty() {
-                        // Count the raw samples first, then merge those counts.
-                        candidates.extend(apply_aggregation(
-                            kind,
-                            modifier.as_ref(),
-                            param,
-                            raw,
-                            eval_time,
-                            deadline,
-                        )?);
-                    }
-                    return Ok(merge_count_values(candidates));
+                    return merge_count_values(candidates, deadline);
                 }
-                // The selection is idempotent, so raw samples simply join the
-                // candidate pool: re-selecting over the union is the answer.
-                candidates.extend(raw);
+                // The selection is idempotent: re-selecting over every shard's
+                // picks is the answer.
+                let param = param.as_ref().map(AggregationParam::to_expr_result);
                 apply_aggregation(
                     kind,
                     modifier.as_ref(),
@@ -200,7 +174,10 @@ impl AggregationFanoutCommand {
             let state = decode_peer_partial(
                 partial.state,
                 target,
-                format_args!("a pushed-down {:?} reduction", self.aggregation.kind),
+                format_args!(
+                    "a pushed-down {:?} reduction",
+                    self.aggregation.operation.kind
+                ),
             )?;
             groups.merge(labels, state);
             if let Err(err) = self.deadline.checkpoint(SERIES_WORK) {
@@ -225,6 +202,8 @@ impl FanoutCommand for AggregationFanoutCommand {
         req: AggregationQuery,
     ) -> ValkeyResult<AggregationQueryResponse> {
         let query = super::required(req.query, "instant-vector parameters")?;
+        let operation =
+            AggregationOperation::try_from(super::required(req.operation, "operator")?)?;
         let selector = super::required(query.selector, "selector")?;
         let series_selector: SeriesSelector = (&selector).try_into()?;
         // Held to the end, through the aggregation: the coordinator counts only the groups
@@ -245,44 +224,8 @@ impl FanoutCommand for AggregationFanoutCommand {
         super::check_unique_series(samples.iter().map(|s| &s.labels))
             .map_err(|e| super::shard_error(QueryError::Execution(e)))?;
 
-        // An unrecognized operator means the coordinator is newer than this
-        // node. Ship the raw instant vector and let it aggregate: correct, at
-        // the cost of the transfer the push-down would have saved.
-        let Some((kind, strategy)) = decode_pushdown_kind(req.kind) else {
-            ctx.log_warning(&format!(
-                "Unsupported aggregation kind {} in pushed-down query; returning the raw instant vector",
-                req.kind
-            ));
-            return Ok(raw_response(samples));
-        };
-
-        let modifier = req.grouping.map(LabelModifier::from);
-        match strategy {
-            PushdownStrategy::Reduce => {
-                let mut groups = PartialGroups::new(kind);
-                groups
-                    .accumulate(modifier.as_ref(), samples, &read.deadline)
-                    .map_err(super::shard_error)?;
-                Ok(partials_response(groups))
-            }
-            PushdownStrategy::Select | PushdownStrategy::CountValues => {
-                let param = aggregation_param_from_wire(req.scalar_param, req.label_param)
-                    .as_ref()
-                    .map(AggregationParam::to_expr_result);
-                let aggregated = apply_aggregation(
-                    kind,
-                    modifier.as_ref(),
-                    param,
-                    samples,
-                    req.eval_timestamp,
-                    // Its read stops between batches once the requester gives up or
-                    // memory runs short; so does the aggregation over what it read.
-                    &read.deadline,
-                )
-                .map_err(super::shard_error)?;
-                Ok(samples_response(aggregated, true))
-            }
-        }
+        aggregate_locally(operation, samples, req.eval_timestamp, &read.deadline)
+            .map_err(super::shard_error)
     }
 
     fn generate_request(&self) -> AggregationQuery {
@@ -293,15 +236,9 @@ impl FanoutCommand for AggregationFanoutCommand {
             max_series: self.vector.max_series,
         };
 
-        let (scalar_param, label_param) =
-            aggregation_param_to_wire(self.aggregation.param.as_ref());
-
         AggregationQuery {
             query: Some(query),
-            kind: ProtoAggregationKind::from(self.aggregation.kind) as i32,
-            grouping: self.aggregation.modifier.as_ref().map(Into::into),
-            scalar_param,
-            label_param,
+            operation: Some((&self.aggregation.operation).into()),
             eval_timestamp: self.aggregation.eval_timestamp,
         }
     }
@@ -320,12 +257,6 @@ impl FanoutCommand for AggregationFanoutCommand {
                     .map_err(|why| super::peer_error(target, "returned malformed labels", why))
             })
             .collect::<Result<Vec<EvalSample>, FanoutError>>()?;
-        if !resp.applied {
-            // Self-describing response from a peer that did not aggregate.
-            self.raw.extend(samples);
-            return Ok(());
-        }
-
         match &mut self.sink {
             AggregationSink::Partials(_) => {
                 // Corrupt-peer defense: a reduction response carries partials
@@ -336,7 +267,10 @@ impl FanoutCommand for AggregationFanoutCommand {
                         target,
                         samples.len(),
                         "samples",
-                        format_args!("a pushed-down {:?} reduction", self.aggregation.kind),
+                        format_args!(
+                            "a pushed-down {:?} reduction",
+                            self.aggregation.operation.kind
+                        ),
                         "partial states",
                     ));
                 }
@@ -348,7 +282,7 @@ impl FanoutCommand for AggregationFanoutCommand {
                         target,
                         resp.partials.len(),
                         "partial states",
-                        format_args!("a pushed-down {:?}", self.aggregation.kind),
+                        format_args!("a pushed-down {:?}", self.aggregation.operation.kind),
                         "samples",
                     ));
                 }
@@ -363,6 +297,45 @@ impl FanoutCommand for AggregationFanoutCommand {
         // rejects the envelope rather than answering it. Latch that so the
         // caller can fall back to selecting the raw instant vector.
         self.unsupported_peer |= error.is_unsupported_operation();
+    }
+}
+
+/// This shard's half of `operation` over the instant vector it read: the
+/// partial states of a reduction, or the samples a selection keeps (or
+/// `count_values` counts), stamped with `eval_timestamp`. Stops once
+/// `deadline` has passed: the coordinator would no longer wait for the answer.
+fn aggregate_locally(
+    operation: AggregationOperation,
+    samples: Vec<EvalSample>,
+    eval_timestamp: Timestamp,
+    deadline: &Deadline,
+) -> EvalResult<AggregationQueryResponse> {
+    let AggregationOperation {
+        kind,
+        modifier,
+        param,
+    } = operation;
+    let Some(strategy) = kind.pushdown_strategy() else {
+        unreachable!("decoding refuses an operator with no push-down form");
+    };
+    match strategy {
+        PushdownStrategy::Reduce => {
+            let mut groups = PartialGroups::new(kind);
+            groups.accumulate(modifier.as_ref(), samples, deadline)?;
+            Ok(partials_response(groups))
+        }
+        PushdownStrategy::Select | PushdownStrategy::CountValues => {
+            let param = param.as_ref().map(AggregationParam::to_expr_result);
+            let aggregated = apply_aggregation(
+                kind,
+                modifier.as_ref(),
+                param,
+                samples,
+                eval_timestamp,
+                deadline,
+            )?;
+            Ok(samples_response(aggregated))
+        }
     }
 }
 
@@ -385,20 +358,13 @@ fn partials_response(groups: PartialGroups) -> AggregationQueryResponse {
     AggregationQueryResponse {
         partials,
         samples: Vec::new(),
-        applied: true,
         labels: Some(symbols.finish()),
     }
 }
 
-/// A response carrying the unaggregated instant vector, for a shard that could
-/// not apply the requested operator.
-fn raw_response(samples: Vec<EvalSample>) -> AggregationQueryResponse {
-    samples_response(samples, false)
-}
-
 /// Labels go into the response's symbol table straight from the evaluator's
 /// label sets, by identity when they are interned: no owned label strings.
-fn samples_response(samples: Vec<EvalSample>, applied: bool) -> AggregationQueryResponse {
+fn samples_response(samples: Vec<EvalSample>) -> AggregationQueryResponse {
     let mut symbols = symbol_table::SymbolTableBuilder::default();
     let samples = samples
         .into_iter()
@@ -416,7 +382,6 @@ fn samples_response(samples: Vec<EvalSample>, applied: bool) -> AggregationQuery
     AggregationQueryResponse {
         partials: Vec::new(),
         samples,
-        applied,
         labels: Some(symbols.finish()),
     }
 }
@@ -424,8 +389,11 @@ fn samples_response(samples: Vec<EvalSample>, applied: bool) -> AggregationQuery
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::promql::engine::fanout::type_conversions::decode_pushdown_kind;
     use crate::promql::exec::types::EvalLabels;
+    use crate::promql::generated::AggregationKind as ProtoAggregationKind;
     use promql_parser::label::Labels as ModifierLabels;
+    use promql_parser::parser::LabelModifier;
 
     const EVAL_TS: Timestamp = 1_700_000_000_000;
 
@@ -443,10 +411,20 @@ mod tests {
     }
 
     fn params(kind: AggregationKind, modifier: Option<LabelModifier>) -> AggregationRequest {
+        request(kind, modifier, None)
+    }
+
+    fn request(
+        kind: AggregationKind,
+        modifier: Option<LabelModifier>,
+        param: Option<AggregationParam>,
+    ) -> AggregationRequest {
         AggregationRequest {
-            kind,
-            modifier,
-            param: None,
+            operation: AggregationOperation {
+                kind,
+                modifier,
+                param,
+            },
             eval_timestamp: EVAL_TS,
         }
     }
@@ -468,38 +446,18 @@ mod tests {
         AggregationFanoutCommand::new(vector, aggregation, deadline)
     }
 
-    /// One shard's response, produced the way `get_local_response` produces it.
+    /// One shard's response, produced as `get_local_response` produces it.
     fn shard_response(
         aggregation: &AggregationRequest,
         samples: Vec<EvalSample>,
     ) -> AggregationQueryResponse {
-        let kind = aggregation.kind;
-        let modifier = aggregation.modifier.as_ref();
-        match kind.pushdown_strategy().unwrap() {
-            PushdownStrategy::Reduce => {
-                let mut groups = PartialGroups::new(kind);
-                groups
-                    .accumulate(modifier, samples, &Deadline::default())
-                    .unwrap();
-                partials_response(groups)
-            }
-            PushdownStrategy::Select | PushdownStrategy::CountValues => {
-                let param = aggregation
-                    .param
-                    .as_ref()
-                    .map(AggregationParam::to_expr_result);
-                let aggregated = apply_aggregation(
-                    kind,
-                    modifier,
-                    param,
-                    samples,
-                    EVAL_TS,
-                    &Deadline::default(),
-                )
-                .unwrap();
-                samples_response(aggregated, true)
-            }
-        }
+        aggregate_locally(
+            aggregation.operation.clone(),
+            samples,
+            EVAL_TS,
+            &Deadline::default(),
+        )
+        .unwrap()
     }
 
     /// The full coordinator side: each shard aggregates its slice, the
@@ -518,14 +476,15 @@ mod tests {
         aggregation: &AggregationRequest,
         samples: Vec<EvalSample>,
     ) -> Vec<(String, f64)> {
-        let param = aggregation
+        let operation = &aggregation.operation;
+        let param = operation
             .param
             .as_ref()
             .map(AggregationParam::to_expr_result);
         rendered(
             apply_aggregation(
-                aggregation.kind,
-                aggregation.modifier.as_ref(),
+                operation.kind,
+                operation.modifier.as_ref(),
                 param,
                 samples,
                 EVAL_TS,
@@ -579,93 +538,44 @@ mod tests {
             params(AggregationKind::Group, Some(by_job.clone())),
             params(AggregationKind::Stddev, Some(by_job.clone())),
             params(AggregationKind::Stdvar, Some(by_job.clone())),
-            AggregationRequest {
-                kind: AggregationKind::Topk,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Scalar(2.0)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::Bottomk,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Scalar(1.0)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::Topk,
-                modifier: None,
-                param: Some(AggregationParam::Scalar(3.0)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::Limitk,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Scalar(2.0)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::LimitRatio,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Scalar(0.5)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::CountValues,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Label("value".into())),
-                eval_timestamp: EVAL_TS,
-            },
+            request(
+                AggregationKind::Topk,
+                Some(by_job.clone()),
+                Some(AggregationParam::Scalar(2.0)),
+            ),
+            request(
+                AggregationKind::Bottomk,
+                Some(by_job.clone()),
+                Some(AggregationParam::Scalar(1.0)),
+            ),
+            request(
+                AggregationKind::Topk,
+                None,
+                Some(AggregationParam::Scalar(3.0)),
+            ),
+            request(
+                AggregationKind::Limitk,
+                Some(by_job.clone()),
+                Some(AggregationParam::Scalar(2.0)),
+            ),
+            request(
+                AggregationKind::LimitRatio,
+                Some(by_job.clone()),
+                Some(AggregationParam::Scalar(0.5)),
+            ),
+            request(
+                AggregationKind::CountValues,
+                Some(by_job.clone()),
+                Some(AggregationParam::Label("value".into())),
+            ),
         ];
 
         for aggregation in cases {
-            let what = format!("{:?} by {:?}", aggregation.kind, aggregation.modifier);
+            let operation = &aggregation.operation;
+            let what = format!("{:?} by {:?}", operation.kind, operation.modifier);
             assert_eq!(
                 single_node(&aggregation, all.clone()),
                 fanout(aggregation.clone(), &shards),
-                "{what}"
-            );
-        }
-    }
-
-    /// A peer that did not aggregate returns its raw instant vector; the
-    /// coordinator must fold it in and still match the single-node result.
-    #[test]
-    fn test_unaggregated_peer_is_compensated() {
-        let shards = test_shards();
-        let all: Vec<EvalSample> = shards.iter().flatten().cloned().collect();
-        let by_job = LabelModifier::Include(ModifierLabels::new(vec!["job"]));
-
-        let cases = [
-            params(AggregationKind::Sum, Some(by_job.clone())),
-            params(AggregationKind::Stddev, Some(by_job.clone())),
-            AggregationRequest {
-                kind: AggregationKind::Topk,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Scalar(2.0)),
-                eval_timestamp: EVAL_TS,
-            },
-            AggregationRequest {
-                kind: AggregationKind::CountValues,
-                modifier: Some(by_job.clone()),
-                param: Some(AggregationParam::Label("value".into())),
-                eval_timestamp: EVAL_TS,
-            },
-        ];
-
-        for aggregation in cases {
-            let what = format!("{:?}", aggregation.kind);
-            let mut cmd = command(aggregation.clone());
-            // Shard 0 speaks the protocol; shards 1 and 2 do not.
-            cmd.on_response(shard_response(&aggregation, shards[0].clone()), &node(7000))
-                .unwrap();
-            for (index, shard) in shards.iter().enumerate().skip(1) {
-                let raw = raw_response(shard.clone());
-                assert!(!raw.applied);
-                cmd.on_response(raw, &node(7000 + index as u16)).unwrap();
-            }
-            assert_eq!(
-                single_node(&aggregation, all.clone()),
-                rendered(cmd.into_result().unwrap()),
                 "{what}"
             );
         }
@@ -683,12 +593,11 @@ mod tests {
             max_series: 1_000,
             matchers: Arc::new(Matchers::empty()),
         };
-        let aggregation = AggregationRequest {
-            kind: AggregationKind::Topk,
-            modifier: Some(LabelModifier::Exclude(ModifierLabels::new(vec!["pod"]))),
-            param: Some(AggregationParam::Scalar(5.0)),
-            eval_timestamp: EVAL_TS,
-        };
+        let aggregation = request(
+            AggregationKind::Topk,
+            Some(LabelModifier::Exclude(ModifierLabels::new(vec!["pod"]))),
+            Some(AggregationParam::Scalar(5.0)),
+        );
         let cmd = AggregationFanoutCommand::new(vector, aggregation, Deadline::default());
 
         let request = cmd.generate_request();
@@ -697,10 +606,11 @@ mod tests {
         let decoded = AggregationQuery::deserialize(&buf).unwrap();
 
         assert_eq!(decoded, request);
-        assert_eq!(decoded.kind, ProtoAggregationKind::Topk as i32);
-        assert_eq!(decoded.scalar_param, Some(5.0));
-        assert_eq!(decoded.label_param, None);
-        let grouping = decoded.grouping.clone().expect("grouping present");
+        let operation = decoded.operation.clone().expect("operator present");
+        assert_eq!(operation.kind, ProtoAggregationKind::Topk as i32);
+        assert_eq!(operation.scalar_param, Some(5.0));
+        assert_eq!(operation.label_param, None);
+        let grouping = operation.grouping.clone().expect("grouping present");
         assert!(grouping.without);
         assert_eq!(grouping.labels, vec!["pod".to_string()]);
         assert_eq!(
@@ -716,9 +626,18 @@ mod tests {
     }
 
     /// Only the decomposable operators are pushed down, and an operator this
-    /// node does not know is never mistaken for a real one.
+    /// node does not know is never mistaken for a real one: a shard refuses it.
     #[test]
     fn test_decode_pushdown_kind() {
+        use crate::promql::generated::AggregationOperation as ProtoAggregationOperation;
+        for kind in [0, 99, -1] {
+            let operation = ProtoAggregationOperation {
+                kind,
+                ..Default::default()
+            };
+            assert!(AggregationOperation::try_from(operation).is_err(), "{kind}");
+        }
+
         assert_eq!(
             decode_pushdown_kind(ProtoAggregationKind::Sum as i32),
             Some((AggregationKind::Sum, PushdownStrategy::Reduce))
@@ -748,22 +667,19 @@ mod tests {
                 value: 1.0,
                 ..Default::default()
             }],
-            applied: true,
             labels: None,
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
 
-        let topk = AggregationRequest {
-            kind: AggregationKind::Topk,
-            modifier: None,
-            param: Some(AggregationParam::Scalar(1.0)),
-            eval_timestamp: EVAL_TS,
-        };
+        let topk = request(
+            AggregationKind::Topk,
+            None,
+            Some(AggregationParam::Scalar(1.0)),
+        );
         let mut cmd = command(topk);
         let stray = AggregationQueryResponse {
             partials: vec![AggregationGroupPartial::default()],
             samples: Vec::new(),
-            applied: true,
             labels: None,
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
@@ -820,7 +736,6 @@ mod tests {
                 ..Default::default()
             }],
             samples: Vec::new(),
-            applied: true,
             labels: None,
         };
         for (what, state) in [
@@ -857,7 +772,7 @@ mod tests {
         assert!(!cmd.peer_unsupported());
     }
 
-    /// The coordinator's merge walks every partial, candidate or raw sample
+    /// The coordinator's merge walks every partial or candidate sample
     /// the shards sent, so it stops once the query's deadline has passed: a
     /// stop while merging partials is latched and later responses are dropped
     /// unread, and the query is refused with its own reason.
@@ -873,35 +788,23 @@ mod tests {
                 "instance",
             ])))
         };
-        let topk = AggregationRequest {
-            param: Some(AggregationParam::Scalar(1.0)),
-            ..params(AggregationKind::Topk, by_instance())
-        };
-        let count_values = AggregationRequest {
-            param: Some(AggregationParam::Label("v".to_string())),
-            ..params(AggregationKind::CountValues, None)
-        };
+        let topk = request(
+            AggregationKind::Topk,
+            by_instance(),
+            Some(AggregationParam::Scalar(1.0)),
+        );
+        let count_values = request(
+            AggregationKind::CountValues,
+            None,
+            Some(AggregationParam::Label("v".to_string())),
+        );
         let cases = [
-            (
-                "sum, staged",
-                params(AggregationKind::Sum, by_instance()),
-                true,
-            ),
-            (
-                "sum, raw",
-                params(AggregationKind::Sum, by_instance()),
-                false,
-            ),
-            ("topk, staged", topk.clone(), true),
-            ("topk, raw", topk, false),
-            ("count_values, raw", count_values, false),
+            ("sum", params(AggregationKind::Sum, by_instance())),
+            ("topk", topk),
+            ("count_values", count_values),
         ];
-        for (what, aggregation, staged) in cases {
-            let arrived = if staged {
-                shard_response(&aggregation, samples.clone())
-            } else {
-                raw_response(samples.clone())
-            };
+        for (what, aggregation) in cases {
+            let arrived = shard_response(&aggregation, samples.clone());
 
             let mut live = command(aggregation.clone());
             live.on_response(arrived.clone(), &node(7000)).unwrap();

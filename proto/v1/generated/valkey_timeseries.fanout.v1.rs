@@ -618,21 +618,12 @@ pub struct AggregationQuery {
     /// / limits) — identical in meaning to a plain `InstantQuery`.
     #[prost(message, optional, tag = "1")]
     pub query: ::core::option::Option<InstantQuery>,
-    #[prost(enumeration = "AggregationKind", tag = "2")]
-    pub kind: i32,
-    #[prost(message, optional, tag = "3")]
-    pub grouping: ::core::option::Option<AggregationGrouping>,
-    /// / Numeric operator parameter: K for topk/bottomk/limitk, the ratio for
-    /// / limit_ratio. Absent for the parameterless operators.
-    #[prost(double, optional, tag = "4")]
-    pub scalar_param: ::core::option::Option<f64>,
-    /// / String operator parameter: the destination label for count_values.
-    #[prost(string, optional, tag = "5")]
-    pub label_param: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<AggregationOperation>,
     /// / Timestamp the aggregated output is stamped with — the query's evaluation
     /// / timestamp. It differs from `query.timestamp` (which selects the input)
     /// / when the selector carries an `@` or `offset` modifier.
-    #[prost(int64, tag = "6")]
+    #[prost(int64, tag = "3")]
     pub eval_timestamp: i64,
 }
 /// / Mergeable accumulator for one aggregation group. Field meaning depends on
@@ -696,17 +687,19 @@ pub struct GridRollup {
     #[prost(int64, optional, tag = "4")]
     pub unit_ms: ::core::option::Option<i64>,
 }
-/// / An outer aggregation fused onto a grid query: the `sum by (job)` of
-/// / `sum by (job) (rate(m\[5m\]))` or of `sum by (job) (m)`. The shard groups
-/// / its per-series values as well as computing them, so what crosses the wire is
-/// / one partial per group per step rather than one value per *series* per step.
+/// / An aggregation operator a shard applies: that of an `AggregationQuery`, or
+/// / an outer aggregation fused onto a grid query — the `sum by (job)` of
+/// / `sum by (job) (rate(m\[5m\]))` or of `sum by (job) (m)`. Fused, the shard
+/// / groups its per-series values as well as computing them, so what crosses the
+/// / wire is one partial per group per step rather than one value per *series*
+/// / per step.
 /// /
 /// / The reducing operators ship one partial per group per step. The selecting
 /// / and counting ones (topk and friends, count_values) are fused too, shipping
 /// / their per-step picks or counts as candidates the coordinator re-selects or
 /// / sums (`SteppedSelection`).
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GridAggregation {
+pub struct AggregationOperation {
     #[prost(enumeration = "AggregationKind", tag = "1")]
     pub kind: i32,
     #[prost(message, optional, tag = "2")]
@@ -766,7 +759,7 @@ pub struct GridQuery {
     #[prost(message, optional, tag = "9")]
     pub rollup: ::core::option::Option<GridRollup>,
     #[prost(message, optional, tag = "10")]
-    pub aggregation: ::core::option::Option<GridAggregation>,
+    pub aggregation: ::core::option::Option<AggregationOperation>,
     /// / Whether a stepped selection must carry each pick's own timestamp
     /// / (`GridSeries.sample_lag`). Only `timestamp()` observes it; every other
     /// / consumer stamps a value with its step, so the column is left out unless
@@ -914,21 +907,12 @@ pub struct AggregationQueryResponse {
     #[prost(message, repeated, tag = "1")]
     pub partials: ::prost::alloc::vec::Vec<AggregationGroupPartial>,
     /// / Set for the selection operators (topk/bottomk/limitk/limit_ratio) and
-    /// / count_values: the shard's locally selected/counted samples. Also carries
-    /// / the raw instant vector when `applied` is false.
+    /// / count_values: the shard's locally selected/counted samples.
     #[prost(message, repeated, tag = "2")]
     pub samples: ::prost::alloc::vec::Vec<InstantSample>,
     /// / The symbol table the label refs of `samples` and `partials` index into.
     #[prost(message, optional, tag = "3")]
     pub labels: ::core::option::Option<SymbolTable>,
-    /// / Compatibility handshake: true when the shard applied the requested
-    /// / aggregation. A shard that does not recognize the requested `kind` (a
-    /// / newer coordinator during a rolling upgrade) returns the raw instant
-    /// / vector in `samples` with `applied` false, and the coordinator aggregates
-    /// / it itself. Absent on a pre-handshake peer (proto3 decodes as false),
-    /// / which is exactly the right interpretation.
-    #[prost(bool, tag = "4")]
-    pub applied: bool,
 }
 /// / A PromQL aggregation operator. Mirrors
 /// / `crate::promql::exec::aggregations::AggregationKind`; QUANTILE has no

@@ -42,9 +42,7 @@ impl AggregationParam {
 /// evaluate on its own, close to the data.
 #[derive(Debug, Clone)]
 pub struct AggregationRequest {
-    pub kind: AggregationKind,
-    pub modifier: Option<LabelModifier>,
-    pub param: Option<AggregationParam>,
+    pub operation: AggregationOperation,
     /// Timestamp the aggregated output is stamped with: the query's evaluation
     /// timestamp, which differs from the timestamp the input is selected at when
     /// the selector carries an `@` or `offset` modifier.
@@ -81,8 +79,9 @@ pub struct GridRollup {
     pub unit_ms: Option<i64>,
 }
 
-/// An outer aggregation fused onto a grid request: the `sum by (job)` of
-/// `sum by (job) (rate(m[5m]))` or of `sum by (job) (m)`.
+/// An aggregation operator for a source to apply: that of an
+/// [`AggregationRequest`], or an outer aggregation fused onto a grid request —
+/// the `sum by (job)` of `sum by (job) (rate(m[5m]))` or of `sum by (job) (m)`.
 ///
 /// The reducing operators ship one partial per group per step. The selecting
 /// and counting ones (`topk` and friends, `count_values`) are fused too,
@@ -90,7 +89,7 @@ pub struct GridRollup {
 /// re-selects or sums ([`SteppedSelection`]) — see
 /// [`crate::promql::exec::aggregations::PushdownStrategy`].
 #[derive(Debug, Clone)]
-pub struct GridAggregation {
+pub struct AggregationOperation {
     pub kind: AggregationKind,
     pub modifier: Option<LabelModifier>,
     /// The operator's parameter where it takes one: `k` for the selecting
@@ -98,7 +97,7 @@ pub struct GridAggregation {
     pub param: Option<AggregationParam>,
 }
 
-impl GridAggregation {
+impl AggregationOperation {
     /// How the source folds this operator over a grid; see
     /// [`AggregationKind::pushdown_strategy`]. Never `None` for an
     /// aggregation that reached a request — the caller checks first.
@@ -143,7 +142,7 @@ pub struct GridRequest {
     /// When set, the source groups its per-series values as well as computing
     /// them, and returns one value per group per step instead of one per series
     /// per step.
-    pub aggregation: Option<GridAggregation>,
+    pub aggregation: Option<AggregationOperation>,
     /// Whether a stepped selection must report each pick's own timestamp.
     /// Only `timestamp()` observes it — every other consumer stamps a value
     /// with its step — so a source may leave it out (answering the step
@@ -894,7 +893,7 @@ mod evaluate_chunk_tests {
 
     /// A rollup over windows wider than the whole range, so a series' one
     /// sample answers at every one of [`STEPS`] steps — reporting its value.
-    fn expanding_request(aggregation: Option<GridAggregation>) -> GridRequest {
+    fn expanding_request(aggregation: Option<AggregationOperation>) -> GridRequest {
         let last = (STEPS as i64 - 1) * 1_000;
         GridRequest {
             step_ms: 1_000,
@@ -1021,24 +1020,24 @@ mod evaluate_chunk_tests {
     /// keeping a state or candidate per series per step over [`sparse_series`]:
     /// grouped by the label every series differs in, or counting its values,
     /// which differ too.
-    fn per_series_aggregations() -> [GridAggregation; 3] {
+    fn per_series_aggregations() -> [AggregationOperation; 3] {
         let by_i = || {
             Some(LabelModifier::Include(promql_parser::label::Labels::new(
                 vec!["i"],
             )))
         };
         [
-            GridAggregation {
+            AggregationOperation {
                 kind: AggregationKind::Sum,
                 modifier: by_i(),
                 param: None,
             },
-            GridAggregation {
+            AggregationOperation {
                 kind: AggregationKind::Topk,
                 modifier: by_i(),
                 param: Some(AggregationParam::Scalar(1.0)),
             },
-            GridAggregation {
+            AggregationOperation {
                 kind: AggregationKind::CountValues,
                 modifier: None,
                 param: Some(AggregationParam::Label("v".to_string())),
@@ -1117,7 +1116,7 @@ mod evaluate_chunk_tests {
             ),
         ];
         for (kind, param) in aggregations {
-            let aggregation = GridAggregation {
+            let aggregation = AggregationOperation {
                 kind,
                 modifier: None,
                 param,
