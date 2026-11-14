@@ -76,12 +76,23 @@ fn build_reader(
     querier
 }
 
+/// Options for a bench that measures evaluation, not the read limits. The in-memory reader
+/// applies `max_response_series`, the sample budget and the per-series point limit as a
+/// module read does, and several fixtures read past the defaults: `phase0_baseline` reads
+/// 1,100 series, `count_values` returns ~110k and `without (le)` over g_large 2,000.
+fn unlimited_options() -> QueryOptions {
+    QueryOptions {
+        deadline: None,
+        max_series: 0,
+        max_samples: 0,
+        max_points_per_series: None,
+        ..QueryOptions::default()
+    }
+}
+
 fn bench_evaluate_instant(c: &mut Criterion) {
     let reader = build_reader(64, 300, 4_000_000, 1_000);
-    let opts = QueryOptions {
-        deadline: None,
-        ..QueryOptions::default()
-    };
+    let opts = unlimited_options();
     let query_time = ms_to_system_time(4_299_000);
 
     let cases = [
@@ -298,13 +309,8 @@ fn bench_range_query(c: &mut Criterion) {
     }
 
     let opts = QueryOptions {
-        deadline: None,
         enable_experimental_functions: true,
-        // These measure evaluation, not the limits: `count_values` returns
-        // ~110k series, past the default `max_response_series`.
-        max_series: 0,
-        max_samples: 0,
-        ..QueryOptions::default()
+        ..unlimited_options()
     };
 
     for (expr, steps) in cases {
@@ -407,10 +413,7 @@ fn bench_join_query(c: &mut Criterion) {
         "rpc_request_success_total UNLESS rpc_request_error_total{instance=~\"0.*\"}",
     ];
 
-    let opts = QueryOptions {
-        deadline: None,
-        ..QueryOptions::default()
-    };
+    let opts = unlimited_options();
 
     let mut group = c.benchmark_group("join_query");
     if use_flat_sampling() {
@@ -528,9 +531,8 @@ fn bench_churn_join(c: &mut Criterion) {
 
     for (name, query, derived) in cases {
         let opts = QueryOptions {
-            deadline: None,
             derived_filter_pushdown: derived,
-            ..QueryOptions::default()
+            ..unlimited_options()
         };
         let ast = parse(query).expect("valid churn benchmark query");
         group.bench_with_input(BenchmarkId::new("churn_join", name), &ast, |b, ast| {
@@ -594,10 +596,7 @@ fn bench_phase0_baseline(c: &mut Criterion) {
         ("vector_join", "a_hundred - b_hundred", 1000),
     ];
 
-    let opts = QueryOptions {
-        deadline: None,
-        ..QueryOptions::default()
-    };
+    let opts = unlimited_options();
 
     let mut group = c.benchmark_group("phase0_baseline");
     if use_flat_sampling() {
@@ -663,10 +662,7 @@ fn bench_subquery_twins(c: &mut Criterion) {
         ),
     ];
 
-    let opts = QueryOptions {
-        deadline: None,
-        ..QueryOptions::default()
-    };
+    let opts = unlimited_options();
 
     let mut group = c.benchmark_group("subquery_twins");
     if use_flat_sampling() {
@@ -732,13 +728,8 @@ fn bench_group_samples(c: &mut Criterion) {
     let reader: Arc<dyn QueryReader> = Arc::new(querier);
 
     let opts = QueryOptions {
-        deadline: None,
         enable_experimental_functions: true,
-        // These measure grouping, not the limits: `without (le)` over g_large
-        // returns 2,000 series, past the default `max_response_series`.
-        max_series: 0,
-        max_samples: 0,
-        ..QueryOptions::default()
+        ..unlimited_options()
     };
     let query_time = ms_to_system_time((NUM_INTERVALS as i64 - 1) * INTERVAL_MS);
 
