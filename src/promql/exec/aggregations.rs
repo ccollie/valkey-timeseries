@@ -694,39 +694,37 @@ fn group_samples(
     samples: Vec<EvalSample>,
     deadline: &Deadline,
 ) -> EvalResult<FingerprintHashMap<Group<EvalSample>>> {
-    let mut groups: FingerprintHashMap<Group<EvalSample>> = FingerprintHashMap::default();
-    for sample in samples {
-        deadline.checkpoint(SERIES_WORK)?;
-        let key = sample.labels.compute_grouping_key(modifier);
-        let entry = groups
-            .entry(key)
-            .or_insert_with(|| Group::new(sample.labels.compute_grouping_labels(modifier)));
-        entry.drop_name |= sample.drop_name;
-        entry.members.push(sample);
-    }
-    Ok(groups)
+    group_by(modifier, samples, deadline, |sample| sample)
 }
 
+/// [`group_samples`], keeping only each member's value.
 fn group_sample_values(
     modifier: Option<&LabelModifier>,
     samples: Vec<EvalSample>,
     deadline: &Deadline,
 ) -> EvalResult<FingerprintHashMap<Group<f64>>> {
-    let mut groups: FingerprintHashMap<Group<f64>> = FingerprintHashMap::default();
+    group_by(modifier, samples, deadline, |sample| sample.value)
+}
 
+/// Group `samples` by `modifier`, keeping `member(sample)` of each.
+fn group_by<T>(
+    modifier: Option<&LabelModifier>,
+    samples: Vec<EvalSample>,
+    deadline: &Deadline,
+    member: impl Fn(EvalSample) -> T,
+) -> EvalResult<FingerprintHashMap<Group<T>>> {
+    let mut groups: FingerprintHashMap<Group<T>> = FingerprintHashMap::default();
     for sample in samples {
         deadline.checkpoint(SERIES_WORK)?;
         // Key every sample without allocating; build the group's label set
         // only when the group is new. See `compute_grouping_key`.
         let key = sample.labels.compute_grouping_key(modifier);
-
         let entry = groups
             .entry(key)
             .or_insert_with(|| Group::new(sample.labels.compute_grouping_labels(modifier)));
         entry.drop_name |= sample.drop_name;
-        entry.members.push(sample.value);
+        entry.members.push(member(sample));
     }
-
     Ok(groups)
 }
 
