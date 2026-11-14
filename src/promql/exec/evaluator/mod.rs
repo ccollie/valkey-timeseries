@@ -6,9 +6,7 @@ use crate::common::logging::log_debug;
 use crate::common::threads::join;
 use crate::common::threads::{IntoParRayon, ParCollectionRayon, request_par_threads};
 use crate::common::time::system_time_to_millis;
-use crate::promql::binops::{
-    can_push_down_common_filters, ensure_unique_labelsets, eval_binary_expr, push_down_filters,
-};
+use crate::promql::binops::eval_binary_expr;
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationParam, AggregationRequest, GridAggregation, GridOutcome,
@@ -27,6 +25,7 @@ use crate::promql::exec::types::{
     PreloadedStepSeries, PreloadedSteps, SampleWindow, StepGrid, StepGridBuilder,
     SubquerySeriesMap,
 };
+use crate::promql::exec::utils::ensure_unique_labelsets;
 use crate::promql::exec::utils::{PARALLEL_STEP_THRESHOLD, step_threads};
 use crate::promql::exec::utils::{merge_step_into_subquery_map, strip_parens};
 use crate::promql::functions::RollupKind;
@@ -36,6 +35,7 @@ use crate::promql::functions::{
 use crate::promql::hashers::{AggregationKey, GridPreloadKey, MatrixPreloadKey, PreloadKey};
 use crate::promql::model::EvalContext;
 use crate::promql::model::RangeSample;
+use crate::promql::optimizer::runtime_filters::{can_push_down_common_filters, push_down_filters};
 use crate::promql::time::duration_ms;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count, selector_bounds, step_times};
 use crate::promql::utils::{check_subquery_steps, subquery_step_ms};

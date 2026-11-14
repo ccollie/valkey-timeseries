@@ -1,8 +1,9 @@
-use super::labels::{effective_fingerprint, match_key_keeps};
+use super::labels::{has_fill_modifier, match_key_keeps};
 use crate::common::threads::IterIntoParRayon;
 use crate::labels::{SeriesFingerprint, create_unseeded_hasher, hash_key_value};
 use crate::promql::binops::binary_op_fn;
 use crate::promql::exec::types::EvalLabels;
+use crate::promql::exec::utils::effective_fingerprint;
 use crate::promql::hashers::{FingerprintHashMap, FingerprintHashSet};
 use crate::promql::{EvalResult, EvalSample, EvaluationError, ExprResult};
 use ahash::HashSetExt;
@@ -636,13 +637,7 @@ fn result_metric(
 
 fn validate_non_fill(expr: &BinaryExpr) -> EvalResult<()> {
     // Fill modifiers are not meaningful for set operators (or / and / unless).
-    let has_fill = expr
-        .modifier
-        .as_ref()
-        .map(|m| m.fill_values.lhs.is_some() || m.fill_values.rhs.is_some())
-        .unwrap_or(false);
-
-    if has_fill {
+    if has_fill_modifier(expr) {
         return Err(EvaluationError::InternalError(
             "fill modifiers (fill, fill_left, fill_right) are not supported on set operators (or, and, unless)".to_string(),
         ));

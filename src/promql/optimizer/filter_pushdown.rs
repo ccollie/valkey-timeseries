@@ -1,6 +1,6 @@
 use crate::common::logging::log_debug;
-use crate::promql::binops::can_push_down_common_filters;
 use crate::promql::functions::{PromqlFunctionKind, resolve_function};
+use crate::promql::optimizer::runtime_filters::can_push_down_common_filters;
 use ahash::AHashSet;
 use promql_parser::label::Labels;
 use promql_parser::label::{METRIC_NAME, Matcher, Matchers};
@@ -206,14 +206,7 @@ pub(super) fn pushdown_filters_within(
 fn rewrite(expr: &mut Expr, cx: &Pass) -> Vec<Matcher> {
     match expr {
         Expr::VectorSelector(vs) => {
-            if vs.name.is_none()
-                && let Some(pos) = vs.matchers.matchers.iter().position(|m| {
-                    m.name == METRIC_NAME && m.op == promql_parser::label::MatchOp::Equal
-                })
-            {
-                let m = vs.matchers.matchers.remove(pos);
-                vs.name = Some(m.value);
-            }
+            fold_name_matcher(vs);
             cx.common_filters(vs)
         }
         Expr::MatrixSelector(ms) => cx.common_filters(&ms.vs),
@@ -416,6 +409,22 @@ fn trim_filters_by_aggr_modifier(lfs: &mut Vec<Matcher>, afe: &AggregateExpr) {
     }
 }
 
+/// Move a nameless selector's `__name__="m"` matcher into its name, the form
+/// every pushed-down selector takes — and so the form a selector's label
+/// profile must be looked up in.
+pub(in crate::promql) fn fold_name_matcher(vs: &mut VectorSelector) {
+    if vs.name.is_none()
+        && let Some(pos) = vs
+            .matchers
+            .matchers
+            .iter()
+            .position(|m| m.name == METRIC_NAME && m.op == promql_parser::label::MatchOp::Equal)
+    {
+        let m = vs.matchers.matchers.remove(pos);
+        vs.name = Some(m.value);
+    }
+}
+
 /// Whether a grouped join matches its operands on `label`, i.e. both sides
 /// are known to carry the same value for it. `on()` and `ignoring()` are the
 /// only cases: a group clause cannot be written without one of them.
@@ -477,12 +486,8 @@ pub fn trim_filters_by_match_modifier(
     lfs: &mut Vec<Matcher>,
     group_modifier: &Option<LabelModifier>,
 ) {
-    match group_modifier {
-        None => {}
-        Some(LabelModifier::Include(on)) => lfs.retain(|m| on.labels.contains(&m.name)),
-        Some(LabelModifier::Exclude(ignoring)) => {
-            lfs.retain(|m| !ignoring.labels.contains(&m.name))
-        }
+    if group_modifier.is_some() {
+        lfs.retain(|m| is_matched_label(&m.name, group_modifier));
     }
 }
 

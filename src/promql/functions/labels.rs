@@ -1,5 +1,5 @@
 use crate::labels::build_with_repeat_fallback;
-use crate::promql::binops::ensure_unique_labelsets;
+use crate::promql::exec::utils::ensure_unique_labelsets;
 use crate::promql::functions::types::{PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{
     expect_exact_arg_count, expect_instant_vector, expect_label_name, expect_min_arg_count,
