@@ -14,7 +14,7 @@ use crate::promql::engine::promql_config;
 use crate::promql::engine::query_reader::grid_fetch_bounds;
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{
-    decode_within_budget, exceeds_max_series, get_snapshot_range, instant_lookback_start_ms,
+    copy_snapshots, decode_snapshot, exceeds_max_series, instant_lookback_start_ms,
     validate_max_points, validate_max_series,
 };
 use crate::promql::generated::{
@@ -330,20 +330,9 @@ where
         limit,
         |_, batch| {
             read.deadline.check().map_err(super::shard_error)?;
-            let mut copied = Vec::with_capacity(batch.len());
-            let mut pending = 0usize;
-            for (s, _) in batch {
-                let snapshot = s.snapshot_range(start_time, end_time);
-                if snapshot.is_empty() {
-                    continue;
-                }
-                pending = pending.saturating_add(snapshot.min_samples());
-                read.budget
-                    .check_ahead(pending)
-                    .map_err(super::shard_error)?;
-                copied.push((labels(s), snapshot));
-            }
-            Ok(copied)
+            let series = batch.iter().map(|(s, _)| &**s);
+            copy_snapshots(series, start_time, end_time, &read.budget, &labels)
+                .map_err(super::shard_error)
         },
         |snapshots| {
             if snapshots.is_empty() {
@@ -415,15 +404,13 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
                 .into_par_rayon()
                 .num_threads(threads)
                 .map(|(labels, snapshot)| {
-                    if !decode_within_budget(budget, &snapshot)? {
-                        return Ok::<_, QueryError>(None);
-                    }
-                    let samples = snapshot.get_range();
-                    budget.charge(samples.len())?;
-                    // A snapshot with chunks can still hold nothing inside the
-                    // span: the chunks only overlap it.
-                    Ok((!samples.is_empty())
-                        .then_some(crate::promql::model::RangeSample { labels, samples }))
+                    // No point limit while decoding: `bounds` applies it, after
+                    // `max_series`, which it reports first.
+                    let samples = decode_snapshot(budget, &snapshot, None)?;
+                    Ok::<_, QueryError>(
+                        samples
+                            .map(|samples| crate::promql::model::RangeSample { labels, samples }),
+                    )
                 })
                 .into_fallible()
                 .collect::<Vec<_>>()
@@ -585,17 +572,13 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
                 .into_par_rayon()
                 .num_threads(threads)
                 .map(|(labels, snapshot)| {
-                    if !decode_within_budget(budget, &snapshot)? {
-                        return Ok::<_, QueryError>(None);
-                    }
                     // Streams against the per-series point limit, so an
                     // over-wide span is rejected having kept at most the
                     // permitted samples.
-                    let series_samples = get_snapshot_range(&snapshot, max_points)?;
-                    budget.charge(series_samples.len())?;
-                    if series_samples.is_empty() {
-                        return Ok(None);
-                    }
+                    let Some(series_samples) = decode_snapshot(budget, &snapshot, max_points)?
+                    else {
+                        return Ok::<_, QueryError>(None);
+                    };
                     let data = serialize_chunk(samples_to_chunk_lossless(series_samples))
                         .map_err(|e| QueryError::Execution(e.to_string()))?;
                     Ok(Some((labels, data)))
