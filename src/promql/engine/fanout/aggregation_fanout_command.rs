@@ -16,6 +16,7 @@
 //!   single-node aggregation over the concatenated input; see
 //!   [`crate::promql::exec::partial_aggregation`] for the per-operator argument.
 
+use super::PushdownState;
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
@@ -74,17 +75,7 @@ pub(in crate::promql) struct AggregationFanoutCommand {
     aggregation: AggregationRequest,
     /// Where the shards' output goes, by the operator's strategy.
     sink: AggregationSink,
-    /// Latched when a peer rejected the operation outright — an older node with
-    /// no aggregation push-down at all. The caller retries without push-down
-    /// rather than failing the query.
-    unsupported_peer: bool,
-    /// The query's: checked as the shards' output is merged, and as it is
-    /// reduced to the answer ([`Self::into_result`]).
-    deadline: Deadline,
-    /// Why merging stopped, when `deadline` passed during it: every later
-    /// response is dropped unread, and [`Self::into_result`] reports this, in
-    /// its own words, rather than a fan-out failure.
-    stopped: Option<QueryError>,
+    state: PushdownState,
 }
 
 impl AggregationFanoutCommand {
@@ -100,24 +91,22 @@ impl AggregationFanoutCommand {
             vector,
             sink: AggregationSink::for_kind(aggregation.operation.kind),
             aggregation,
-            unsupported_peer: false,
-            deadline,
-            stopped: None,
+            state: PushdownState::new(deadline),
         }
     }
 
     /// True when at least one peer could not handle the operation: the caller
     /// should re-run the query without push-down.
     pub fn peer_unsupported(&self) -> bool {
-        self.unsupported_peer
+        self.state.peer_unsupported()
     }
 
     /// Reduce the shards' output to the final instant vector.
     pub fn into_result(mut self) -> EvalResult<Vec<EvalSample>> {
-        if let Some(err) = self.stopped.take() {
+        if let Some(err) = self.state.stopped.take() {
             return Err(err.into());
         }
-        let deadline = &self.deadline;
+        let deadline = &self.state.deadline;
         let AggregationRequest {
             operation:
                 AggregationOperation {
@@ -159,12 +148,12 @@ impl AggregationFanoutCommand {
             unreachable!("BUG: partial states arrive only for a reduction");
         };
         let kind = self.aggregation.operation.kind;
-        self.stopped = merge_peer_partials(
+        self.state.stopped = merge_peer_partials(
             partials,
             resolver,
             target,
             format_args!("a pushed-down {kind:?} reduction"),
-            &self.deadline,
+            &self.state.deadline,
             |_, labels, state| groups.merge(labels, state),
         )?;
         Ok(())
@@ -219,7 +208,7 @@ impl FanoutCommand for AggregationFanoutCommand {
     }
 
     fn on_response(&mut self, mut resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
-        if self.stopped.is_some() {
+        if self.state.stopped.is_some() {
             return Ok(());
         }
         let labels = resp.labels.take().unwrap_or_default();
@@ -268,10 +257,7 @@ impl FanoutCommand for AggregationFanoutCommand {
     }
 
     fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
-        // A peer that does not know this operation at all (rolling upgrade)
-        // rejects the envelope rather than answering it. Latch that so the
-        // caller can fall back to selecting the raw instant vector.
-        self.unsupported_peer |= error.is_unsupported_operation();
+        self.state.on_error(&error);
     }
 }
 

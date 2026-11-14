@@ -624,6 +624,24 @@ fn selector_fanout_failure(query_kind: &str, error: FanoutError) -> QueryError {
     error.into()
 }
 
+/// A push-down's fan-out failure. When a peer refused the operation as
+/// unknown (a rolling upgrade) it is no error: the read answers `unsupported`
+/// and the caller evaluates without the push-down.
+fn pushdown_failure(
+    what: &str,
+    error: FanoutError,
+    peer_unsupported: bool,
+    unsupported: SelectorOutput,
+) -> QueryResult<SelectorOutput> {
+    if !peer_unsupported {
+        return Err(selector_fanout_failure(what, error));
+    }
+    log_warning(format!(
+        "promql: {what} push-down unsupported by a peer, evaluating without it: {error}"
+    ));
+    Ok(unsupported)
+}
+
 /// Start the cluster fan-out of `cmd` over the shards `hash_tags` route to.
 /// `answer` turns the command and its result into the selector's output once
 /// every shard has answered; a fan-out that cannot start answers its error at
@@ -803,13 +821,12 @@ fn execute_cluster_aggregation(
                             samples,
                         )))
                     }),
-                Err(e) if cmd.peer_unsupported() => {
-                    log_warning(format!(
-                        "promql: aggregation push-down unsupported by a peer, falling back: {e}"
-                    ));
-                    Ok(SelectorOutput::Aggregation(AggregationOutcome::Unsupported))
-                }
-                Err(e) => Err(selector_fanout_failure("aggregation", e)),
+                Err(e) => pushdown_failure(
+                    "aggregation",
+                    e,
+                    cmd.peer_unsupported(),
+                    SelectorOutput::Aggregation(AggregationOutcome::Unsupported),
+                ),
             }
         },
     );
@@ -860,18 +877,6 @@ fn execute_cluster_grid(
                         }
                         Ok(())
                     };
-                    match &outcome {
-                        GridOutcome::Stepped(series) => {
-                            check(series.len(), &mut series.iter().map(|s| s.points.len()))
-                        }
-                        GridOutcome::Rolled(series)
-                        | GridOutcome::Reduced(series)
-                        | GridOutcome::Raw(series) => {
-                            check(series.len(), &mut series.iter().map(|s| s.samples.len()))
-                        }
-                        GridOutcome::Unsupported => Ok(()),
-                    }
-                    .map_err(warned)?;
                     // Series from every shard meet here, so two with the same labels
                     // are refused wherever they live. Reduced entries are groups: as
                     // for a pushed-down aggregation (see `execute_cluster_aggregation`),
@@ -879,22 +884,29 @@ fn execute_cluster_grid(
                     // on different shards were folded into the group like any two series.
                     match &outcome {
                         GridOutcome::Stepped(series) => {
-                            unique_series(series.iter().map(|s| &s.labels))
+                            check(series.len(), &mut series.iter().map(|s| s.points.len()))
+                                .map_err(warned)?;
+                            unique_series(series.iter().map(|s| &s.labels))?;
                         }
                         GridOutcome::Rolled(series) | GridOutcome::Raw(series) => {
-                            unique_series(series.iter().map(|s| &s.labels))
+                            check(series.len(), &mut series.iter().map(|s| s.samples.len()))
+                                .map_err(warned)?;
+                            unique_series(series.iter().map(|s| &s.labels))?;
                         }
-                        GridOutcome::Reduced(_) | GridOutcome::Unsupported => Ok(()),
-                    }?;
+                        GridOutcome::Reduced(groups) => {
+                            check(groups.len(), &mut groups.iter().map(|s| s.samples.len()))
+                                .map_err(warned)?;
+                        }
+                        GridOutcome::Unsupported => {}
+                    }
                     Ok(SelectorOutput::Grid(outcome))
                 }),
-                Err(e) if peer_unsupported => {
-                    log_warning(format!(
-                        "promql: grid push-down unsupported by a peer, evaluating without it: {e}"
-                    ));
-                    Ok(SelectorOutput::Grid(GridOutcome::Unsupported))
-                }
-                Err(e) => Err(selector_fanout_failure("grid", e)),
+                Err(e) => pushdown_failure(
+                    "grid",
+                    e,
+                    peer_unsupported,
+                    SelectorOutput::Grid(GridOutcome::Unsupported),
+                ),
             }
         },
     );

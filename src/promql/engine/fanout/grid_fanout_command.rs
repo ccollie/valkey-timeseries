@@ -28,6 +28,7 @@
 //! no eligible sample is absent from the result, and absence is not the same
 //! as a NaN value.
 
+use super::PushdownState;
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
@@ -85,17 +86,9 @@ pub(in crate::promql) struct GridFanoutCommand {
     /// without it the shards together could leave the coordinator holding
     /// that many times it before the query is refused.
     budget: SampleBudget,
-    /// A peer refused the operation as unknown: it runs an older build that
-    /// has no grid push-down (a rolling upgrade). The caller then evaluates
-    /// without it, over the selector operations every build has.
-    unsupported_peer: bool,
-    /// The query's: checked as the shards' output is merged, and as what
-    /// arrived raw is folded and finalized ([`Self::into_result`]).
-    deadline: Deadline,
-    /// Why merging stopped, when `deadline` passed during it: every later
-    /// response is dropped unread, and [`Self::into_result`] reports this, in
-    /// its own words, rather than a fan-out failure.
-    stopped: Option<QueryError>,
+    /// Its deadline is also checked as what arrived raw is folded and
+    /// finalized ([`Self::into_result`]).
+    state: PushdownState,
 }
 
 impl GridFanoutCommand {
@@ -118,17 +111,13 @@ impl GridFanoutCommand {
             sink,
             raw: Vec::new(),
             budget: SampleBudget::new(max_samples),
-            unsupported_peer: false,
-            deadline,
-            stopped: None,
+            state: PushdownState::new(deadline),
         }
     }
 
-    /// Whether a peer rejected the grid operation as unknown (see
-    /// `unsupported_peer`). Checked when the command fails, before its error is
-    /// reported: the failure is then a reason to evaluate locally, not an error.
+    /// See [`PushdownState::peer_unsupported`].
     pub fn peer_unsupported(&self) -> bool {
-        self.unsupported_peer
+        self.state.peer_unsupported()
     }
 
     /// The shards' output as one result.
@@ -159,14 +148,13 @@ impl GridFanoutCommand {
             raw,
             mut sink,
             budget,
-            deadline,
-            stopped,
+            state,
             ..
         } = self;
-        if let Some(err) = stopped {
+        if let Some(err) = state.stopped {
             return Err(err);
         }
-        let deadline = &deadline;
+        let deadline = &state.deadline;
         request.per_series_chunked(&window_ends, raw, deadline, |chunk, read| {
             sink.take_charged(&request, chunk, read, deadline, &mut |n| budget.charge(n))
         })?;
@@ -234,7 +222,7 @@ impl FanoutCommand for GridFanoutCommand {
     }
 
     fn on_response(&mut self, mut resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
-        if self.stopped.is_some() {
+        if self.state.stopped.is_some() {
             return Ok(());
         }
         // Every element's labels are refs into the response's symbol table,
@@ -261,15 +249,15 @@ impl FanoutCommand for GridFanoutCommand {
                 ));
             }
             let mut added = 0;
-            self.stopped = merge_peer_partials(
+            self.state.stopped = merge_peer_partials(
                 resp.partials,
                 &mut resolver,
                 target,
                 "a grid query fused with a reduction",
-                &self.deadline,
+                &self.state.deadline,
                 |step_ts, labels, state| added += partials.merge(step_ts, labels, state),
             )?;
-            if self.stopped.is_some() {
+            if self.state.stopped.is_some() {
                 return Ok(());
             }
             added
@@ -313,10 +301,10 @@ impl FanoutCommand for GridFanoutCommand {
                     }),
                 }
             }
-            match self.sink.merge(&self.request, output, &self.deadline) {
+            match self.sink.merge(&self.request, output, &self.state.deadline) {
                 Ok(added) => added,
                 Err(err) => {
-                    self.stopped = Some(err.into());
+                    self.state.stopped = Some(err.into());
                     return Ok(());
                 }
             }
@@ -342,7 +330,7 @@ impl FanoutCommand for GridFanoutCommand {
         // Charged as each response arrives rather than once every shard has
         // answered: past the limit, the rest are dropped unread.
         if let Err(err) = self.budget.charge(added + raw_samples) {
-            self.stopped = Some(err);
+            self.state.stopped = Some(err);
             return Ok(());
         }
         self.raw.extend(packed.into_iter().map(decode_range_series));
@@ -350,10 +338,7 @@ impl FanoutCommand for GridFanoutCommand {
     }
 
     fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
-        // A peer that does not know this operation (rolling upgrade) rejects
-        // the envelope rather than answering it. Latched, as the aggregation
-        // push-down does, so the caller can fall back to local evaluation.
-        self.unsupported_peer |= error.is_unsupported_operation();
+        self.state.on_error(&error);
     }
 }
 

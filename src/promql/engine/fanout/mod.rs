@@ -45,6 +45,44 @@ pub(super) fn shard_error(err: impl Into<QueryError>) -> ValkeyError {
     }
 }
 
+/// What a coordinator-side push-down tracks besides the shards' output.
+pub(super) struct PushdownState {
+    /// The query's: checked as the shards' output is merged, and as it is
+    /// reduced to the answer.
+    pub(super) deadline: Deadline,
+    /// Why merging stopped, when the deadline or the sample budget refused
+    /// it: every later response is dropped unread, and the result reports
+    /// this, in its own words, rather than a fan-out failure.
+    pub(super) stopped: Option<QueryError>,
+    /// A peer refused the operation as unknown: an older build without this
+    /// push-down, mid rolling upgrade. The caller then evaluates without it,
+    /// over the selector operations every build has.
+    unsupported_peer: bool,
+}
+
+impl PushdownState {
+    pub(super) fn new(deadline: Deadline) -> Self {
+        Self {
+            deadline,
+            stopped: None,
+            unsupported_peer: false,
+        }
+    }
+
+    /// Whether a peer rejected the operation as unknown. Checked when the
+    /// command fails, before its error is reported: the failure is then a
+    /// reason to evaluate without the push-down, not an error.
+    pub(super) fn peer_unsupported(&self) -> bool {
+        self.unsupported_peer
+    }
+
+    /// A peer's failure. One that does not know the operation rejects the
+    /// envelope rather than answering it; that is latched.
+    pub(super) fn on_error(&mut self, error: &FanoutError) {
+        self.unsupported_peer |= error.is_unsupported_operation();
+    }
+}
+
 /// A field a fan-out request must carry, or the error the shard answers with.
 /// A request without it is corrupt, not empty: refusing it keeps a malformed
 /// peer from reading as "nothing matched here".
