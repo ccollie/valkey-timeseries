@@ -308,45 +308,39 @@ impl Parser {
 // Parsing Helpers (Series, Metrics, Values, Durations)
 // ============================================================================
 
-fn parse_series(line: &str) -> Result<SeriesLoad, String> {
-    let mut chars = line.chars().peekable();
-    let mut metric_part = String::new();
-
-    // Read metric name (until { or whitespace)
-    while let Some(&c) = chars.peek() {
-        if c == '{' || c.is_whitespace() {
-            break;
-        }
-        metric_part.push(chars.next().unwrap());
+/// Split `line` into its metric prefix — a name (up to `{` or whitespace)
+/// and/or a balanced `{...}` label set — and the rest of the line. `what`
+/// names the line kind in the unbalanced-brace error.
+fn split_metric_prefix<'a>(line: &'a str, what: &str) -> Result<(&'a str, &'a str), String> {
+    let name_end = line
+        .find(|c: char| c == '{' || c.is_whitespace())
+        .unwrap_or(line.len());
+    if !line[name_end..].starts_with('{') {
+        return Ok(line.split_at(name_end));
     }
-
-    // Read label set if present
-    if chars.peek() == Some(&'{') {
-        let mut brace_depth = 0;
-        for c in chars.by_ref() {
-            metric_part.push(c);
-            if c == '{' {
-                brace_depth += 1;
-            } else if c == '}' {
-                brace_depth -= 1;
-                if brace_depth == 0 {
-                    break;
-                }
+    let mut brace_depth = 0;
+    for (i, c) in line[name_end..].char_indices() {
+        if c == '{' {
+            brace_depth += 1;
+        } else if c == '}' {
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                return Ok(line.split_at(name_end + i + 1));
             }
         }
-
-        if brace_depth != 0 {
-            return Err(format!("Unbalanced {{ }} in series: {}", line));
-        }
     }
+    Err(format!("Unbalanced {{ }} in {what}: {line}"))
+}
 
-    let value_parts: String = chars.collect::<String>().trim().to_string();
+fn parse_series(line: &str) -> Result<SeriesLoad, String> {
+    let (metric_part, rest) = split_metric_prefix(line, "series")?;
+    let value_parts = rest.trim();
     if value_parts.is_empty() {
         return Err(format!("Series missing values: {}", line));
     }
 
     let (metric, labels) = parse_metric(metric_part.trim())?;
-    let values = parse_multiple_value_exprs(&value_parts)?;
+    let values = parse_multiple_value_exprs(value_parts)?;
 
     let mut all_labels = labels;
     if !metric.is_empty() {
@@ -579,38 +573,8 @@ fn split_expansion(s: &str) -> Option<(&str, char, &str, &str)> {
 
 fn parse_expected(line: &str) -> Result<(RangeSample, bool), String> {
     // Parse metric/labels prefix and trailing sample value expression.
-    let mut chars = line.chars().peekable();
-    let mut metric_part = String::new();
-
-    // Read metric name if present (until { or whitespace)
-    while let Some(&c) = chars.peek() {
-        if c == '{' || c.is_whitespace() {
-            break;
-        }
-        metric_part.push(chars.next().unwrap());
-    }
-
-    // Read full label set if present
-    if chars.peek() == Some(&'{') {
-        let mut brace_depth = 0;
-        for c in chars.by_ref() {
-            metric_part.push(c);
-            if c == '{' {
-                brace_depth += 1;
-            } else if c == '}' {
-                brace_depth -= 1;
-                if brace_depth == 0 {
-                    break;
-                }
-            }
-        }
-
-        if brace_depth != 0 {
-            return Err(format!("Unbalanced {{ }} in expected: {}", line));
-        }
-    }
-
-    let value_expr: String = chars.collect::<String>().trim().to_string();
+    let (metric_part, rest) = split_metric_prefix(line, "expected")?;
+    let value_expr = rest.trim();
     if value_expr.is_empty() {
         return Err(format!("Missing value in expected: {}", line));
     }
@@ -618,7 +582,7 @@ fn parse_expected(line: &str) -> Result<(RangeSample, bool), String> {
     let (metric_name, label_map) = parse_metric(metric_part.trim())?;
 
     let labels = build_sorted_labels(metric_name, label_map);
-    let samples = parse_expected_samples(&value_expr, line)?;
+    let samples = parse_expected_samples(value_expr, line)?;
     let had_braces = line.trim_start().starts_with('{');
 
     Ok((
