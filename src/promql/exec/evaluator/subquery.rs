@@ -4,6 +4,7 @@
 use super::*;
 use crate::common::{Sample, hash::DeterministicHasher};
 use crate::promql::engine::sample_budget::Retained;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many inner steps of a subquery are evaluated, in parallel, before their
@@ -140,7 +141,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         // The union of every outer step's grid, prepared up front for a range
         // query (`preload_subqueries`); see the per-step preload below.
-        let union = self.prepared_union(subquery);
+        let union_key = self.union_key(subquery);
+        let union = union_key
+            .as_deref()
+            .and_then(|key| self.prepared.subqueries.get(key).cloned());
 
         // Fast path: if inner expression is a pure VectorSelector, evaluate over range once.
         //
@@ -178,7 +182,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         // The inner expression already evaluated at every step of the union
         // (`preload_subqueries`): this window is a slice of it.
-        if let Some(evaluated) = self.evaluated_union(subquery) {
+        if let Some(evaluated) = union_key
+            .as_deref()
+            .and_then(|key| self.prepared.evaluated.get(key))
+        {
             return evaluated.window(
                 aligned_start_ms,
                 subquery_end_ms,
@@ -218,30 +225,23 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 let grid =
                     PreloadGrid::for_subquery(aligned_start_ms, subquery_end_ms, step_ms, ctx);
                 let sub_plan = PlannedQuery::for_grid(&subquery.expr, grid);
-                let prepared = match Preloader::sharing(
-                    self.reader,
-                    self.options,
-                    Arc::clone(&self.prepared.budget),
-                )
-                .prepare(sub_plan)
-                {
-                    Ok(prepared) => prepared,
-                    Err(err) => {
-                        // A deadline or a spent sample budget means the query is
-                        // over: the budget only grows, so per-step reads would
-                        // be refused one by one.
-                        if is_query_ending(&err) {
-                            return Err(err);
-                        }
-                        // Otherwise best-effort, on the same rule as the matrix preload: the per-step path below
-                        // reproduces the unpreloaded behavior exactly, so a preload that trips a reader limit
-                        // downgrades the subquery to per-step reads rather than failing a query that used to succeed.
-                        log_debug(format!(
-                            "subquery preload failed; falling back to per-step evaluation: {err}"
-                        ));
-                        Arc::new(PreparedQuery::sharing(Arc::clone(&self.prepared.budget)))
-                    }
-                };
+                // Best-effort, on the same rule as the matrix preload: the
+                // per-step path below reproduces the unpreloaded behavior
+                // exactly, so a preload that trips a reader limit downgrades
+                // the subquery to per-step reads rather than failing a query
+                // that used to succeed.
+                let prepared = best_effort(
+                    Preloader::sharing(
+                        self.reader,
+                        self.options,
+                        Arc::clone(&self.prepared.budget),
+                    )
+                    .prepare(sub_plan),
+                    "subquery preload failed; falling back to per-step evaluation",
+                )?
+                .unwrap_or_else(|| {
+                    Arc::new(PreparedQuery::sharing(Arc::clone(&self.prepared.budget)))
+                });
                 Evaluator::with_prepared(self.reader, self.options, prepared)
             }
         };
@@ -539,33 +539,22 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         }))
     }
 
-    /// The grid `preload_subqueries` evaluated for `subquery`, if any; keyed
-    /// as [`Self::prepared_union`] is.
-    fn evaluated_union(&self, subquery: &SubqueryExpr) -> Option<Arc<EvaluatedSubquery>> {
-        let evaluated = &self.prepared.evaluated;
-        if evaluated.is_empty() {
+    /// The key `preload_subqueries` filed `subquery`'s union under: the one
+    /// [`NodeKeys`] memoized for the node, else one built here — for a node
+    /// built during evaluation. `None` when no union was prepared at all (an
+    /// instant query, or a range query without subquery unions): not worth
+    /// formatting a key to miss. Resolved once per evaluation, as both the
+    /// prepared and the evaluated union are looked up under it.
+    fn union_key(&self, subquery: &SubqueryExpr) -> Option<Cow<'_, SubqueryKey>> {
+        if self.prepared.subqueries.is_empty() && self.prepared.evaluated.is_empty() {
             return None;
         }
-        match self.prepared.node_keys.subqueries.get(&node_addr(subquery)) {
-            Some(key) => evaluated.get(key).cloned(),
-            None => evaluated.get(&SubqueryKey::of(subquery)).cloned(),
-        }
-    }
-
-    /// The union `preload_subqueries` prepared for `subquery`, if any: by the
-    /// key [`NodeKeys`] memoized for the node, else by one built here — for a
-    /// node built during evaluation.
-    fn prepared_union(&self, subquery: &SubqueryExpr) -> Option<Arc<PreparedQuery>> {
-        let unions = &self.prepared.subqueries;
-        // An instant query, or a range query without subquery unions: not worth
-        // formatting a key to miss.
-        if unions.is_empty() {
-            return None;
-        }
-        match self.prepared.node_keys.subqueries.get(&node_addr(subquery)) {
-            Some(key) => unions.get(key).cloned(),
-            None => unions.get(&SubqueryKey::of(subquery)).cloned(),
-        }
+        Some(
+            match self.prepared.node_keys.subqueries.get(&node_addr(subquery)) {
+                Some(key) => Cow::Borrowed(key),
+                None => Cow::Owned(SubqueryKey::of(subquery)),
+            },
+        )
     }
 }
 

@@ -72,9 +72,20 @@ enum Scope {
 struct Planner<'p, 'e, 'r, R: QueryReader + ?Sized> {
     evaluator: &'p Evaluator<'r, R>,
     plan: GridPlan<'e>,
-    /// The call that the enclosing aggregation already offered as a fused
-    /// candidate, so it is not offered again on its own.
-    fused_call: Option<usize>,
+    /// The rollup call directly under the aggregation being visited, as that
+    /// visit found it; consumed by the call's own visit.
+    operand_call: Option<OperandCall<'e>>,
+}
+
+/// What [`Planner::visit_aggregate`] learned about its operand call, so the
+/// call's own visit does not work it out again.
+struct OperandCall<'e> {
+    addr: usize,
+    /// [`Evaluator::pushable_rollup`] of the call.
+    pushed: Option<(&'e MatrixSelector, GridRollup)>,
+    /// The aggregation already offered the call as a fused candidate, so it is
+    /// not offered again on its own.
+    offered: bool,
 }
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
@@ -91,7 +102,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 subqueries: Vec::new(),
                 node_keys: NodeKeys::default(),
             },
-            fused_call: None,
+            operand_call: None,
         };
         planner.visit(expr, Scope::Grid, true);
         for &twin in twins {
@@ -119,7 +130,15 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
                 if in_expr && call.func.name == "timestamp" {
                     self.plan.sample_timestamps = true;
                 }
-                let pushed = self.evaluator.pushable_rollup(call);
+                let operand = self
+                    .operand_call
+                    .take()
+                    .filter(|operand| operand.addr == node_addr(call));
+                let offered = operand.as_ref().is_some_and(|operand| operand.offered);
+                let pushed = match operand {
+                    Some(operand) => operand.pushed,
+                    None => self.evaluator.pushable_rollup(call),
+                };
                 let rollup_key = pushed
                     .as_ref()
                     .map(|(matrix, rollup)| GridPreloadKey::rollup(&matrix.vs, rollup, None));
@@ -127,7 +146,6 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
                     .node_keys
                     .rollups
                     .insert(node_addr(call), rollup_key.clone());
-                let offered = self.fused_call.take() == Some(node_addr(call));
                 if scope == Scope::Grid && !offered {
                     self.plan.rollups.push(PlannedRollup {
                         call,
@@ -172,28 +190,28 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
 
         // The step loop's own rule, so the key preloaded under is the key
         // looked up by.
-        let stepped_key = stepped_aggregation_key(aggregate);
+        let stepped_key = fusable
+            .as_ref()
+            .and_then(|aggregation| stepped_key(aggregate, aggregation));
         self.plan
             .node_keys
             .stepped
             .insert(addr, stepped_key.clone());
 
-        let fused = match operand {
-            Expr::Call(call) => self
-                .evaluator
-                .pushable_rollup(call)
-                .map(|pushed| (call, pushed)),
+        let operand_call = match operand {
+            Expr::Call(call) => Some(call),
             _ => None,
         };
+        let fused = operand_call.and_then(|call| self.evaluator.pushable_rollup(call));
         let fused_key = match (&fused, &fusable) {
-            (Some((_, (matrix, rollup))), Some(aggregation)) => Some(GridPreloadKey::rollup(
+            (Some((matrix, rollup)), Some(aggregation)) => Some(GridPreloadKey::rollup(
                 &matrix.vs,
                 rollup,
                 Some(AggregationKey::of(aggregation)),
             )),
             _ => None,
         };
-        self.plan.node_keys.fused.insert(addr, fused_key);
+        self.plan.node_keys.fused.insert(addr, fused_key.clone());
 
         if scope == Scope::Grid {
             match operand {
@@ -211,21 +229,26 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
                 // rollup alone, with the aggregation run here per step.
                 Expr::Call(call) => {
                     let aggregation = fusable.clone();
-                    let pushed = fused.map(|(_, (matrix, rollup))| {
-                        let key = GridPreloadKey::rollup(
-                            &matrix.vs,
-                            &rollup,
-                            aggregation.as_ref().map(AggregationKey::of),
-                        );
+                    let pushed = fused.clone().map(|(matrix, rollup)| {
+                        // Fused: the key just built. Otherwise the rollup's
+                        // own, unfused key.
+                        let key = fused_key
+                            .unwrap_or_else(|| GridPreloadKey::rollup(&matrix.vs, &rollup, None));
                         (key, rollup, matrix, aggregation)
                     });
                     self.plan.rollups.push(PlannedRollup { call, pushed });
-                    self.fused_call = Some(node_addr(call));
                 }
                 _ => {}
             }
         }
 
+        if let Some(call) = operand_call {
+            self.operand_call = Some(OperandCall {
+                addr: node_addr(call),
+                pushed: fused,
+                offered: scope == Scope::Grid,
+            });
+        }
         let selectors_before = self.plan.selectors.len();
         self.visit(&aggregate.expr, scope, in_expr);
         // The operand's selector, when the aggregation is a stepped one: read
@@ -236,7 +259,7 @@ impl<'e, R: QueryReader + ?Sized> Planner<'_, 'e, '_, R> {
         {
             entry.1 = stepped_key;
         }
-        self.fused_call = None;
+        self.operand_call = None;
         if let Some(param) = &aggregate.param {
             self.visit(param, scope, in_expr);
         }

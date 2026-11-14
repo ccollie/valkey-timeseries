@@ -156,49 +156,40 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 continue;
             }
             let plan = PlannedQuery::for_grid(&subquery.expr, union).with_twins(subquery_twins);
-            match Preloader::sharing(self.reader, self.options, Arc::clone(&self.prepared.budget))
-                .prepare(plan)
-            {
-                Ok(prepared) => {
-                    // Where its outer windows overlap, evaluate the inner
-                    // expression once over the whole union, for every outer
-                    // step to slice; a grid that does not fit is skipped and
-                    // the subquery evaluates per step.
-                    if self.grid_worth_building(subquery, grid) {
-                        match self.evaluate_union(subquery, &prepared, &union, grid) {
-                            Ok(Some(evaluated)) => {
-                                count_subquery_grid(true);
-                                self.preloads
-                                    .evaluated
-                                    .write()
-                                    .unwrap()
-                                    .insert(key.clone(), Arc::new(evaluated));
-                            }
-                            Ok(None) => count_subquery_grid(false),
-                            Err(err) if is_query_ending(&err) => return Err(err),
-                            Err(err) => {
-                                count_subquery_grid(false);
-                                log_debug(format!(
-                                    "subquery union evaluation failed; each outer step will evaluate its own window: {err}"
-                                ));
-                            }
-                        }
+            // Same rule as the per-step preload: a reader limit tripped by the
+            // union span downgrades to per-step evaluation.
+            let Some(prepared) = best_effort(
+                Preloader::sharing(self.reader, self.options, Arc::clone(&self.prepared.budget))
+                    .prepare(plan),
+                "subquery union preload failed; each outer step will prepare its own grid",
+            )?
+            else {
+                continue;
+            };
+            // Where its outer windows overlap, evaluate the inner expression
+            // once over the whole union, for every outer step to slice; a grid
+            // that does not fit is skipped and the subquery evaluates per step.
+            if self.grid_worth_building(subquery, grid) {
+                match best_effort(
+                    self.evaluate_union(subquery, &prepared, &union, grid),
+                    "subquery union evaluation failed; each outer step will evaluate its own window",
+                )? {
+                    Some(Some(evaluated)) => {
+                        count_subquery_grid(true);
+                        self.preloads
+                            .evaluated
+                            .write()
+                            .unwrap()
+                            .insert(key.clone(), Arc::new(evaluated));
                     }
-                    self.preloads
-                        .subqueries
-                        .write()
-                        .unwrap()
-                        .insert(key, prepared);
-                }
-                Err(err) if is_query_ending(&err) => return Err(err),
-                Err(err) => {
-                    // Same rule as the per-step preload: a reader limit tripped
-                    // by the union span downgrades to per-step evaluation.
-                    log_debug(format!(
-                        "subquery union preload failed; each outer step will prepare its own grid: {err}"
-                    ));
+                    _ => count_subquery_grid(false),
                 }
             }
+            self.preloads
+                .subqueries
+                .write()
+                .unwrap()
+                .insert(key, prepared);
         }
         Ok(())
     }
@@ -476,35 +467,33 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // the per-step pipeline.
         let start_ms = first.saturating_sub(range_ms).saturating_add(1);
 
-        match self
+        let read = self
             .reader
             .query_range(&matrix.vs, start_ms, last, self.options)
-        {
-            Ok(series) => {
-                // Over budget is a query failure, not a declined preload: the
-                // budget is query-wide and already exceeded, so per-step reads
-                // would only be refused one by one.
-                self.charge_range_samples(&series)?;
-                let series = series
-                    .into_iter()
-                    .map(|s| PreloadedMatrixSeries {
-                        labels: s.labels,
-                        samples: Arc::from(s.samples),
-                    })
-                    .collect();
-                self.preloads
-                    .matrices
-                    .write()
-                    .unwrap()
-                    .insert(key, PreloadedMatrixData { series });
-            }
-            Err(err) if err.ends_query() => return Err(err.into()),
-            Err(err) => {
-                log_debug(format!(
-                    "matrix preload failed; falling back to per-step windows: {err}"
-                ));
-            }
-        }
+            .map_err(EvaluationError::from);
+        let Some(series) = best_effort(
+            read,
+            "matrix preload failed; falling back to per-step windows",
+        )?
+        else {
+            return Ok(());
+        };
+        // Over budget is a query failure, not a declined preload: the budget
+        // is query-wide and already exceeded, so per-step reads would only be
+        // refused one by one.
+        self.charge_range_samples(&series)?;
+        let series = series
+            .into_iter()
+            .map(|s| PreloadedMatrixSeries {
+                labels: s.labels,
+                samples: Arc::from(s.samples),
+            })
+            .collect();
+        self.preloads
+            .matrices
+            .write()
+            .unwrap()
+            .insert(key, PreloadedMatrixData { series });
         Ok(())
     }
 
