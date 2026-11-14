@@ -4,7 +4,7 @@ pub mod label;
 pub mod labels_struct;
 mod metric_name;
 mod regex;
-mod regex_cache;
+pub(crate) mod regex_cache;
 mod regex_utils;
 mod render;
 
