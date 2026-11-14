@@ -1,6 +1,6 @@
 use crate::common::Sample;
-use crate::promql::functions::rollups::eval_series;
-use crate::promql::functions::utils::{expect_exact_arg_count, expect_range_vector, expect_scalar};
+use crate::promql::functions::range_vector_functions::eval_range;
+use crate::promql::functions::utils::{expect_range_vector, expect_scalar, three_args};
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, EvaluationError, ExprResult};
 
@@ -70,12 +70,10 @@ fn eval_double_exponential_smoothing(
     args: Vec<PromQLArg>,
     ctx: &EvalContext,
 ) -> EvalResult<ExprResult> {
-    expect_exact_arg_count(function_name, 3, args.len())?;
-    let mut args = args.into_iter();
-    let series = expect_range_vector(args.next().expect("checked arg count"), function_name)?;
-    let smoothing_factor =
-        expect_scalar(args.next().expect("checked arg count"), function_name, "sf")?;
-    let trend_factor = expect_scalar(args.next().expect("checked arg count"), function_name, "tf")?;
+    let (series, smoothing_factor, trend_factor) = three_args(function_name, args)?;
+    let series = expect_range_vector(series, function_name)?;
+    let smoothing_factor = expect_scalar(smoothing_factor, function_name, "sf")?;
+    let trend_factor = expect_scalar(trend_factor, function_name, "tf")?;
 
     // Both bounds exclusive, as Prometheus checks them; a NaN factor fails too.
     if !(smoothing_factor > 0.0 && smoothing_factor < 1.0) {
@@ -88,9 +86,9 @@ fn eval_double_exponential_smoothing(
         return Err(EvaluationError::ArgumentError(msg));
     }
 
-    Ok(ExprResult::InstantVector(eval_series(ctx, series, |s| {
-        calculate_double_exponential_smoothing_value(&s.values, smoothing_factor, trend_factor)
-    })?))
+    eval_range(ctx, series, |samples| {
+        calculate_double_exponential_smoothing_value(samples, smoothing_factor, trend_factor)
+    })
 }
 
 #[cfg(test)]

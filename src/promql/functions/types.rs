@@ -136,7 +136,7 @@ pub(crate) trait PromQLFunction {
     /// [`Self::apply_call`] instead and never sees this default.
     fn apply(&self, _arg: PromQLArg, _ctx: &EvalContext) -> EvalResult<ExprResult> {
         Err(EvaluationError::InternalError(
-            "function does not take exactly one argument".to_string(),
+            "function requires exactly one argument".to_string(),
         ))
     }
 

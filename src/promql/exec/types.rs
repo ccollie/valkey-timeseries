@@ -435,22 +435,11 @@ impl EvalLabels {
             self.insert(key.to_string(), value);
             return;
         };
-        let labels: Vec<InternedString> = match split.binary_search_by(|l| l.name().cmp(key)) {
-            Ok(i) if split[i].value() == value => return,
-            Ok(i) => {
-                let mut labels = split.to_vec();
-                labels[i] = InternedString::new_pair(key, &value);
-                labels
-            }
-            Err(i) => {
-                let mut labels = Vec::with_capacity(split.len() + 1);
-                labels.extend_from_slice(&split[..i]);
-                labels.push(InternedString::new_pair(key, &value));
-                labels.extend_from_slice(&split[i..]);
-                labels
-            }
-        };
-        *self = EvalLabels::Interned(Arc::from(labels));
+        if let Some(labels) =
+            splice_interned(split, key, &value, || InternedString::new_pair(key, &value))
+        {
+            *self = EvalLabels::Interned(labels);
+        }
     }
 
     /// Set `name` to its value in `source`, or remove it when `source` has
@@ -458,8 +447,8 @@ impl EvalLabels {
     ///
     /// An `Interned` set stays interned. The source's `name=value` entry is
     /// shared by refcount when the source is interned too, and interned once
-    /// otherwise, so the result is one new slice. Going through `set` instead
-    /// materialized every label of every result as owned `String`s.
+    /// otherwise, so the result is one new slice and the value is never
+    /// copied out as a `String`, as [`Self::set`] would need.
     pub(crate) fn copy_label_from(&mut self, name: &str, source: &EvalLabels) {
         let Some(value) = source.get(name) else {
             self.remove(name);
@@ -469,29 +458,16 @@ impl EvalLabels {
             self.set(name, value.to_string());
             return;
         };
-        let entry = match source {
+        let entry = || match source {
             EvalLabels::Interned(from) => from
                 .binary_search_by(|l| l.name().cmp(name))
                 .map(|i| from[i].clone())
                 .unwrap_or_else(|_| InternedString::new_pair(name, value)),
             _ => InternedString::new_pair(name, value),
         };
-        let labels: Vec<InternedString> = match split.binary_search_by(|l| l.name().cmp(name)) {
-            Ok(i) if split[i].value() == value => return,
-            Ok(i) => {
-                let mut labels = split.to_vec();
-                labels[i] = entry;
-                labels
-            }
-            Err(i) => {
-                let mut labels = Vec::with_capacity(split.len() + 1);
-                labels.extend_from_slice(&split[..i]);
-                labels.push(entry);
-                labels.extend_from_slice(&split[i..]);
-                labels
-            }
-        };
-        *self = EvalLabels::Interned(Arc::from(labels));
+        if let Some(labels) = splice_interned(split, name, value, entry) {
+            *self = EvalLabels::Interned(labels);
+        }
     }
 
     /// Compute grouping labels for aggregations.
@@ -606,6 +582,33 @@ impl EvalLabels {
             *self = EvalLabels::Owned(self.to_label_vec());
         }
     }
+}
+
+/// `split` with `name` set to `value` through `entry`, the one new interned
+/// entry, spliced into a copy at its sorted place; `None` when `split` already
+/// has `name=value`, so the caller changes nothing.
+fn splice_interned(
+    split: &[InternedString],
+    name: &str,
+    value: &str,
+    entry: impl FnOnce() -> InternedString,
+) -> Option<Arc<[InternedString]>> {
+    let labels: Vec<InternedString> = match split.binary_search_by(|l| l.name().cmp(name)) {
+        Ok(i) if split[i].value() == value => return None,
+        Ok(i) => {
+            let mut labels = split.to_vec();
+            labels[i] = entry();
+            labels
+        }
+        Err(i) => {
+            let mut labels = Vec::with_capacity(split.len() + 1);
+            labels.extend_from_slice(&split[..i]);
+            labels.push(entry());
+            labels.extend_from_slice(&split[i..]);
+            labels
+        }
+    };
+    Some(Arc::from(labels))
 }
 
 /// Borrowed label views over either backing store of [`EvalLabels`].

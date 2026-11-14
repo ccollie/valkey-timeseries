@@ -18,8 +18,8 @@ use crate::parser::duration::parse_positive_duration_value;
 use crate::promql::functions::rollups::{eval_rollups, eval_rollups_basic};
 use crate::promql::functions::types::RollupWindow;
 use crate::promql::functions::utils::{
-    expect_exact_arg_count, expect_min_arg_count, expect_range_vector, expect_scalar,
-    expect_string, max_arity_error,
+    expect_min_arg_count, expect_range_vector, expect_scalar, expect_string, max_arity_error,
+    two_args,
 };
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, EvaluationError, ExprResult};
@@ -98,10 +98,9 @@ pub(in crate::promql) struct StateCountOverTimeFunction;
 
 impl PromQLFunction for StateCountOverTimeFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        expect_exact_arg_count(COUNT_NAME, 2, args.len())?;
-        let mut iter = args.into_iter();
-        let range = expect_range_vector(iter.next().unwrap(), COUNT_NAME)?;
-        let state = expect_state(iter.next().unwrap(), COUNT_NAME)?;
+        let (range, state) = two_args(COUNT_NAME, args)?;
+        let range = expect_range_vector(range, COUNT_NAME)?;
+        let state = expect_state(state, COUNT_NAME)?;
         Ok(ExprResult::InstantVector(eval_rollups(
             ctx,
             range,

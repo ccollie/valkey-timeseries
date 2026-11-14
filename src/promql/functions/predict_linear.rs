@@ -1,6 +1,6 @@
 use crate::promql::common::math::sample_regression;
 use crate::promql::functions::range_vector_functions::eval_range;
-use crate::promql::functions::utils::{expect_scalar, min_arity_error};
+use crate::promql::functions::utils::{expect_scalar, two_args};
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalContext, EvalResult, ExprResult};
 
@@ -12,12 +12,7 @@ pub(in crate::promql) struct PredictLinearFunction;
 
 impl PromQLFunction for PredictLinearFunction {
     fn apply_args(&self, args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        if args.len() != 2 {
-            return Err(min_arity_error("predict_linear", 2, args.len()));
-        }
-        let mut arg_iter = args.into_iter();
-        let range_arg = arg_iter.next().unwrap();
-        let secs_arg = arg_iter.next().unwrap();
+        let (range_arg, secs_arg) = two_args("predict_linear", args)?;
 
         let series = range_arg.into_range_vector()?;
         let seconds_ahead = expect_scalar(secs_arg, "predict_linear", "t")?;

@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use crate::labels::HasFingerprint;
 use crate::promql::functions::utils::{
-    exact_arity_error, expect_instant_vector, expect_min_arg_count, expect_scalar, expect_string,
-    is_inf, is_valid_label_name,
+    expect_instant_vector, expect_min_arg_count, expect_scalar, expect_string, is_inf,
+    is_valid_label_name, three_args, two_args,
 };
 use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::hashers::FingerprintHashMap;
@@ -257,14 +257,10 @@ fn vmrange_buckets_to_le(tss: Vec<EvalSample>) -> Vec<EvalSample> {
 /// classic histogram's observations between `lower` and `upper`, as
 /// Prometheus' `funcHistogramFraction` computes it (see [`bucket_fraction`]).
 fn histogram_fraction(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
-    if args.len() != 3 {
-        return Err(exact_arity_error("histogram_fraction", 3, args.len()));
-    }
-
-    let mut arg_iter = args.into_iter();
-    let lower = expect_scalar(arg_iter.next().unwrap(), "histogram_fraction", "lower")?;
-    let upper = expect_scalar(arg_iter.next().unwrap(), "histogram_fraction", "upper")?;
-    let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_fraction")?;
+    let (lower, upper, series) = three_args("histogram_fraction", args)?;
+    let lower = expect_scalar(lower, "histogram_fraction", "lower")?;
+    let upper = expect_scalar(upper, "histogram_fraction", "upper")?;
+    let series = expect_instant_vector(series, "histogram_fraction")?;
 
     let rvs = classic_histograms(series, HistogramGrouping::WithName)
         .map(|(mut sample, mut buckets)| {
@@ -278,13 +274,9 @@ fn histogram_fraction(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
 }
 
 pub(super) fn histogram_quantile(args: Vec<PromQLArg>) -> EvalResult<ExprResult> {
-    if args.len() != 2 {
-        return Err(exact_arity_error("histogram_quantile", 2, args.len()));
-    }
-
-    let mut arg_iter = args.into_iter();
-    let phi = expect_scalar(arg_iter.next().unwrap(), "histogram_quantile", "phi")?;
-    let series = expect_instant_vector(arg_iter.next().unwrap(), "histogram_quantile")?;
+    let (phi, series) = two_args("histogram_quantile", args)?;
+    let phi = expect_scalar(phi, "histogram_quantile", "phi")?;
+    let series = expect_instant_vector(series, "histogram_quantile")?;
 
     let rvs = classic_histograms(series, HistogramGrouping::WithName)
         .map(|(mut sample, mut buckets)| {
