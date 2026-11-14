@@ -1,4 +1,4 @@
-use crate::common::threads::IntoParRayon;
+use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::promql::EvalLabels;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
@@ -292,8 +292,10 @@ impl GridRequest {
         series: Vec<RangeSample<EvalLabels>>,
     ) -> Vec<SteppedSeries> {
         let lookback_delta_ms = self.lookback_delta_ms;
+        let threads = request_par_threads(series.len(), stage_work(window_ends, &series));
         series
             .into_par_rayon()
+            .num_threads(threads)
             .filter_map(|s| {
                 let mut points = Vec::new();
                 for_each_step_sample(
@@ -324,9 +326,12 @@ impl GridRequest {
         // Series are independent, and on a single node this is the entire
         // rollup — every series over every step — so it fans out. Sequential,
         // a 1000-series `rate(m[5m])` at 240 steps ran on one thread while the
-        // pool idled.
+        // pool idled. A handful of short series is cheaper here than a pool
+        // round trip.
+        let threads = request_par_threads(series.len(), stage_work(window_ends, &series));
         series
             .into_par_rayon()
+            .num_threads(threads)
             .filter_map(|s| {
                 let points = rollup.kind.eval_windows(
                     &s.samples,
@@ -568,6 +573,13 @@ pub(in crate::promql) fn output_bound(
     let lo = window_ends.partition_point(|&end| end < first.timestamp);
     let hi = window_ends.partition_point(|&end| end < reach);
     hi.saturating_sub(lo)
+}
+
+/// The per-series stage's work over `series`, for [`request_par_threads`]:
+/// every sample read, and every window end walked per series.
+fn stage_work(window_ends: &[Timestamp], series: &[RangeSample<EvalLabels>]) -> usize {
+    let samples: usize = series.iter().map(|s| s.samples.len()).sum();
+    samples.saturating_add(series.len().saturating_mul(window_ends.len()))
 }
 
 /// Work, in samples or output points (a series counting [`SERIES_WORK`]), that

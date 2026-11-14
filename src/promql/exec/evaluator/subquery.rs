@@ -9,9 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// How many inner steps of a subquery are evaluated, in parallel, before their
 /// samples are merged: a long subquery must not hold one vector per step.
 const SUBQUERY_STEP_BATCH_SIZE: usize = 64;
-/// Fewer inner steps than this are evaluated on the calling thread: handing
-/// them to the pool costs more than it saves.
-const PARALLEL_SUBQUERY_STEP_THRESHOLD: usize = 4;
 /// The fewest outer windows that must read each union step for a grid to be
 /// built. With one, the grid evaluates what per-step evaluation would and pays
 /// for holding and slicing it on top: about 10 % slower measured, and up to
@@ -260,7 +257,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // merged.
         let materialized = SampleBudget::new(self.options.max_samples);
         let mut series_map = SubquerySeriesMap::default();
-        if expected_steps < PARALLEL_SUBQUERY_STEP_THRESHOLD {
+        if expected_steps < PARALLEL_STEP_THRESHOLD {
             for current_time_ms in steps {
                 let (current_time_ms, samples) =
                     sub.eval_subquery_step(subquery, ctx, current_time_ms)?;
@@ -276,8 +273,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 if batch.is_empty() {
                     break;
                 }
+                let threads = step_threads(batch.len());
                 let step_results: Vec<(i64, Vec<EvalSample>)> = batch
                     .into_par_rayon()
+                    .num_threads(threads)
                     .map(|eval_ts| sub.eval_subquery_step(subquery, ctx, eval_ts))
                     .into_fallible()
                     .collect()?;
@@ -462,7 +461,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // A short union, or the short tail batch of a long one, runs on
             // this thread, as the per-step path does.
             let results: Vec<(Timestamp, Vec<EvalSample>)> =
-                if batch.len() < PARALLEL_SUBQUERY_STEP_THRESHOLD {
+                if batch.len() < PARALLEL_STEP_THRESHOLD {
                     batch.into_iter().map(step).collect::<EvalResult<_>>()?
                 } else {
                     batch.into_par_rayon().map(step).into_fallible().collect()?
