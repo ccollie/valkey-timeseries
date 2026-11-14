@@ -232,3 +232,16 @@ eval instant at 0h empty_re{job=~"|api"}
 	empty_re{env="prod"} 2
 
 clear
+
+# An or-selector and the conjunction of the same matchers select different
+# series, so a range query reading both must not answer one from the other's
+# preloaded reads.
+load 1m
+	orsel{a="1", b="9"} 1+0x10
+	orsel{a="7", b="2"} 1+0x10
+	orsel{a="1", b="2"} 1+0x10
+
+eval range from 0 to 3m step 1m count(orsel{a="1" or b="2"}) - count(orsel{a="1", b="2"})
+	{} 2 2 2 2
+
+clear

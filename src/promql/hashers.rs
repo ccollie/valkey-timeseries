@@ -8,7 +8,7 @@ use crate::promql::functions::RollupKind;
 use crate::promql::time::duration_ms;
 use promql_parser::label::{MatchOp, Matcher};
 use promql_parser::parser::{AtModifier, LabelModifier, Offset, VectorSelector};
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -56,17 +56,12 @@ impl HasFingerprint for VectorSelector {
 }
 
 fn update_hasher_for_vector_selector(vs: &VectorSelector, hasher: &mut LabelHasher) {
-    fn update_list(list: &Vec<Matcher>, hasher: &mut LabelHasher) {
-        let mut keys: SmallVec<[&Matcher; 6]> = smallvec![];
-        for m in list {
-            keys.push(m);
-        }
-
-        keys.sort_by(|&a, &b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
-
-        for m in keys {
-            update_hash_for_matcher(m, hasher);
-        }
+    /// `list` in a canonical order, so the order a query wrote its matchers
+    /// in does not change the key.
+    fn sorted(list: &[Matcher]) -> SmallVec<[&Matcher; 6]> {
+        let mut keys: SmallVec<[&Matcher; 6]> = list.iter().collect();
+        keys.sort_by(|a, b| cmp_matchers(a, b));
+        keys
     }
 
     if let Some(name) = &vs.name {
@@ -74,31 +69,47 @@ fn update_hasher_for_vector_selector(vs: &VectorSelector, hasher: &mut LabelHash
     }
     hasher.write(&[LABEL_SEP]);
 
-    update_list(&vs.matchers.matchers, hasher);
-
-    // Sort or_matchers lists to ensure order-independent hashing
-    let mut sorted_or_matchers: SmallVec<[&Vec<Matcher>; 8]> = smallvec![];
-    for m in &vs.matchers.or_matchers {
-        sorted_or_matchers.push(m);
+    for m in sorted(&vs.matchers.matchers) {
+        update_hash_for_matcher(m, hasher);
     }
 
-    sorted_or_matchers.sort_by(|&a, &b| {
-        // Compare lists lexicographically
-        for (ma, mb) in a.iter().zip(b.iter()) {
-            match ma.name.cmp(&mb.name) {
-                Ordering::Equal => match ma.value.cmp(&mb.value) {
-                    Ordering::Equal => continue,
-                    other => return other,
-                },
-                other => return other,
-            }
-        }
-        a.len().cmp(&b.len())
+    // The `or` groups, each sorted, then in order of their sorted matchers.
+    let mut groups: SmallVec<[SmallVec<[&Matcher; 6]>; 8]> =
+        vs.matchers.or_matchers.iter().map(|g| sorted(g)).collect();
+    groups.sort_by(|a, b| {
+        a.iter()
+            .zip(b.iter())
+            .map(|(ma, mb)| cmp_matchers(ma, mb))
+            .find(|o| o.is_ne())
+            .unwrap_or_else(|| a.len().cmp(&b.len()))
     });
-
-    for m in &sorted_or_matchers {
-        update_list(m, hasher);
+    for group in &groups {
+        // Each group is marked, so `{a="1" or b="2"}` — two groups — does not
+        // hash as `{a="1", b="2"}`, one list of both.
+        hasher.write(b"|");
+        hasher.write(&[LABEL_SEP]);
+        for m in group {
+            update_hash_for_matcher(m, hasher);
+        }
     }
+}
+
+/// Matchers by name, then operator, then value: a total order on what
+/// [`update_hash_for_matcher`] hashes, so `a="x", a!="x"` keys as
+/// `a!="x", a="x"` does.
+fn cmp_matchers(a: &Matcher, b: &Matcher) -> Ordering {
+    fn rank(op: &MatchOp) -> u8 {
+        match op {
+            MatchOp::Equal => 0,
+            MatchOp::NotEqual => 1,
+            MatchOp::Re(_) => 2,
+            MatchOp::NotRe(_) => 3,
+        }
+    }
+    a.name
+        .cmp(&b.name)
+        .then(rank(&a.op).cmp(&rank(&b.op)))
+        .then(a.value.cmp(&b.value))
 }
 
 fn update_hash_for_matcher(m: &Matcher, hasher: &mut LabelHasher) {
@@ -329,6 +340,20 @@ mod tests {
 
     fn key(q: &str) -> PreloadKey {
         PreloadKey::from_selector(&vs(q))
+    }
+
+    /// Selectors that select differently key differently: an `or` of two
+    /// groups is not one group of both, and neither the order the matchers
+    /// were written in nor the order of the groups changes the key.
+    #[test]
+    fn selector_keys_tell_or_groups_from_conjunctions() {
+        assert_ne!(key(r#"m{a="1" or b="2"}"#), key(r#"m{a="1", b="2"}"#));
+        assert_eq!(key(r#"m{a="1", a!="2"}"#), key(r#"m{a!="2", a="1"}"#));
+        assert_eq!(key(r#"m{a="x", a!="x"}"#), key(r#"m{a!="x", a="x"}"#));
+        assert_eq!(
+            key(r#"m{a="1", c="3" or b="2"}"#),
+            key(r#"m{b="2" or c="3", a="1"}"#)
+        );
     }
 
     fn by(kind: AggregationKind, labels: &[&str], without: bool) -> AggregationKey {
