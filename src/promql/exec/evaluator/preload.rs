@@ -809,7 +809,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // thread, so this becomes the selector's own stepped preload and
             // the aggregation runs per step over it, exactly as an unfused one.
             GridOutcome::Raw(series) => {
-                self.cache_stepped_span(vs, grid, series)?;
+                self.cache_stepped_span(vs, grid, &window_ends, series)?;
                 return Ok(true);
             }
             // A peer without grid push-down: not cached, so the selector is
@@ -840,9 +840,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // One window end per step, `@`/`offset` resolved here so the source
         // is never handed a modifier. With `@` every step shares one end and
         // the source answers that one; the scatter below replicates it.
-        let raw_series = match self.grid_request(vs, grid, None, None) {
+        let (raw_series, window_ends) = match self.grid_request(vs, grid, None, None) {
             Some((request, window_ends)) => {
-                match self.query_grid(vs, &request)? {
+                let series = match self.query_grid(vs, &request)? {
                     GridOutcome::Stepped(series) => {
                         // Charged as the grids they become, holes included: a
                         // source can ship a few points per series that span
@@ -873,13 +873,17 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                             "stepped selection answered with the wrong shape".to_string(),
                         ));
                     }
-                }
+                };
+                (series, window_ends)
             }
             // A modifier shape the grid request cannot describe: read the
             // span the selector's bounds cover and bucket it here.
-            None => self.read_selector_span(vs, grid)?,
+            None => (
+                self.read_selector_span(vs, grid)?,
+                self.resolved_window_ends(vs, grid),
+            ),
         };
-        self.cache_stepped_span(vs, grid, raw_series)
+        self.cache_stepped_span(vs, grid, &window_ends, raw_series)
     }
 
     /// The raw samples `vs` needs over the whole of `grid`, from an ordinary
@@ -911,20 +915,21 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     /// larger of the two. The grid is the larger whenever the lookback outlasts
     /// the gap between samples: one sample a day under a one-day lookback fills
     /// every step.
+    ///
+    /// `window_ends` are [`Self::resolved_window_ends`] — one per step, with
+    /// `@ start()`/`@ end()` resolved against the enclosing query's bounds so
+    /// they sweep its whole range, as the per-step fallback resolves them.
     pub(super) fn cache_stepped_span(
         &self,
         vs: &VectorSelector,
         grid: &PreloadGrid,
+        window_ends: &[Timestamp],
         raw_series: Vec<RangeSample<EvalLabels>>,
     ) -> EvalResult<()> {
         self.charge_range_samples(&raw_series)?;
 
-        let eval_start_ms = grid.start_ms;
-        let step_ms = grid.step_ms;
         let lookback_delta_ms = grid.lookback_delta_ms;
-        let num_steps = grid.expected_steps();
-        let at_modifier = vs.at.clone();
-        let offset_mod = vs.offset.clone();
+        let num_steps = window_ends.len();
 
         // ── Per-series step-bucketing ─────────────────
         let work = raw_series
@@ -940,19 +945,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 // Another series' grid may already have spent the budget.
                 self.check_budget()?;
                 let decoded = samples.len();
-                // Per-step instant stmt sets query_start = query_end = eval_ts for the evaluation
-                // timestamp; however, when resolving `@ start()` / `@ end()` inside the
-                // preloading phase we must use the enclosing query's bounds so that
-                // `@ start()`/`@ end()` sweep the full query range across steps.
-                // Pass `at_start_ms`/`at_end_ms` as the `query_start`/`query_end`
-                // parameters so AtModifier::Start/End resolve exactly as the
-                // per-step fallback path resolves them from the EvalContext.
-                let steps = (0..num_steps).map(|step_idx| {
-                    let eval_ts_i = eval_start_ms + (step_idx as i64) * step_ms;
-                    grid.modified_ts(at_modifier.as_ref(), offset_mod.as_ref(), eval_ts_i)
-                });
-
                 let mut values = StepGridBuilder::with_capacity(num_steps);
+                let steps = window_ends.iter().copied();
                 for_each_step_sample(&samples, steps, lookback_delta_ms, |_, latest| {
                     values.push(latest.copied());
                 });
@@ -964,7 +958,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .into_fallible()
             .collect()?;
 
-        self.cache_preloaded_series(vs, eval_start_ms, step_ms, preloaded_series);
+        self.cache_preloaded_series(vs, grid.start_ms, grid.step_ms, preloaded_series);
 
         Ok(())
     }

@@ -17,7 +17,8 @@ use crate::promql::engine::query_reader::{
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{QueryOptions, QueryReader};
 use crate::promql::exec::pipeline::{
-    QueryPlan, compute_subquery_alignment, execute_selector_pipeline, for_each_step_sample,
+    align_subquery_start, for_each_step_sample, read_instant_vector, read_matrix,
+    read_subquery_vector_selector,
 };
 use crate::promql::exec::planner::{PlannedQuery, PreloadGrid};
 use crate::promql::exec::preloader::Preloader;
@@ -529,9 +530,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             }
         }
 
-        let plan = QueryPlan::for_matrix(adjusted_eval_ts, range_ms);
-
-        let result = execute_selector_pipeline(self.reader, &plan, vector_selector, self.options)?;
+        let result = read_matrix(
+            self.reader,
+            vector_selector,
+            adjusted_eval_ts,
+            range_ms,
+            self.options,
+        )?;
         self.charge_result(&result)?;
         Ok(result)
     }
@@ -574,11 +579,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let adjusted_eval_ts =
             ctx.modified_eval_ts(vector_selector.at.as_ref(), vector_selector.offset.as_ref());
 
-        // The pipeline's instant-vector path stamps `lookback_delta` from the plan
-        // onto the options before calling QueryReader::query.
-        let plan = QueryPlan::for_instant_vector(adjusted_eval_ts, ctx.lookback_delta_ms);
-
-        let result = execute_selector_pipeline(self.reader, &plan, vector_selector, self.options)?;
+        let result = read_instant_vector(
+            self.reader,
+            vector_selector,
+            adjusted_eval_ts,
+            ctx.lookback_delta_ms,
+            self.options,
+        )?;
         self.charge_result(&result)?;
         Ok(result)
     }

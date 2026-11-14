@@ -1,5 +1,5 @@
 use crate::common::Timestamp;
-use crate::promql::exec::pipeline::compute_subquery_alignment;
+use crate::promql::exec::pipeline::align_subquery_start;
 use crate::promql::model::EvalContext;
 use crate::promql::time::{apply_time_modifiers_ms, duration_ms, grid_step_count, step_times};
 use promql_parser::parser::{AtModifier, Expr, Offset, SubqueryExpr};
@@ -100,10 +100,6 @@ impl PreloadGrid {
         apply_time_modifiers_ms(at, offset, self.at_start_ms, self.at_end_ms, ts)
     }
 
-    pub(crate) fn expected_steps(&self) -> usize {
-        grid_step_count(self.start_ms, self.end_ms, self.step_ms) as usize
-    }
-
     /// The last of [`Self::steps`], without walking them.
     pub(crate) fn last_step(&self) -> Option<Timestamp> {
         if self.step_ms <= 0 || self.end_ms < self.start_ms {
@@ -136,11 +132,9 @@ impl PreloadGrid {
             |ts: Timestamp| self.modified_ts(subquery.at.as_ref(), subquery.offset.as_ref(), ts);
         let (first_end, last_end) = (resolve(first), resolve(last));
         let (earliest_end, latest_end) = (first_end.min(last_end), first_end.max(last_end));
-        let (aligned_start_ms, _, _, _) = compute_subquery_alignment(
+        let aligned_start_ms = align_subquery_start(
             earliest_end.saturating_sub(duration_ms(subquery.range)),
-            latest_end,
             step_ms,
-            0,
         );
         Some(Self {
             start_ms: aligned_start_ms,
