@@ -308,14 +308,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             // described either, and `preload_matrices` reads their span.
             return Ok(());
         };
-        let options = self.options.with_lookback_ms(grid.lookback_delta_ms);
         // A peer without grid push-down: leave them unpreloaded, and
         // `preload_matrices` reads their span raw instead.
-        let Some(outcome) = self
-            .reader
-            .query_grid(&matrix.vs, &request, options)?
-            .supported()
-        else {
+        let Some(outcome) = self.query_grid(&matrix.vs, &request)?.supported() else {
             return Ok(());
         };
         let GridOutcome::Raw(span) = outcome else {
@@ -546,15 +541,9 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             return Ok(());
         };
 
-        let options = self.options.with_lookback_ms(grid.lookback_delta_ms);
-
         // A peer without grid push-down: leave the rollup unpreloaded, and
         // `preload_matrices` reads its span raw instead.
-        let Some(outcome) = self
-            .reader
-            .query_grid(&matrix.vs, &request, options)?
-            .supported()
-        else {
+        let Some(outcome) = self.query_grid(&matrix.vs, &request)?.supported() else {
             return Ok(());
         };
         self.finish_rollup(key, &request, &window_ends, outcome, false, grid)
@@ -632,6 +621,17 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .dedup()
             .eq(request.window_ends_iter());
         derives_same.then_some((request, window_ends))
+    }
+
+    /// Ask the source for `request` over `vs`, read with the lookback the
+    /// request carries — the one the source evaluates its windows with.
+    pub(super) fn query_grid(
+        &self,
+        vs: &VectorSelector,
+        request: &GridRequest,
+    ) -> EvalResult<GridOutcome> {
+        let options = self.options.with_lookback_ms(request.lookback_delta_ms);
+        Ok(self.reader.query_grid(vs, request, options)?)
     }
 
     /// A rollup or fused request's answer as per-entry `(step, value)` points,
@@ -813,9 +813,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             return Ok(false);
         };
 
-        let options = self.options.with_lookback_ms(grid.lookback_delta_ms);
-
-        let (groups, charged) = match self.reader.query_grid(vs, &request, options)? {
+        let (groups, charged) = match self.query_grid(vs, &request)? {
             // Nothing was pushed down: the span is here. Grouping it once per
             // step from a stepped grid — in parallel across steps, as the step
             // loop does — beats folding every point through one map on this
@@ -849,15 +847,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     ) -> EvalResult<()> {
         let eval_start_ms = grid.start_ms;
         let step_ms = grid.step_ms;
-        let lookback_delta_ms = grid.lookback_delta_ms;
 
         // One window end per step, `@`/`offset` resolved here so the source
         // is never handed a modifier. With `@` every step shares one end and
         // the source answers that one; the scatter below replicates it.
         let raw_series = match self.grid_request(vs, grid, None, None) {
             Some((request, window_ends)) => {
-                let options = self.options.with_lookback_ms(lookback_delta_ms);
-                match self.reader.query_grid(vs, &request, options)? {
+                match self.query_grid(vs, &request)? {
                     GridOutcome::Stepped(series) => {
                         // Charged as the grids they become, holes included: a
                         // source can ship a few points per series that span

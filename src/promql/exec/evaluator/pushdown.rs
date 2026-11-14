@@ -281,46 +281,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
 
         // A single evaluation — an instant query, or a subquery step the
         // preload did not cover: one request for this evaluation.
-        let range_end_ms = ctx.modified_eval_ts(matrix.vs.at.as_ref(), matrix.vs.offset.as_ref());
-        let request = GridRequest {
-            step_ms: ctx.step_ms,
-            query_start: ctx.query_start,
-            query_end: ctx.query_end,
-            range_end_ms,
-            lookback_delta_ms: ctx.lookback_delta_ms,
-            rollup: Some(rollup),
-            aggregation: Some(aggregation),
-            // A rollup's value belongs to its window, not to any one sample.
-            sample_timestamps: false,
-        };
-
-        let options = self.options.with_lookback_ms(ctx.lookback_delta_ms);
-
-        // A peer without grid push-down: decline, and the aggregation is
-        // evaluated here from an ordinary read.
-        let Some(outcome) = self
-            .reader
-            .query_grid(&matrix.vs, &request, options)?
-            .supported()
-        else {
-            return Ok(None);
-        };
-        let (grouped, _) = self.finish_grid(&request, outcome, Keeps::Points)?;
-
-        let samples = grouped
-            .into_iter()
-            .filter_map(|group| {
-                let point = group.samples.last()?;
-                Some(EvalSample {
-                    timestamp_ms: ctx.evaluation_ts,
-                    value: point.value,
-                    labels: group.labels,
-                    drop_name,
-                })
-            })
-            .collect();
-
-        Ok(Some(ExprResult::InstantVector(samples)))
+        self.evaluate_single_grid(&matrix.vs, rollup, Some(aggregation), ctx, drop_name)
     }
 
     /// Try to have the data source evaluate `call`'s rollup itself.
@@ -365,46 +326,55 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         if kind.check_params(param, unit_ms).is_err() {
             return Ok(None);
         }
-        let aggregation = None;
+        let rollup = GridRollup {
+            kind,
+            range_ms: duration_ms(matrix.range),
+            param,
+            unit_ms,
+        };
+        // An unfused rollup's pending `__name__` drop is applied by
+        // `evaluate_call`, which this result passes through.
+        self.evaluate_single_grid(&matrix.vs, rollup, None, ctx, false)
+    }
 
+    /// One grid request for a single evaluation (`ctx.step_ms == 0`): `rollup`
+    /// over `vs`'s window, folded by `aggregation` when one is fused.
+    ///
+    /// Returns `None` when a peer without grid push-down declines, and the
+    /// caller evaluates the expression here from an ordinary read.
+    fn evaluate_single_grid(
+        &self,
+        vs: &VectorSelector,
+        rollup: GridRollup,
+        aggregation: Option<GridAggregation>,
+        ctx: &EvalContext,
+        drop_name: bool,
+    ) -> EvalResult<Option<ExprResult>> {
         // Resolve `@`/`offset` here: the source is told the window, never the
         // modifier, so it cannot resolve one differently than the local path.
-        let range_end_ms = ctx.modified_eval_ts(matrix.vs.at.as_ref(), matrix.vs.offset.as_ref());
-
+        let range_end_ms = ctx.modified_eval_ts(vs.at.as_ref(), vs.offset.as_ref());
         let request = GridRequest {
             step_ms: ctx.step_ms,
             query_start: ctx.query_start,
             query_end: ctx.query_end,
             range_end_ms,
             lookback_delta_ms: ctx.lookback_delta_ms,
-            rollup: Some(GridRollup {
-                kind,
-                range_ms: duration_ms(matrix.range),
-                param,
-                unit_ms,
-            }),
+            rollup: Some(rollup),
             aggregation,
             // A rollup's value belongs to its window, not to any one sample.
             sample_timestamps: false,
         };
 
-        let options = self.options.with_lookback_ms(ctx.lookback_delta_ms);
-
-        // A peer without grid push-down: decline, and the rollup is evaluated
-        // here from an ordinary read.
-        let Some(outcome) = self
-            .reader
-            .query_grid(&matrix.vs, &request, options)?
-            .supported()
-        else {
+        let Some(outcome) = self.query_grid(vs, &request)?.supported() else {
             return Ok(None);
         };
-        let (rolled, _) = self.finish_grid(&request, outcome, Keeps::Points)?;
+        let (series, _) = self.finish_grid(&request, outcome, Keeps::Points)?;
 
-        // A single evaluation yields at most one point per series, stamped with
-        // the query's evaluation timestamp rather than the window end — so a
-        // shifted selector still reports at the instant the client asked for.
-        let samples = rolled
+        // A single evaluation yields at most one point per series (or group),
+        // stamped with the query's evaluation timestamp rather than the window
+        // end — so a shifted selector still reports at the instant the client
+        // asked for.
+        let samples = series
             .into_iter()
             .filter_map(|s| {
                 let point = s.samples.last()?;
@@ -412,7 +382,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                     timestamp_ms: ctx.evaluation_ts,
                     value: point.value,
                     labels: s.labels,
-                    drop_name: false,
+                    drop_name,
                 })
             })
             .collect();
