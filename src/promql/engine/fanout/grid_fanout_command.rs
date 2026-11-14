@@ -172,7 +172,7 @@ impl GridFanoutCommand {
         }
         let deadline = &deadline;
         request.per_series_chunked(&window_ends, raw, deadline, |chunk, read| {
-            sink.take_charged(&request, chunk, read, deadline, &budget)
+            sink.take_charged(&request, chunk, read, deadline, &mut |n| budget.charge(n))
         })?;
         sink.finish(deadline).map_err(QueryError::from)
     }
@@ -528,8 +528,11 @@ impl<'a> ShardGrid<'a> {
         if !staged.is_empty() {
             let read = staged.iter().map(|series| series.samples.len()).sum();
             let output = self.request.per_series(self.window_ends, staged);
+            let budget = self.budget;
             self.staged
-                .take_charged(self.request, output, read, &self.deadline, self.budget)
+                .take_charged(self.request, output, read, &self.deadline, &mut |n| {
+                    budget.charge(n)
+                })
                 .map_err(shard_error)?;
         }
         Ok(())
@@ -560,7 +563,7 @@ impl<'a> ShardGrid<'a> {
         let (staged, budget, deadline) = (&mut self.staged, self.budget, &self.deadline);
         request
             .per_series_chunked(window_ends, folded, deadline, |output, read| {
-                staged.take_charged(request, output, read, deadline, budget)
+                staged.take_charged(request, output, read, deadline, &mut |n| budget.charge(n))
             })
             .map_err(shard_error)?;
         respond(request, window_ends, raw, self.staged, &self.deadline)
