@@ -120,13 +120,26 @@ pub(in crate::promql) fn duplicate_series_error(labels: &EvalLabels) -> String {
 pub(in crate::promql) fn check_unique_series<'a>(
     labels: impl IntoIterator<Item = &'a EvalLabels>,
 ) -> Result<(), String> {
-    let mut seen = FingerprintHashSet::default();
-    for labels in labels {
-        if !seen.insert(labels.fingerprint()) {
-            return Err(duplicate_series_error(labels));
+    let mut seen = UniqueSeries::default();
+    labels
+        .into_iter()
+        .try_for_each(|labels| seen.insert(labels))
+}
+
+/// The label sets a read has returned so far, for a read that sees its series
+/// a batch or a response at a time: a second series with any of them is
+/// refused ([`duplicate_series_error`]).
+#[derive(Default)]
+pub(in crate::promql) struct UniqueSeries(FingerprintHashSet);
+
+impl UniqueSeries {
+    pub(in crate::promql) fn insert(&mut self, labels: &EvalLabels) -> Result<(), String> {
+        if self.0.insert(labels.fingerprint()) {
+            Ok(())
+        } else {
+            Err(duplicate_series_error(labels))
         }
     }
-    Ok(())
 }
 
 /// A resolved series' samples, decoded out of the chunk they crossed in.

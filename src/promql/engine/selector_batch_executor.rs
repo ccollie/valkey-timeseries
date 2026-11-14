@@ -656,14 +656,11 @@ fn execute_cluster_vector_selector(
     responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
 ) {
     let timeout = calculate_timeout(&iqc.options);
-    let timestamp = iqc.timestamp;
-    let lookback_delta = iqc.options.lookback_delta.as_millis() as u64;
-    let cmd = InstantVectorSelectorFanoutCommand::new(
+    let cmd = InstantVectorSelectorFanoutCommand::new(InstantVectorParams::of(
         iqc.matchers,
-        timestamp,
-        lookback_delta,
-        iqc.options.max_series as u64,
-    );
+        iqc.timestamp,
+        &iqc.options,
+    ));
 
     let max_series = iqc.options.max_series;
 
@@ -763,12 +760,7 @@ fn execute_cluster_aggregation(
     responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
 ) {
     let timeout = calculate_timeout(&ac.options);
-    let vector = InstantVectorParams {
-        matchers: ac.matchers,
-        timestamp: ac.timestamp,
-        lookback_delta: ac.options.lookback_delta.as_millis() as u64,
-        max_series: ac.options.max_series as u64,
-    };
+    let vector = InstantVectorParams::of(ac.matchers, ac.timestamp, &ac.options);
     let deadline = Deadline::from_options(&ac.options);
     let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, deadline);
 

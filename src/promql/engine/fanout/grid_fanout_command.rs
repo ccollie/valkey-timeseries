@@ -31,7 +31,6 @@
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
-use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
 use crate::promql::engine::fanout::shard_error;
@@ -184,8 +183,7 @@ impl FanoutCommand for GridFanoutCommand {
     }
 
     fn get_local_response(ctx: &FanoutContext, req: GridQuery) -> ValkeyResult<GridQueryResponse> {
-        let selector = super::required(req.selector.as_ref(), "selector")?;
-        let series_selector: SeriesSelector = selector.try_into()?;
+        let series_selector = super::shard_selector(req.selector.as_ref())?;
         let request = decode_request(&req)?;
 
         let window_ends = grid_window_ends(

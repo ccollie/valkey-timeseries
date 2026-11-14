@@ -1,6 +1,5 @@
 use crate::common::Timestamp;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, NodeInfo};
-use crate::labels::filters::SeriesSelector;
 use crate::promql::engine::fanout::query_utils::{handle_range_query, shard_read};
 use crate::promql::generated::{
     RangeQuery, RangeQueryResponse, SeriesSelector as ProtoSeriesSelector,
@@ -57,8 +56,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
         ctx: &FanoutContext,
         req: RangeQuery,
     ) -> ValkeyResult<RangeQueryResponse> {
-        let selector = super::required(req.selector, "selector")?;
-        let series_selector: SeriesSelector = (&selector).try_into()?;
+        let series_selector = super::shard_selector(req.selector.as_ref())?;
         let read = shard_read(ctx)?;
         // Locks per batch of matched series; decodes with the lock released.
         handle_range_query(
@@ -92,6 +90,7 @@ impl FanoutCommand for RangeVectorSelectorFanoutCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labels::filters::SeriesSelector;
     use promql_parser::label::{MatchOp, Matcher};
 
     fn command() -> RangeVectorSelectorFanoutCommand {

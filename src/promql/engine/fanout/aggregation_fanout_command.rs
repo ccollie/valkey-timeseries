@@ -19,8 +19,8 @@
 use crate::commands::fanout_codec::symbol_table;
 use crate::common::Timestamp;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
-use crate::labels::filters::SeriesSelector;
 use crate::promql::deadline::{Deadline, SERIES_WORK};
+use crate::promql::engine::fanout::InstantVectorParams;
 use crate::promql::engine::fanout::query_utils::{local_instant_eval_samples, shard_read};
 use crate::promql::engine::fanout::type_conversions::{decode_peer_partial, wrong_payload};
 use crate::promql::engine::query_reader::{
@@ -30,21 +30,10 @@ use crate::promql::exec::aggregations::{AggregationKind, PushdownStrategy, apply
 use crate::promql::exec::partial_aggregation::{PartialGroups, merge_count_values};
 use crate::promql::generated::{
     AggregationGroupPartial, AggregationQuery, AggregationQueryResponse, InstantQuery,
-    InstantSample as ProtoInstantSample, SeriesSelector as ProtoSeriesSelector,
+    InstantSample as ProtoInstantSample,
 };
 use crate::promql::{EvalResult, EvalSample, QueryError};
-use promql_parser::label::Matchers;
-use std::sync::Arc;
 use valkey_module::ValkeyResult;
-
-/// The instant-vector half of the request: what to select, and when.
-#[derive(Debug, Clone)]
-pub(in crate::promql) struct InstantVectorParams {
-    pub matchers: Arc<Matchers>,
-    pub timestamp: Timestamp,
-    pub lookback_delta: u64,
-    pub max_series: u64,
-}
 
 /// What the shards' output accumulates into, decided by the operator's
 /// push-down strategy — the same shape [`crate::promql::engine::query_reader::GridSink`]
@@ -204,8 +193,7 @@ impl FanoutCommand for AggregationFanoutCommand {
         let query = super::required(req.query, "instant-vector parameters")?;
         let operation =
             AggregationOperation::try_from(super::required(req.operation, "operator")?)?;
-        let selector = super::required(query.selector, "selector")?;
-        let series_selector: SeriesSelector = (&selector).try_into()?;
+        let series_selector = super::shard_selector(query.selector.as_ref())?;
         // Held to the end, through the aggregation: the coordinator counts only the groups
         // that come back, so this is all that counts the input while it is held here.
         let read = shard_read(ctx)?;
@@ -229,13 +217,7 @@ impl FanoutCommand for AggregationFanoutCommand {
     }
 
     fn generate_request(&self) -> AggregationQuery {
-        let query = InstantQuery {
-            selector: Some(ProtoSeriesSelector::from(&*self.vector.matchers)),
-            timestamp: self.vector.timestamp,
-            lookback_delta: self.vector.lookback_delta,
-            max_series: self.vector.max_series,
-        };
-
+        let query = InstantQuery::from(&self.vector);
         AggregationQuery {
             query: Some(query),
             operation: Some((&self.aggregation.operation).into()),
@@ -393,7 +375,9 @@ mod tests {
     use crate::promql::exec::types::EvalLabels;
     use crate::promql::generated::AggregationKind as ProtoAggregationKind;
     use promql_parser::label::Labels as ModifierLabels;
+    use promql_parser::label::Matchers;
     use promql_parser::parser::LabelModifier;
+    use std::sync::Arc;
 
     const EVAL_TS: Timestamp = 1_700_000_000_000;
 
