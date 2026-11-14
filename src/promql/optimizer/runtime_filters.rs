@@ -1,0 +1,309 @@
+//! Filter push-down at evaluation time: once one operand of a binary
+//! operation is evaluated, the labels every one of its series carries narrow
+//! what the other operand has to read. The static pass
+//! ([`super::filter_pushdown`]) does the same from the query text alone.
+
+use super::filter_pushdown;
+use crate::promql::binops::has_fill_modifier;
+use crate::promql::engine::label_profile::{MAX_DERIVED_BYTES_PER_SELECTOR, derived_filter};
+use crate::promql::exec::utils::strip_parens;
+use crate::promql::{EvalResult, EvalSample, ExprResult};
+use ahash::AHashSet;
+use promql_parser::label::{METRIC_NAME, Matcher};
+use promql_parser::parser::token::{T_BOTTOMK, T_LIMIT_RATIO, T_LIMITK, T_LOR, T_TOPK};
+use promql_parser::parser::value::ValueType;
+use promql_parser::parser::{AggregateExpr, BinaryExpr, Expr, LabelModifier};
+use std::borrow::Cow;
+
+pub(in crate::promql) fn push_down_filters<'a>(
+    expr: &'a BinaryExpr,
+    first: &ExprResult,
+    dest: &'a Expr,
+) -> EvalResult<Cow<'a, Expr>> {
+    let ExprResult::InstantVector(samples) = first else {
+        return Ok(Cow::Borrowed(dest));
+    };
+    let mut common_filters = get_common_label_filters(samples);
+    if !common_filters.is_empty() {
+        if let Some(modifier) = &expr.modifier {
+            filter_pushdown::trim_filters_by_match_modifier(
+                &mut common_filters,
+                &modifier.matching,
+            );
+        }
+        let mut copy = dest.clone();
+        filter_pushdown::push_down_binary_op_filters_in_place(&mut copy, &common_filters);
+        return Ok(Cow::Owned(copy));
+    }
+    Ok(Cow::Borrowed(dest))
+}
+
+/// Returns true when the aggregation collapses its input into label-less groups,
+/// so its result carries no labels for `get_common_label_filters` to derive
+/// filters from.
+#[inline]
+fn is_aggregate_non_grouping(agg: &AggregateExpr) -> bool {
+    // topk/bottomk/limitk/limit_ratio select whole input series and pass them
+    // through untouched, so their output always carries the input's labels
+    // regardless of the modifier.
+    if matches!(agg.op.id(), T_TOPK | T_BOTTOMK | T_LIMITK | T_LIMIT_RATIO) {
+        return false;
+    }
+    match &agg.modifier {
+        // `sum(x)` and `sum by () (x)` both collapse everything into a single
+        // group whose label set is empty (see `EvalLabels::compute_grouping_labels`).
+        None => true,
+        Some(LabelModifier::Include(args)) => args.labels.is_empty(),
+        // `without (...)` retains every label it does not list — including
+        // `without ()`, which retains them all.
+        Some(LabelModifier::Exclude(_)) => false,
+    }
+}
+
+/// Returns true when this operand's result can yield common label filters worth
+/// pushing into the other side.
+fn can_derive_filters_from(expr: &Expr) -> bool {
+    // Only instant vectors carry labels to match on. This also keeps the
+    // rewriter away from scalar-valued subtrees: pushing a filter into the
+    // selector under `scalar(x)` would change the value it yields rather than
+    // prune series that could not have matched.
+    if expr.value_type() != ValueType::Vector {
+        return false;
+    }
+    match strip_parens(expr) {
+        Expr::Aggregate(agg) => !is_aggregate_non_grouping(agg),
+        _ => true,
+    }
+}
+
+pub(in crate::promql) fn can_push_down_common_filters(be: &BinaryExpr) -> bool {
+    // When fill modifiers are present, all series from both sides must be considered
+    // (the fill pass synthesizes results for series that have no match on the other side).
+    // Pushing label filters would incorrectly exclude series that should be included via fill.
+    if has_fill_modifier(be) {
+        return false;
+    }
+
+    // `or` keeps series from both sides, so filters derived from one side must
+    // not prune the other.
+    if be.op.id() == T_LOR {
+        return false;
+    }
+
+    // Both sides are checked: filters flow from whichever side is evaluated
+    // first into the other, and either side alone being label-less makes the
+    // pushdown pointless.
+    can_derive_filters_from(&be.lhs) && can_derive_filters_from(&be.rhs)
+}
+
+pub(in crate::promql) fn get_common_label_filters(samples: &[EvalSample]) -> Vec<Matcher> {
+    // Per label: how many series carry it, and the distinct values they carry.
+    // The two are separate counts — a label every series shares with one value
+    // (`namespace="prod"` on every pod) is the case this exists for, and it has
+    // one distinct value however many series there are.
+    let mut kv_map: halfbrown::HashMap<&str, (usize, AHashSet<&str>)> = halfbrown::HashMap::new();
+    for ts in samples.iter() {
+        for label in ts.labels.iter() {
+            // Never push down __name__: binary-op matching always ignores __name__ by default
+            // (unless an explicit `on(__name__)` modifier is used). Pushing it down would
+            // incorrectly filter out the other side when the two sides have different metric names
+            // (e.g. `cpu_usage + memory_bytes`).
+            if label.name == METRIC_NAME {
+                continue;
+            }
+            let entry = kv_map.entry(label.name).or_default();
+            entry.0 += 1;
+            entry.1.insert(label.value);
+        }
+    }
+
+    // Label values are unbounded, so `derived_filter` skips a label with too
+    // many values or bytes of them, and this budget caps what the regexes of
+    // all the filters cost to compile together.
+    let mut budget = MAX_DERIVED_BYTES_PER_SELECTOR;
+    // By name, so which filters the budget admits never depends on hash order.
+    let mut labels: Vec<_> = kv_map.into_iter().collect();
+    labels.sort_unstable_by_key(|(name, _)| *name);
+    let mut lfs: Vec<Matcher> = Vec::with_capacity(labels.len());
+    for (key, (carried_by, values)) in labels {
+        if carried_by != samples.len() {
+            // Skip the tag, since it doesn't belong to all the time series.
+            continue;
+        }
+        if let Some(lf) = derived_filter(key, values, &mut budget) {
+            lfs.push(lf);
+        }
+    }
+
+    lfs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::promql::engine::label_profile::MAX_PUSHDOWN_BYTES;
+    use crate::promql::exec::types::EvalLabels;
+
+    /// The filters derived from `samples`, as `name op value` strings, sorted.
+    fn derived(samples: &[EvalSample]) -> Vec<String> {
+        let mut out: Vec<String> = get_common_label_filters(samples)
+            .into_iter()
+            .map(|m| format!("{}{}{}", m.name, m.op, m.value))
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn labelled(labels: &[(&str, &str)]) -> EvalSample {
+        EvalSample {
+            timestamp_ms: 0,
+            value: 1.0,
+            labels: EvalLabels::from_pairs(labels),
+            drop_name: false,
+        }
+    }
+
+    /// A label every series carries becomes a filter: an equality when the
+    /// value is shared, an alternation when it varies. A label some series
+    /// lack, or `__name__`, never does. The shared-value case is the one the
+    /// push-down exists for (`namespace="prod"` on every pod), and it must not
+    /// depend on how many series there are.
+    #[test]
+    fn common_label_filters_come_from_labels_every_series_carries() {
+        let samples = [
+            labelled(&[
+                ("__name__", "m"),
+                ("region", "us"),
+                ("host", "a"),
+                ("rack", "1"),
+            ]),
+            labelled(&[("__name__", "m"), ("region", "us"), ("host", "b")]),
+            labelled(&[
+                ("__name__", "m"),
+                ("region", "us"),
+                ("host", "c"),
+                ("rack", "2"),
+            ]),
+        ];
+        assert_eq!(derived(&samples), vec!["host=~a|b|c", "region=us"]);
+
+        // One series: the same rule.
+        assert_eq!(
+            derived(&samples[..1]),
+            vec!["host=a", "rack=1", "region=us"]
+        );
+
+        // Too many distinct values to enumerate: the label is left out.
+        let many: Vec<EvalSample> = (0..61)
+            .map(|i| labelled(&[("region", "us"), ("host", &format!("h{i}"))]))
+            .collect();
+        assert_eq!(derived(&many), vec!["region=us"]);
+    }
+
+    /// Sixty hex ids exceeded the general regex size limit and were dropped;
+    /// within the byte budget they are one filter now.
+    #[test]
+    fn common_label_filters_enumerate_sixty_ids_within_the_byte_budget() {
+        let samples: Vec<EvalSample> = (0_u64..60)
+            .map(|i| {
+                labelled(&[
+                    ("region", "us"),
+                    (
+                        "instance",
+                        &format!("{:016x}", i.wrapping_mul(0x9e3779b97f4a7c15)),
+                    ),
+                ])
+            })
+            .collect();
+        let filters = derived(&samples);
+        assert_eq!(filters.len(), 2);
+        assert!(filters[0].starts_with("instance=~0000000000000000|"));
+        assert_eq!(filters[1], "region=us");
+    }
+
+    /// Label values are unbounded: a label whose values add up past the byte
+    /// budget is left out rather than copied into a regex.
+    #[test]
+    fn common_label_filters_skip_labels_past_the_byte_budget() {
+        let big = "x".repeat(MAX_PUSHDOWN_BYTES);
+        let samples = vec![
+            labelled(&[("region", "us"), ("host", &format!("a{big}"))]),
+            labelled(&[("region", "us"), ("host", &format!("b{big}"))]),
+        ];
+        assert_eq!(derived(&samples), vec!["region=us"]);
+        // A single value past the budget is no equality either.
+        assert_eq!(derived(&samples[..1]), vec!["region=us"]);
+    }
+
+    /// Parse `query` and return its top-level binary expression.
+    fn binary_expr(query: &str) -> BinaryExpr {
+        match promql_parser::parser::parse(query).expect("query should parse") {
+            Expr::Binary(be) => be,
+            other => panic!("expected a binary expression, got {other:?}"),
+        }
+    }
+
+    fn can_push_down(query: &str) -> bool {
+        can_push_down_common_filters(&binary_expr(query))
+    }
+
+    #[test]
+    fn pushdown_allowed_for_label_bearing_operands() {
+        assert!(can_push_down("metric_a * metric_b"));
+        assert!(can_push_down("rate(metric_a[5m]) * metric_b"));
+    }
+
+    #[test]
+    fn or_never_pushes_down() {
+        // `or` keeps unmatched series from both sides, so neither side's labels
+        // may prune the other.
+        assert!(!can_push_down("metric_a or metric_b"));
+    }
+
+    #[test]
+    fn scalar_operands_carry_no_labels() {
+        assert!(!can_push_down("metric_a * 2"));
+        assert!(!can_push_down("2 * metric_a"));
+        // `scalar(x)` is scalar-valued: pushing a filter into `metric_b` would
+        // change the value it yields, not prune a series that could not match.
+        assert!(!can_push_down("metric_a > scalar(metric_b)"));
+        assert!(!can_push_down("scalar(metric_b) > metric_a"));
+    }
+
+    #[test]
+    fn aggregation_without_grouping_carries_no_labels() {
+        // `sum(x)` collapses to a single label-less group, so there is nothing
+        // to derive filters from — even though it has no by/without modifier.
+        assert!(!can_push_down("sum(metric_a) * metric_b"));
+        assert!(!can_push_down("metric_a * sum(metric_b)"));
+        // `by ()` is the explicit spelling of the same thing.
+        assert!(!can_push_down("sum by () (metric_a) * metric_b"));
+    }
+
+    #[test]
+    fn aggregation_with_grouping_keeps_labels() {
+        assert!(can_push_down("sum by (job) (metric_a) * metric_b"));
+        assert!(can_push_down(
+            "sum without (instance) (metric_a) * metric_b"
+        ));
+        // `without ()` excludes nothing, so it retains every label — it is the
+        // most grouping-preserving form, not a non-grouping one.
+        assert!(can_push_down("sum without () (metric_a) * metric_b"));
+    }
+
+    #[test]
+    fn selection_aggregations_pass_labels_through() {
+        // topk/bottomk/limitk/limit_ratio return whole input series untouched,
+        // so their output carries the input's labels whatever the modifier says.
+        assert!(can_push_down("topk(3, metric_a) * metric_b"));
+        assert!(can_push_down("bottomk(3, metric_a) * metric_b"));
+        assert!(can_push_down("limitk(3, metric_a) by () * metric_b"));
+        assert!(can_push_down("topk(3, metric_a) by () * metric_b"));
+    }
+
+    #[test]
+    fn parenthesized_operands_are_seen_through() {
+        assert!(!can_push_down("(sum(metric_a)) * metric_b"));
+        assert!(can_push_down("(sum by (job) (metric_a)) * metric_b"));
+    }
+}

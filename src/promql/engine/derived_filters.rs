@@ -34,18 +34,20 @@
 
 use crate::common::logging::log_debug;
 use crate::common::threads::IntoParRayon;
-use crate::promql::binops::can_push_down_common_filters;
 use crate::promql::engine::label_profile::{LabelProfile, LabelValueProfile, ProfileWindow};
 use crate::promql::engine::{QueryOptions, QueryReader};
 use crate::promql::exec::planner::PreloadGrid;
 use crate::promql::hashers::SelectorKey;
-use crate::promql::optimizer::filter_pushdown::{LeafFilters, pushdown_filters_in_place_with};
+use crate::promql::optimizer::filter_pushdown::{
+    LeafFilters, fold_name_matcher, pushdown_filters_in_place_with,
+};
+use crate::promql::optimizer::runtime_filters::can_push_down_common_filters;
 use crate::promql::time::{duration_ms, selector_bounds};
 use crate::promql::utils::subquery_step_ms;
 use crate::promql::{QueryError, QueryResult};
 use ahash::AHashMap;
 use orx_parallel::{Par, ParResult};
-use promql_parser::label::{METRIC_NAME, MatchOp, Matcher};
+use promql_parser::label::{METRIC_NAME, Matcher};
 use promql_parser::parser::token::{T_LOR, T_LUNLESS};
 use promql_parser::parser::value::ValueType;
 use promql_parser::parser::{BinaryExpr, Expr, SubqueryExpr, VectorSelector};
@@ -430,16 +432,7 @@ fn node_id(vs: &VectorSelector) -> usize {
 /// static pass does at each selector.
 fn normalized(vs: &VectorSelector) -> VectorSelector {
     let mut vs = vs.clone();
-    if vs.name.is_none()
-        && let Some(pos) = vs
-            .matchers
-            .matchers
-            .iter()
-            .position(|m| m.name == METRIC_NAME && m.op == MatchOp::Equal)
-    {
-        let m = vs.matchers.matchers.remove(pos);
-        vs.name = Some(m.value);
-    }
+    fold_name_matcher(&mut vs);
     vs
 }
 
