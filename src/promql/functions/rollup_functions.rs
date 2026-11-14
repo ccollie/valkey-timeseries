@@ -9,16 +9,15 @@ use crate::promql::functions::irate::rollup_irate;
 use crate::promql::functions::range_vector_functions::{rollup_changes, rollup_resets};
 use crate::promql::functions::rate::{RateKind, extrapolated_rate_window};
 use crate::promql::functions::rollups::{
-    eval_rollups, eval_rollups_basic, rollup_series_over_grid, window_samples,
+    eval_series, rollup_series_over_grid, rollup_window_value, window_samples,
 };
 use crate::promql::functions::state::{rollup_state_count, state_duration_window};
 use crate::promql::functions::types::FunctionCallContext;
 use crate::promql::functions::types::RollupWindow;
 use crate::promql::functions::utils::{
-    exact_arity_error, expect_exact_arg_count, expect_range_vector, expect_scalar,
-    labels_for_absent, two_args,
+    exact_arity_error, expect_range_vector, expect_scalar, labels_for_absent, two_args,
 };
-use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
+use crate::promql::{EvalContext, EvalResult, EvalSample, EvalSamples, ExprResult};
 use promql_parser::parser::Expr;
 use promql_parser::parser::Function;
 use promql_parser::parser::value::ValueType;
@@ -75,12 +74,11 @@ pub enum RollupKind {
 /// paths take.
 enum RollupImpl {
     /// Reads the window through a [`RollupWindow`] view over de-interleaved
-    /// value/timestamp arrays — [`eval_rollups`]' shape.
+    /// value/timestamp arrays, which the compiler can vectorize over.
     Windowed(fn(&RollupWindow, Option<f64>) -> f64),
-    /// Reads whole `Sample`s — [`eval_rollups_basic`]' shape.
+    /// Reads whole `Sample`s.
     WholeWindow(fn(&[Sample]) -> f64),
-    /// Reads whole `Sample`s and may decline to produce a value —
-    /// [`crate::promql::functions::range_vector_functions::eval_range`]' shape.
+    /// Reads whole `Sample`s and may decline to produce a value.
     /// `irate` over a one-sample window has no answer, and declining is not the
     /// same as answering NaN.
     WholeWindowOptional(fn(&[Sample]) -> Option<f64>),
@@ -389,6 +387,30 @@ impl RollupKind {
         }
     }
 
+    /// Reduce the one window of `samples` ending at `window_end` — the local
+    /// per-step path's form of [`Self::eval_windows`], through the same
+    /// implementation — or `None` when the window is empty or this kind
+    /// declines to answer for it.
+    pub(in crate::promql) fn eval_window(
+        self,
+        samples: &[Sample],
+        window_end: Timestamp,
+        window_ms: i64,
+        param: Option<f64>,
+        unit_ms: Option<i64>,
+    ) -> Option<f64> {
+        let window = || window_samples(samples, window_end, window_ms);
+        match self.implementation() {
+            RollupImpl::Windowed(f) => {
+                rollup_window_value(samples, window_end, window_ms, param, f)
+            }
+            RollupImpl::WholeWindow(f) => window().map(f),
+            RollupImpl::WholeWindowOptional(f) => f(window()?),
+            RollupImpl::WindowAware(f) => f(window()?, window_ms, window_end),
+            RollupImpl::WholeWindowWithUnit(f) => f(window()?, param, unit_ms),
+        }
+    }
+
     /// Slice each window out of `samples` and reduce it with `f`, dropping the
     /// windows that hold no samples and the ones `f` declines to answer for.
     fn over_windows(
@@ -423,105 +445,72 @@ fn delta_window(samples: &[Sample], window_ms: i64, window_end: Timestamp) -> Op
     extrapolated_rate_window(samples, window_ms, window_end, RateKind::Delta)
 }
 
-pub(super) fn exec_rollup_fn(
-    name: &str,
-    mut args: Vec<PromQLArg>,
+/// Evaluate `kind` over each series' window, one value per series.
+///
+/// The window is the one the matrix selector loaded: it ends at
+/// [`EvalSamples::range_end_ms`], which already carries any `@`/`offset`
+/// adjustment. Series whose window holds no samples, or that `kind` declines,
+/// are dropped rather than emitted as NaN.
+///
+/// [`EvalSamples::range_end_ms`]: crate::promql::EvalSamples::range_end_ms
+pub(super) fn eval_rollup(
     ctx: &EvalContext,
-    optional_param: Option<f64>,
-    f: fn(&RollupWindow, Option<f64>) -> f64,
+    kind: RollupKind,
+    series: Vec<EvalSamples>,
+    param: Option<f64>,
+    unit_ms: Option<i64>,
 ) -> EvalResult<ExprResult> {
-    expect_exact_arg_count(name, 1, args.len())?;
-    let range = args.swap_remove(0).into_range_vector()?;
-    Ok(ExprResult::InstantVector(eval_rollups(
-        ctx,
-        range,
-        optional_param,
-        f,
-    )?))
+    let samples = eval_series(ctx, series, |series| {
+        kind.eval_window(
+            &series.values,
+            series.range_end_ms,
+            series.range_ms,
+            param,
+            unit_ms,
+        )
+    })?;
+    Ok(ExprResult::InstantVector(samples))
 }
 
-pub(super) fn exec_basic_rollup_fn(
-    name: &str,
-    mut args: Vec<PromQLArg>,
-    ctx: &EvalContext,
-    f: fn(&[Sample]) -> f64,
-) -> EvalResult<ExprResult> {
-    expect_exact_arg_count(name, 1, args.len())?;
-    let range = args.swap_remove(0).into_range_vector()?;
-    Ok(ExprResult::InstantVector(eval_rollups_basic(
-        ctx,
-        range,
-        |window| Some(f(window)),
-    )?))
-}
-
-macro_rules! make_rollup_function {
-    ( $type_name: ident, $name: expr, $rf: expr) => {
+/// A rollup over a range vector alone, evaluated as its [`RollupKind`] is, so
+/// the local and pushed-down paths reduce a window with one implementation.
+macro_rules! rollup_function {
+    ( $type_name: ident, $kind: ident ) => {
         #[derive(Copy, Clone, Default)]
         pub(in crate::promql) struct $type_name;
 
         impl PromQLFunction for $type_name {
-            fn apply_call(
-                &self,
-                args: Vec<PromQLArg>,
-                ctx: &FunctionCallContext,
-            ) -> EvalResult<ExprResult> {
-                exec_rollup_fn($name, args, ctx, None, $rf)
+            fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
+                eval_rollup(ctx, RollupKind::$kind, arg.into_range_vector()?, None, None)
             }
         }
     };
 }
 
-macro_rules! basic_rollup_function {
-    ( $type_name: ident, $name: expr, $rf: expr) => {
-        #[derive(Copy, Clone, Default)]
-        pub(in crate::promql) struct $type_name;
-
-        impl PromQLFunction for $type_name {
-            fn apply_call(
-                &self,
-                args: Vec<PromQLArg>,
-                ctx: &FunctionCallContext,
-            ) -> EvalResult<ExprResult> {
-                exec_basic_rollup_fn($name, args, ctx, $rf)
-            }
-        }
-    };
-}
-
-make_rollup_function!(AvgOverTimeFunction, "avg_over_time", rollup_avg);
-make_rollup_function!(MinOverTimeFunction, "min_over_time", rollup_min);
-make_rollup_function!(MadOverTimeFunction, "mad_over_time", rollup_mad);
-make_rollup_function!(MaxOverTimeFunction, "max_over_time", rollup_max);
-make_rollup_function!(RangeOverTimeFunction, "range_over_time", rollup_range);
-make_rollup_function!(SumOverTimeFunction, "sum_over_time", rollup_sum);
-make_rollup_function!(
-    TsOfMinOverTimeFunction,
-    "ts_of_min_over_time",
-    rollup_ts_of_min
-);
-make_rollup_function!(
-    TsOfMaxOverTimeFunction,
-    "ts_of_max_over_time",
-    rollup_ts_of_max
-);
-make_rollup_function!(StddevOverTimeFunction, "stddev_over_time", rollup_stddev);
-make_rollup_function!(StdvarOverTimeFunction, "stdvar_over_time", rollup_stdvar);
-
-basic_rollup_function!(PresentOverTimeFunction, "present_over_time", rollup_present);
-basic_rollup_function!(CountOverTimeFunction, "count_over_time", rollup_count);
-basic_rollup_function!(
-    TsOfFirstOverTimeFunction,
-    "ts_of_first_over_time",
-    rollup_tfirst
-);
-basic_rollup_function!(
-    TsOfLastOverTimeFunction,
-    "ts_of_last_over_time",
-    rollup_tlast
-);
-basic_rollup_function!(FirstOverTimeFunction, "first_over_time", rollup_first);
-basic_rollup_function!(LastOverTimeFunction, "last_over_time", rollup_last);
+rollup_function!(AvgOverTimeFunction, AvgOverTime);
+rollup_function!(ChangesFunction, Changes);
+rollup_function!(CountOverTimeFunction, CountOverTime);
+rollup_function!(DeltaFunction, Delta);
+rollup_function!(DerivFunction, Deriv);
+rollup_function!(FirstOverTimeFunction, FirstOverTime);
+rollup_function!(IDeltaFunction, IDelta);
+rollup_function!(IRateFunction, IRate);
+rollup_function!(IncreaseFunction, Increase);
+rollup_function!(LastOverTimeFunction, LastOverTime);
+rollup_function!(MadOverTimeFunction, MadOverTime);
+rollup_function!(MaxOverTimeFunction, MaxOverTime);
+rollup_function!(MinOverTimeFunction, MinOverTime);
+rollup_function!(PresentOverTimeFunction, PresentOverTime);
+rollup_function!(RangeOverTimeFunction, RangeOverTime);
+rollup_function!(RateFunction, Rate);
+rollup_function!(ResetsFunction, Resets);
+rollup_function!(StddevOverTimeFunction, StddevOverTime);
+rollup_function!(StdvarOverTimeFunction, StdvarOverTime);
+rollup_function!(SumOverTimeFunction, SumOverTime);
+rollup_function!(TsOfFirstOverTimeFunction, TsOfFirstOverTime);
+rollup_function!(TsOfLastOverTimeFunction, TsOfLastOverTime);
+rollup_function!(TsOfMaxOverTimeFunction, TsOfMaxOverTime);
+rollup_function!(TsOfMinOverTimeFunction, TsOfMinOverTime);
 
 fn rollup_avg(rfa: &RollupWindow, _param: Option<f64>) -> f64 {
     kahan_avg(rfa.values)
@@ -762,12 +751,7 @@ impl PromQLFunction for QuantileOverTimeFunction {
         let phi = expect_scalar(phi_arg, "quantile_over_time", "phi")?;
         let range = expect_range_vector(range_arg, "quantile_over_time")?;
 
-        Ok(ExprResult::InstantVector(eval_rollups(
-            ctx,
-            range,
-            Some(phi),
-            rollup_quantile,
-        )?))
+        eval_rollup(ctx, RollupKind::QuantileOverTime, range, Some(phi), None)
     }
 }
 

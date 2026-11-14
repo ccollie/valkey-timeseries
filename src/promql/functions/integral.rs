@@ -1,5 +1,6 @@
 use crate::common::math::kahan_inc;
-use crate::promql::functions::rollups::eval_rollups;
+use crate::promql::functions::RollupKind;
+use crate::promql::functions::rollup_functions::eval_rollup;
 use crate::promql::functions::types::{
     FunctionCallContext, PromQLArg, PromQLFunction, RollupWindow,
 };
@@ -55,12 +56,7 @@ impl PromQLFunction for IntegralFunction {
             .map(|arg| expect_scalar(arg, "integral", "strategy"))
             .transpose()?;
 
-        Ok(ExprResult::InstantVector(eval_rollups(
-            ctx,
-            range,
-            strategy,
-            rollup_integral,
-        )?))
+        eval_rollup(ctx, RollupKind::Integral, range, strategy, None)
     }
 }
 

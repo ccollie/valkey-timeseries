@@ -1,16 +1,4 @@
 use crate::common::Sample;
-use crate::promql::functions::range_vector_functions::eval_range;
-use crate::promql::functions::{PromQLArg, PromQLFunction};
-use crate::promql::{EvalContext, EvalResult, ExprResult};
-
-#[derive(Clone, Copy, Debug)]
-pub(in crate::promql) struct IDeltaFunction;
-impl PromQLFunction for IDeltaFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
-        let samples = arg.into_range_vector()?;
-        eval_range(ctx, samples, rollup_idelta)
-    }
-}
 
 /// `idelta` over one window: the difference between its **last two** samples,
 /// not across the whole window. `idelta` is the instant counterpart of `delta`

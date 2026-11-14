@@ -2,7 +2,6 @@ use crate::promql::functions::date_functions::{
     DayOfMonthFunction, DayOfWeekFunction, DayOfYearFunction, DaysInMonthFunction, HourFunction,
     MinuteFunction, MonthFunction, TimeFunction, TimestampFunction, YearFunction,
 };
-use crate::promql::functions::deriv::DerivFunction;
 use crate::promql::functions::histogram::{
     HistogramAvgFunction, HistogramFractionFunctions, HistogramQuantileFunction,
     HistogramQuantilesFunction, HistogramStddevFunction, HistogramStdvarFunction,
@@ -10,9 +9,7 @@ use crate::promql::functions::histogram::{
 use crate::promql::functions::holt_winters::{
     DoubleExponentialSmoothingFunction, HoltWintersFunction,
 };
-use crate::promql::functions::idelta::IDeltaFunction;
 use crate::promql::functions::integral::IntegralFunction;
-use crate::promql::functions::irate::IRateFunction;
 use crate::promql::functions::labels::{LabelJoinFunction, LabelReplaceFunction};
 use crate::promql::functions::math_functions::{
     AbsFunction, AcosFunction, AcoshFunction, AsinFunction, AsinhFunction, AtanFunction,
@@ -22,14 +19,14 @@ use crate::promql::functions::math_functions::{
     SinhFunction, SqrtFunction, TanFunction, TanhFunction,
 };
 use crate::promql::functions::predict_linear::PredictLinearFunction;
-use crate::promql::functions::range_vector_functions::{ChangesFunction, ResetsFunction};
-use crate::promql::functions::rate::{DeltaFunction, IncreaseFunction, RateFunction};
 use crate::promql::functions::rollup_functions::{
-    AbsentOverTimeFunction, AvgOverTimeFunction, CountOverTimeFunction, FirstOverTimeFunction,
-    LastOverTimeFunction, MadOverTimeFunction, MaxOverTimeFunction, MinOverTimeFunction,
-    PresentOverTimeFunction, QuantileOverTimeFunction, RangeOverTimeFunction,
-    StddevOverTimeFunction, StdvarOverTimeFunction, SumOverTimeFunction, TsOfFirstOverTimeFunction,
-    TsOfLastOverTimeFunction, TsOfMaxOverTimeFunction, TsOfMinOverTimeFunction,
+    AbsentOverTimeFunction, AvgOverTimeFunction, ChangesFunction, CountOverTimeFunction,
+    DeltaFunction, DerivFunction, FirstOverTimeFunction, IDeltaFunction, IRateFunction,
+    IncreaseFunction, LastOverTimeFunction, MadOverTimeFunction, MaxOverTimeFunction,
+    MinOverTimeFunction, PresentOverTimeFunction, QuantileOverTimeFunction, RangeOverTimeFunction,
+    RateFunction, ResetsFunction, StddevOverTimeFunction, StdvarOverTimeFunction,
+    SumOverTimeFunction, TsOfFirstOverTimeFunction, TsOfLastOverTimeFunction,
+    TsOfMaxOverTimeFunction, TsOfMinOverTimeFunction,
 };
 use crate::promql::functions::sort::{
     SortByLabelDescFunction, SortByLabelFunction, SortDescFunction, SortFunction,
