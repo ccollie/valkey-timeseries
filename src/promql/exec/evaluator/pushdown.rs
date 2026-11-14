@@ -86,27 +86,19 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         drop_name: bool,
     ) -> Option<ExprResult> {
         let preloaded = self.prepared.grids.get(key)?;
-        let step_idx = step_index(
-            ctx.evaluation_ts,
-            preloaded.eval_start_ms,
-            preloaded.step_ms,
-        );
-
-        let samples = preloaded
-            .series
-            .iter()
-            .filter_map(|series| {
-                // A step whose window held no samples contributes nothing —
-                // the series is absent at this step, not NaN here.
-                let value = series.values.get(step_idx)?;
-                Some(EvalSample {
+        // A step whose window held no samples contributes nothing — the series
+        // is absent at this step, not NaN here.
+        let mut samples = Vec::with_capacity(preloaded.series.len());
+        samples.extend(
+            preloaded
+                .at(ctx.evaluation_ts)
+                .map(|(labels, value)| EvalSample {
                     timestamp_ms: ctx.evaluation_ts,
                     value,
-                    labels: series.labels.clone(),
+                    labels: labels.clone(),
                     drop_name,
-                })
-            })
-            .collect();
+                }),
+        );
 
         Some(ExprResult::InstantVector(samples))
     }

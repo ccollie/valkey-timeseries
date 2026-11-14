@@ -36,7 +36,7 @@ pub(super) fn selector_bounds(
     // but we still use (at_start_ms, at_end_ms) which correctly narrows
     // to a single point when those are equal (instant query or inner
     // subquery context).
-    let (mut start, mut end) = if let Some(at_mod) = at {
+    let (start, end) = if let Some(at_mod) = at {
         match at_mod {
             AtModifier::At(time) => {
                 let t = system_time_to_millis(*time);
@@ -53,20 +53,7 @@ pub(super) fn selector_bounds(
     };
 
     // Step 2: Apply offset
-    if let Some(off) = offset {
-        match off {
-            Offset::Pos(d) => {
-                let off_ms = duration_ms(d);
-                start = start.saturating_sub(off_ms);
-                end = end.saturating_sub(off_ms);
-            }
-            Offset::Neg(d) => {
-                let off_ms = duration_ms(d);
-                start = start.saturating_add(off_ms);
-                end = end.saturating_add(off_ms);
-            }
-        }
-    }
+    let (start, end) = (apply_offset_ms(offset, start), apply_offset_ms(offset, end));
 
     // Step 3: Subtract backward window from start
     let earliest = start.saturating_sub(backward_window_ms);
@@ -82,7 +69,7 @@ pub(in crate::promql) fn apply_time_modifiers_ms(
     query_end_ms: i64,
     evaluation_ts_ms: i64,
 ) -> i64 {
-    let mut adjusted = if let Some(at_modifier) = at {
+    let adjusted = if let Some(at_modifier) = at {
         match at_modifier {
             AtModifier::At(timestamp) => system_time_to_millis(*timestamp),
             AtModifier::Start => query_start_ms,
@@ -92,14 +79,17 @@ pub(in crate::promql) fn apply_time_modifiers_ms(
         evaluation_ts_ms
     };
 
-    if let Some(offset) = offset {
-        adjusted = match offset {
-            Offset::Pos(duration) => adjusted.saturating_sub(duration_ms(duration)),
-            Offset::Neg(duration) => adjusted.saturating_add(duration_ms(duration)),
-        };
-    }
+    apply_offset_ms(offset, adjusted)
+}
 
-    adjusted
+/// `ts` shifted by `offset`: back for `offset 5m`, forward for `offset -5m`,
+/// saturating.
+fn apply_offset_ms(offset: Option<&Offset>, ts: i64) -> i64 {
+    match offset {
+        None => ts,
+        Some(Offset::Pos(duration)) => ts.saturating_sub(duration_ms(duration)),
+        Some(Offset::Neg(duration)) => ts.saturating_add(duration_ms(duration)),
+    }
 }
 
 /// `d` in whole milliseconds, saturating at `i64::MAX`.
