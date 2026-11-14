@@ -23,8 +23,8 @@ use crate::promql::exec::pipeline::{
 use crate::promql::exec::planner::{PlannedQuery, PreloadGrid};
 use crate::promql::exec::preloader::Preloader;
 use crate::promql::exec::types::{
-    EvalLabels, GridPreloadMap, MatrixPreloadMap, PreloadedGridData, PreloadedGridSeries,
-    PreloadedMatrixData, PreloadedMatrixSeries, SampleWindow, StepGrid, StepGridBuilder,
+    EvalLabels, GridPreloadMap, MatrixPreloadMap, PreloadedMatrixData, PreloadedMatrixSeries,
+    PreloadedStepSeries, PreloadedSteps, SampleWindow, StepGrid, StepGridBuilder,
     SubquerySeriesMap,
 };
 use crate::promql::exec::utils::{PARALLEL_STEP_THRESHOLD, step_threads};
@@ -38,7 +38,6 @@ use crate::promql::model::EvalContext;
 use crate::promql::model::RangeSample;
 use crate::promql::time::duration_ms;
 use crate::promql::time::{MAX_GRID_STEPS, grid_step_count, selector_bounds, step_times};
-use crate::promql::types::{PreloadedInstantData, PreloadedInstantSeries};
 use crate::promql::utils::{check_subquery_steps, subquery_step_ms};
 use crate::promql::{EvalResult, EvalSample, EvalSamples, EvaluationError, ExprResult, PreloadMap};
 use ahash::AHashSet;
@@ -555,22 +554,15 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         if preload_eligible {
             let preload_key = self.selector_key(vector_selector);
             if let Some(preloaded) = self.prepared.instant.get(&preload_key) {
-                let evaluation_ts = ctx.evaluation_ts;
-                // Step index from raw evaluation_ts (before modifiers) — matches outer step loop
-                let step_idx =
-                    step_index(evaluation_ts, preloaded.eval_start_ms, preloaded.step_ms);
-
                 let mut samples = Vec::with_capacity(preloaded.series.len());
-                for series in &preloaded.series {
-                    if let Some(sample) = series.values.get(step_idx) {
-                        samples.push(EvalSample {
-                            timestamp_ms: sample.timestamp,
-                            value: sample.value,
-                            labels: series.labels.clone(),
-                            drop_name: false,
-                        });
+                samples.extend(preloaded.at(ctx.evaluation_ts).map(|(labels, sample)| {
+                    EvalSample {
+                        timestamp_ms: sample.timestamp,
+                        value: sample.value,
+                        labels: labels.clone(),
+                        drop_name: false,
                     }
-                }
+                }));
                 return Ok(ExprResult::InstantVector(samples));
             }
         }
@@ -1044,31 +1036,4 @@ fn is_selector(expr: &Expr) -> bool {
 
 fn should_parallelize_binary_expr(be: &BinaryExpr) -> bool {
     is_selector(be.lhs.as_ref()) && is_selector(be.rhs.as_ref())
-}
-
-/// The index of the step at `ts` on a grid starting at `start` with `step`, without
-/// overflow. A time before the grid (or a non-positive step) maps to `usize::MAX`, which no
-/// series holds, as the plain cast of a negative difference did.
-fn step_index(ts: Timestamp, start: Timestamp, step: i64) -> usize {
-    if ts < start || step <= 0 {
-        return usize::MAX;
-    }
-    let idx = (i128::from(ts) - i128::from(start)) / i128::from(step);
-    usize::try_from(idx).unwrap_or(usize::MAX)
-}
-
-#[cfg(test)]
-mod step_index_tests {
-    use super::step_index;
-
-    #[test]
-    fn step_index_handles_the_whole_timestamp_range() {
-        assert_eq!(step_index(10, 0, 5), 2);
-        assert_eq!(step_index(0, 0, 5), 0);
-        assert_eq!(step_index(-1, 0, 5), usize::MAX);
-        assert_eq!(step_index(10, 0, 0), usize::MAX);
-        // The plain difference overflowed i64 here.
-        assert_eq!(step_index(i64::MAX, i64::MIN, 1), usize::MAX);
-        assert_eq!(step_index(i64::MAX, i64::MIN, i64::MAX), 2);
-    }
 }

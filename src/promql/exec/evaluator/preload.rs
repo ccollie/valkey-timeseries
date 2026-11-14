@@ -553,7 +553,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         window_ends: &[Timestamp],
         entries: Vec<RangeSample<EvalLabels>>,
         charged: usize,
-    ) -> EvalResult<Vec<PreloadedGridSeries>> {
+    ) -> EvalResult<Vec<PreloadedStepSeries<f64>>> {
         let mut cover = GridCover::new(charged, &entries);
         entries
             .into_iter()
@@ -564,7 +564,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 );
                 let used = cover.spend(s.samples.len(), values.stored_len());
                 self.charge_grid(&values, used)?;
-                Ok(PreloadedGridSeries {
+                Ok(PreloadedStepSeries {
                     labels: s.labels,
                     values,
                 })
@@ -720,16 +720,10 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         &self,
         key: GridPreloadKey,
         grid: &PreloadGrid,
-        series: Vec<PreloadedGridSeries>,
+        series: Vec<PreloadedStepSeries<f64>>,
     ) {
-        self.preloads.grids.write().unwrap().insert(
-            key,
-            PreloadedGridData {
-                eval_start_ms: grid.start_ms,
-                step_ms: grid.step_ms,
-                series,
-            },
-        );
+        let data = PreloadedSteps::new(grid.start_ms, grid.step_ms, series);
+        self.preloads.grids.write().unwrap().insert(key, data);
     }
 
     /// Ask the source to fold each aggregation that sits directly over a bare
@@ -834,9 +828,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         vs: &VectorSelector,
         grid: &PreloadGrid,
     ) -> EvalResult<()> {
-        let eval_start_ms = grid.start_ms;
-        let step_ms = grid.step_ms;
-
         // One window end per step, `@`/`offset` resolved here so the source
         // is never handed a modifier. With `@` every step shares one end and
         // the source answers that one; the scatter below replicates it.
@@ -855,13 +846,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                                     s.points.iter().map(|p| (p.step_ts, p.sample)),
                                 );
                                 self.charge_grid(&values, 0)?;
-                                Ok(PreloadedInstantSeries {
+                                Ok(PreloadedStepSeries {
                                     labels: s.labels,
                                     values,
                                 })
                             })
                             .collect::<EvalResult<Vec<_>>>()?;
-                        self.cache_preloaded_series(vs, eval_start_ms, step_ms, preloaded_series);
+                        self.cache_preloaded_series(vs, grid, preloaded_series);
                         return Ok(());
                     }
                     GridOutcome::Raw(series) => series,
@@ -938,7 +929,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             .sum::<usize>()
             .saturating_add(raw_series.len().saturating_mul(num_steps));
         let threads = request_par_threads(raw_series.len(), work);
-        let preloaded_series: Vec<PreloadedInstantSeries> = raw_series
+        let preloaded_series: Vec<PreloadedStepSeries<crate::common::Sample>> = raw_series
             .into_par_rayon()
             .num_threads(threads)
             .map(|RangeSample { labels, samples }| -> EvalResult<_> {
@@ -953,12 +944,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
                 let values = values.finish();
                 self.charge_grid(&values, decoded)?;
 
-                Ok(PreloadedInstantSeries { labels, values })
+                Ok(PreloadedStepSeries { labels, values })
             })
             .into_fallible()
             .collect()?;
 
-        self.cache_preloaded_series(vs, grid.start_ms, grid.step_ms, preloaded_series);
+        self.cache_preloaded_series(vs, grid, preloaded_series);
 
         Ok(())
     }
@@ -966,19 +957,12 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     pub(super) fn cache_preloaded_series(
         &self,
         vs: &VectorSelector,
-        eval_start_ms: Timestamp,
-        step_ms: i64,
-        preloaded_series: Vec<PreloadedInstantSeries>,
+        grid: &PreloadGrid,
+        series: Vec<PreloadedStepSeries<crate::common::Sample>>,
     ) {
         let key = PreloadKey::from_selector(vs);
-        let data = PreloadedInstantData {
-            eval_start_ms,
-            step_ms,
-            series: preloaded_series,
-        };
-        let mut cache = self.preloads.instant.write().unwrap();
-        cache.insert(key, data);
-        drop(cache);
+        let data = PreloadedSteps::new(grid.start_ms, grid.step_ms, series);
+        self.preloads.instant.write().unwrap().insert(key, data);
     }
 }
 

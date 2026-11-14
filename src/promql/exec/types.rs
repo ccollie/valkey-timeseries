@@ -1,7 +1,7 @@
 use crate::Label;
-use crate::common::Sample;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::string_interner::InternedString;
+use crate::common::{Sample, Timestamp};
 use crate::labels::{
     HasFingerprint, InternedLabel, Labels, MetricName, SeriesFingerprint, fingerprint_labels,
     hash_label,
@@ -960,47 +960,91 @@ impl<T: Copy + Default> StepGridBuilder<T> {
     }
 }
 
+/// Vector selectors preloaded over the whole step grid: per series, the
+/// sample each step's lookback window picked. Populated by
+/// `Evaluator::preload_vector_selector` before the step loop.
 pub(in crate::promql) type PreloadMap =
-    halfbrown::HashMap<PreloadKey, PreloadedInstantData, RandomState>;
+    halfbrown::HashMap<PreloadKey, PreloadedSteps<Sample>, RandomState>;
 
-/// Preloaded per-step evaluation data for a VectorSelector across a range query.
-pub(in crate::promql) struct PreloadedInstantData {
-    pub eval_start_ms: i64,
-    pub step_ms: i64,
-    pub series: Vec<PreloadedInstantSeries>,
-}
-
-pub(in crate::promql) struct PreloadedInstantSeries {
-    pub(super) labels: EvalLabels,
-    /// Indexed by outer step number: a step is present when a sample exists in
-    /// the lookback window for it, absent otherwise.
-    pub(super) values: StepGrid<Sample>,
-}
-
-pub(in crate::promql) type GridPreloadMap =
-    halfbrown::HashMap<GridPreloadKey, PreloadedGridData, RandomState>;
-
-/// A rollup, or an aggregation over a bare selector, whose whole step grid was
-/// evaluated in one go, rather than once per step. Populated by
+/// Rollups, and aggregations over a bare selector, whose whole step grid was
+/// evaluated in one go rather than once per step: per series (or per group
+/// for a fused request), each step's value. Populated by
 /// `Evaluator::preload_rollups` / `preload_stepped_aggregations` before the
 /// step loop.
-pub(in crate::promql) struct PreloadedGridData {
+pub(in crate::promql) type GridPreloadMap =
+    halfbrown::HashMap<GridPreloadKey, PreloadedSteps<f64>, RandomState>;
+
+/// A step grid evaluated before the step loop, which reads it a step at a time.
+pub(in crate::promql) struct PreloadedSteps<T> {
     /// Start of the *step* grid — `query_start`, not the window end, which any
     /// `@`/`offset` on the selector will have shifted. Step index is derived
     /// from the step timestamp, so this is the right origin.
     pub eval_start_ms: i64,
     pub step_ms: i64,
-    /// One entry per series, or per group for a fused request.
-    pub series: Vec<PreloadedGridSeries>,
+    pub series: Vec<PreloadedStepSeries<T>>,
 }
 
-pub(in crate::promql) struct PreloadedGridSeries {
+pub(in crate::promql) struct PreloadedStepSeries<T> {
     pub(super) labels: EvalLabels,
-    /// Indexed by outer step number. A step is present when the window for it
-    /// produced a value and absent when it held no samples — which is not the
-    /// same as producing NaN, and is why absence lives in the grid's presence
-    /// bitmap rather than in the `f64`.
-    pub(super) values: StepGrid<f64>,
+    /// Indexed by step number. A step is absent when its window held nothing
+    /// — which is not the same as a NaN value, and is why absence lives in the
+    /// grid's presence bitmap rather than in `T`.
+    pub(super) values: StepGrid<T>,
+}
+
+impl<T: Copy> PreloadedSteps<T> {
+    pub(in crate::promql) fn new(
+        start_ms: i64,
+        step_ms: i64,
+        series: Vec<PreloadedStepSeries<T>>,
+    ) -> Self {
+        Self {
+            eval_start_ms: start_ms,
+            step_ms,
+            series,
+        }
+    }
+
+    /// Each series present at the step of `evaluation_ts`, with its value
+    /// there. The step comes from the raw evaluation timestamp — before
+    /// modifiers, as the step loop counts — and this grid's own origin, so an
+    /// outer range query's grid and a subquery's are read alike.
+    pub(in crate::promql) fn at(
+        &self,
+        evaluation_ts: Timestamp,
+    ) -> impl Iterator<Item = (&EvalLabels, T)> + '_ {
+        let step = step_index(evaluation_ts, self.eval_start_ms, self.step_ms);
+        self.series
+            .iter()
+            .filter_map(move |series| Some((&series.labels, series.values.get(step)?)))
+    }
+}
+
+/// The index of the step at `ts` on a grid starting at `start` with `step`, without
+/// overflow. A time before the grid (or a non-positive step) maps to `usize::MAX`, which no
+/// series holds, as the plain cast of a negative difference did.
+fn step_index(ts: Timestamp, start: Timestamp, step: i64) -> usize {
+    if ts < start || step <= 0 {
+        return usize::MAX;
+    }
+    let idx = (i128::from(ts) - i128::from(start)) / i128::from(step);
+    usize::try_from(idx).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod step_index_tests {
+    use super::step_index;
+
+    #[test]
+    fn step_index_handles_the_whole_timestamp_range() {
+        assert_eq!(step_index(10, 0, 5), 2);
+        assert_eq!(step_index(0, 0, 5), 0);
+        assert_eq!(step_index(-1, 0, 5), usize::MAX);
+        assert_eq!(step_index(10, 0, 0), usize::MAX);
+        // The plain difference overflowed i64 here.
+        assert_eq!(step_index(i64::MAX, i64::MIN, 1), usize::MAX);
+        assert_eq!(step_index(i64::MAX, i64::MIN, i64::MAX), 2);
+    }
 }
 
 pub(in crate::promql) type MatrixPreloadMap =
