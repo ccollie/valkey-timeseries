@@ -2,72 +2,25 @@ use crate::promql::binops::apply_binary_op;
 use crate::promql::functions::{
     DateTimePart, PromqlFunctionKind, datetime_from_seconds, unary_math_kernel,
 };
+use crate::promql::utils::map_children;
 use num_traits::FloatConst;
 use promql_parser::parser::token::TokenType;
-use promql_parser::parser::{
-    AggregateExpr, BinaryExpr, Call, Expr, ParenExpr, SubqueryExpr, UnaryExpr,
-};
+use promql_parser::parser::{BinaryExpr, Call, Expr, UnaryExpr};
 
+/// `expr` with every constant subexpression folded, children first.
 pub(super) fn fold_constants(expr: Expr) -> Expr {
-    match expr {
-        Expr::Unary(uo) => handle_unary_expr(uo),
-        Expr::Binary(_) => handle_binop_internal(expr),
-        Expr::Call(fe) => handle_function_expr(fe),
-        Expr::Aggregate(ae) => handle_aggregation_expr(ae),
-        Expr::Subquery(s) => handle_rollup_expr(s),
-        Expr::Paren(p) => {
-            let expr = fold_constants(*p.expr);
-            if let Expr::NumberLiteral(_) = expr {
-                return expr;
-            }
-            let paren_expr = ParenExpr {
-                expr: Box::new(expr),
-            };
-            Expr::Paren(paren_expr)
-        }
-        _ => expr,
+    match map_children(expr, fold_constants) {
+        Expr::Unary(unary) => match *unary.expr {
+            Expr::NumberLiteral(n) => Expr::from(-n.val),
+            operand => Expr::Unary(UnaryExpr {
+                expr: Box::new(operand),
+            }),
+        },
+        Expr::Binary(binary) => handle_binary_expr(binary),
+        Expr::Call(call) => handle_function_expr(call),
+        Expr::Paren(paren) if matches!(*paren.expr, Expr::NumberLiteral(_)) => *paren.expr,
+        expr => expr,
     }
-}
-
-fn handle_unary_expr(ue: UnaryExpr) -> Expr {
-    // Fold the operand first, whatever it is — a literal, a nested negation,
-    // a parenthesized constant expression — and negate it if it became a
-    // number.
-    match fold_constants(*ue.expr) {
-        Expr::NumberLiteral(n) => Expr::from(-n.val),
-        operand => Expr::Unary(UnaryExpr {
-            expr: Box::new(operand),
-        }),
-    }
-}
-
-fn handle_binop_internal(be: Expr) -> Expr {
-    if let Expr::Binary(BinaryExpr {
-        lhs,
-        rhs,
-        op,
-        modifier,
-    }) = be
-    {
-        let left = if let Expr::Binary(_) = *lhs {
-            handle_binop_internal(*lhs)
-        } else {
-            fold_constants(*lhs)
-        };
-        let right = if let Expr::Binary(_) = *rhs {
-            handle_binop_internal(*rhs)
-        } else {
-            fold_constants(*rhs)
-        };
-        let new_be = BinaryExpr {
-            lhs: Box::new(left),
-            rhs: Box::new(right),
-            op,
-            modifier,
-        };
-        return handle_binary_expr(new_be);
-    }
-    be
 }
 
 fn handle_binary_expr(be: BinaryExpr) -> Expr {
@@ -168,17 +121,10 @@ fn unwrap_vectors(expr: Expr) -> Expr {
     }
 }
 
+/// A call whose arguments are folded already. Unwrapping `vector(...)` is
+/// `unwrap_vectors`' job, and happens only under `scalar(...)` below.
 fn handle_function_expr(fe: Call) -> Expr {
     use PromqlFunctionKind::*;
-    // Fold the arguments first, whatever the call. Unwrapping `vector(...)`
-    // is `unwrap_vectors`' job, and happens only under `scalar(...)` below.
-    let mut fe = fe;
-    fe.args.args = fe
-        .args
-        .args
-        .into_iter()
-        .map(|b| Box::new(fold_constants(*b)))
-        .collect();
     let arg_count = fe.args.len();
     let Ok(kind) = PromqlFunctionKind::try_from(fe.func.name) else {
         return Expr::Call(fe);
@@ -207,23 +153,6 @@ fn handle_function_expr(fe: Call) -> Expr {
 
 pub(crate) fn extract_datetime_part(epoch_secs: f64, part: DateTimePart) -> Option<f64> {
     datetime_from_seconds(epoch_secs).map(|dt| part.extract(dt))
-}
-
-fn handle_aggregation_expr(ae: AggregateExpr) -> Expr {
-    Expr::Aggregate(AggregateExpr {
-        expr: Box::new(fold_constants(*ae.expr)),
-        param: ae.param.map(|param| Box::new(fold_constants(*param))),
-        ..ae
-    })
-}
-
-fn handle_rollup_expr(re: SubqueryExpr) -> Expr {
-    let expr = fold_constants(*re.expr);
-    let new_expr = SubqueryExpr {
-        expr: Box::new(expr),
-        ..re
-    };
-    Expr::Subquery(new_expr)
 }
 
 #[cfg(test)]

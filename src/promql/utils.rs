@@ -144,6 +144,49 @@ pub(crate) fn check_subquery_cost(expr: &Expr, outer_steps: u64, max_steps: u64)
     Ok(())
 }
 
+/// `expr` with each direct child replaced by `f(child)`, in place. An
+/// extension's children are left alone, as the passes that rewrite the tree
+/// do not look inside one.
+pub(in crate::promql) fn map_children(expr: Expr, mut f: impl FnMut(Expr) -> Expr) -> Expr {
+    let mut map = |mut child: Box<Expr>| {
+        *child = f(*child);
+        child
+    };
+    match expr {
+        Expr::Aggregate(mut agg) => {
+            agg.expr = map(agg.expr);
+            agg.param = agg.param.map(&mut map);
+            Expr::Aggregate(agg)
+        }
+        Expr::Unary(mut unary) => {
+            unary.expr = map(unary.expr);
+            Expr::Unary(unary)
+        }
+        Expr::Binary(mut binary) => {
+            binary.lhs = map(binary.lhs);
+            binary.rhs = map(binary.rhs);
+            Expr::Binary(binary)
+        }
+        Expr::Paren(mut paren) => {
+            paren.expr = map(paren.expr);
+            Expr::Paren(paren)
+        }
+        Expr::Subquery(mut subquery) => {
+            subquery.expr = map(subquery.expr);
+            Expr::Subquery(subquery)
+        }
+        Expr::Call(mut call) => {
+            call.args.args = call.args.args.into_iter().map(&mut map).collect();
+            Expr::Call(call)
+        }
+        leaf @ (Expr::NumberLiteral(_)
+        | Expr::StringLiteral(_)
+        | Expr::VectorSelector(_)
+        | Expr::MatrixSelector(_)
+        | Expr::Extension(_)) => leaf,
+    }
+}
+
 /// Calls `f` with each direct child of `expr`.
 fn for_each_child<'a>(expr: &'a Expr, mut f: impl FnMut(&'a Expr)) {
     match expr {
