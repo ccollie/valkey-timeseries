@@ -457,17 +457,9 @@ fn eval_top_bottom_k(
         return Ok(Vec::new());
     }
 
-    if modifier.is_none() {
-        return Ok(select_k_from_group(samples, k, order));
-    }
-
-    // Serial: see `eval_reduction_aggregation` for the measurements.
-    let out: Vec<EvalSample> = group_samples(modifier, samples, deadline)?
-        .into_iter()
-        .flat_map(|(_, group)| select_k_from_group(group.members, k, order))
-        .collect();
-
-    Ok(out)
+    select_per_group(modifier, samples, deadline, |members| {
+        Ok(select_k_from_group(members, k, order))
+    })
 }
 
 fn select_k_from_group(
@@ -497,15 +489,10 @@ fn eval_limit_k(
 ) -> EvalResult<Vec<EvalSample>> {
     let k = get_k_param(param, samples.len(), "limitk")?;
 
-    // For each group take the k samples with the smallest label hashes, then
-    // flatten the per-group selections into the output vector.
-    // Serial: see `eval_reduction_aggregation` for the measurements.
-    let out: Vec<EvalSample> = group_samples(modifier, samples, deadline)?
-        .into_iter()
-        .flat_map(|(_, group)| select_limitk(group.members, k))
-        .collect();
-
-    Ok(out)
+    // Each group's k samples with the smallest label hashes.
+    select_per_group(modifier, samples, deadline, |members| {
+        Ok(select_limitk(members, k))
+    })
 }
 
 fn eval_limit_ratio(
@@ -514,15 +501,33 @@ fn eval_limit_ratio(
     samples: Vec<EvalSample>,
     deadline: &Deadline,
 ) -> EvalResult<Vec<EvalSample>> {
-    let k = get_param_as_scalar(param, "limit_ratio")?;
+    let ratio = get_param_as_scalar(param, "limit_ratio")?;
+    select_per_group(modifier, samples, deadline, |members| {
+        select_limit_ratio(members, ratio)
+    })
+}
 
-    let groups = group_samples(modifier, samples, deadline)?;
-    let mut out = Vec::new();
-
-    for (_, group) in groups.into_iter() {
-        out.extend(select_limit_ratio(group.members, k)?);
+/// The samples `select` keeps of each group of `samples` by `modifier`, one group after
+/// another. No modifier is one group, every sample in order, selected without keying a
+/// label; an empty vector has no group, so `select` is not called.
+///
+/// Serial: see `eval_reduction_aggregation` for the measurements.
+fn select_per_group(
+    modifier: Option<&LabelModifier>,
+    samples: Vec<EvalSample>,
+    deadline: &Deadline,
+    mut select: impl FnMut(Vec<EvalSample>) -> EvalResult<Vec<EvalSample>>,
+) -> EvalResult<Vec<EvalSample>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
     }
-
+    if modifier.is_none() {
+        return select(samples);
+    }
+    let mut out = Vec::new();
+    for (_, group) in group_samples(modifier, samples, deadline)? {
+        out.extend(select(group.members)?);
+    }
     Ok(out)
 }
 
