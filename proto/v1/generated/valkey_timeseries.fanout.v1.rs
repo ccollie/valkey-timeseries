@@ -523,17 +523,17 @@ impl MatcherOpType {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InstantSample {
     /// / The value of the sample.
-    #[prost(double, tag = "2")]
+    #[prost(double, tag = "1")]
     pub value: f64,
     /// / Timestamp in milliseconds since Unix epoch.
-    #[prost(int64, tag = "3")]
+    #[prost(int64, tag = "2")]
     pub timestamp: i64,
     /// / The labels identifying this series, as references into
     /// / `InstantQueryResponse.labels`: parallel packed arrays, one entry per
     /// / label (see `SymbolTable`). Empty means the series has no labels.
-    #[prost(uint32, repeated, tag = "4")]
+    #[prost(uint32, repeated, tag = "3")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "5")]
+    #[prost(uint32, repeated, tag = "4")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -562,15 +562,15 @@ pub struct RangeSample {
     /// / The samples, as the chunk codec `TS.MRANGE` fans out with: Chimp from
     /// / `WIRE_COMPRESSION_MIN_SAMPLES` up, uncompressed below it. Around 5-6
     /// / bytes per sample on typical telemetry.
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub data: ::core::option::Option<SampleData>,
     /// / The labels identifying this series, as references into the enclosing
     /// / response's symbol table (`RangeQueryResponse.labels` /
     /// / `GridQueryResponse.labels`): parallel packed arrays, one entry per label
     /// / (see `SymbolTable`). Empty means the series has no labels.
-    #[prost(uint32, repeated, tag = "3")]
+    #[prost(uint32, repeated, tag = "2")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "4")]
+    #[prost(uint32, repeated, tag = "3")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -649,16 +649,16 @@ pub struct AggregationPartialState {
 /// / request's grouping modifier, and the shard's accumulated state for it.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupPartial {
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub state: ::core::option::Option<AggregationPartialState>,
     /// / Label references into the response's symbol table, as on `RangeSample`.
-    #[prost(uint32, repeated, tag = "3")]
+    #[prost(uint32, repeated, tag = "2")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "4")]
+    #[prost(uint32, repeated, tag = "3")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
     /// / The step the state is for, in a grid response; 0 in an aggregation
     /// / response, which has one evaluation.
-    #[prost(int64, tag = "5")]
+    #[prost(int64, tag = "4")]
     pub step_ts: i64,
 }
 /// / The range-vector function half of a grid query: `rate(m\[5m\])`'s `rate` and
@@ -776,19 +776,19 @@ pub struct GridQuery {
 /// / to survive the wire: NaN is a legitimate rolled-up value.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GridSeries {
-    #[prost(bytes = "vec", tag = "2")]
+    #[prost(bytes = "vec", tag = "1")]
     pub presence: ::prost::alloc::vec::Vec<u8>,
-    #[prost(double, repeated, tag = "3")]
+    #[prost(double, repeated, tag = "2")]
     pub values: ::prost::alloc::vec::Vec<f64>,
     /// / For a stepped selection asked for `sample_timestamps`: how far before its
     /// / window end each pick's own timestamp lies (`step_ts - sample_ts`, never
     /// / negative), one per value. Empty otherwise, and for rollup output.
-    #[prost(int64, repeated, tag = "4")]
+    #[prost(int64, repeated, tag = "3")]
     pub sample_lag: ::prost::alloc::vec::Vec<i64>,
     /// / Label references into `GridQueryResponse.labels`, as on `RangeSample`.
-    #[prost(uint32, repeated, tag = "5")]
+    #[prost(uint32, repeated, tag = "4")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "6")]
+    #[prost(uint32, repeated, tag = "5")]
     pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
 }
 /// / Each series the shard read lands in exactly one of the three lists.
@@ -1381,12 +1381,7 @@ pub struct SeriesRangeResponse {
     pub columns: ::prost::alloc::vec::Vec<SampleData>,
     /// Label storage, used in place of `labels`: parallel arrays, one entry per
     /// label, indexing into `MultiRangeResponse.symbol_table_names` /
-    /// `symbol_table_values`. Interning is unconditional, so there is no
-    /// flag; non-empty ref arrays are themselves the signal.
-    ///
-    /// Empty ref arrays mean there is nothing to resolve — either the series has
-    /// no labels, or it carries them in `labels` directly. A decoder must leave
-    /// `labels` alone in that case rather than overwriting it.
+    /// `symbol_table_values`.
     #[prost(uint32, repeated, tag = "5")]
     pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "6")]
@@ -1410,7 +1405,7 @@ pub struct ReducePartialState {
     pub acc1: f64,
     #[prost(double, tag = "3")]
     pub acc2: f64,
-    #[prost(double, tag = "5")]
+    #[prost(double, tag = "4")]
     pub acc1_compensation: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
