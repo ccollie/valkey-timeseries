@@ -41,11 +41,7 @@ fn parse_query(query: &str) -> QueryResult<Expr> {
 /// Apply the static optimizer if it is enabled. `push_down_filters` is false
 /// where the data-derived pass will narrow the tree instead (see
 /// [`simplify_expr`]).
-fn optimize_statement(
-    stmt: &mut EvalStmt,
-    options: &QueryOptions,
-    push_down_filters: bool,
-) -> QueryResult<()> {
+fn optimize_statement(stmt: &mut EvalStmt, options: &QueryOptions, push_down_filters: bool) {
     if options.optimize_queries {
         // Keep this at the shared evaluation boundary so command handlers and
         // the convenience API apply precisely the same optional rewrites.
@@ -56,7 +52,6 @@ fn optimize_statement(
             simplify_expr(expr)
         };
     }
-    Ok(())
 }
 
 /// Number of range-query steps evaluated in parallel and folded into the series
@@ -75,7 +70,7 @@ pub fn evaluate_instant(
 ) -> Result<QueryValue, QueryError> {
     #[cfg(test)]
     let opts = crate::promql::exec::with_test_grid_switch(opts);
-    optimize_statement(&mut stmt, &opts, true)?;
+    optimize_statement(&mut stmt, &opts, true);
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = Deadline::from_options(&opts);
     let evaluator = Evaluator::new(reader.as_ref(), opts);
@@ -133,7 +128,7 @@ pub fn evaluate_range(
 ) -> QueryResult<Vec<RangeSample>> {
     #[cfg(test)]
     let opts = crate::promql::exec::with_test_grid_switch(opts);
-    optimize_statement(&mut stmt, &opts, !opts.derived_filter_pushdown)?;
+    optimize_statement(&mut stmt, &opts, !opts.derived_filter_pushdown);
     let start = stmt.start;
     let end = stmt.end;
     let step = stmt.interval;

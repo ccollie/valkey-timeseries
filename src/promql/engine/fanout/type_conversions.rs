@@ -138,7 +138,10 @@ pub(in crate::promql) fn decode_range_series(
     }
 }
 
-/// A single series from a response whose symbol table `resolver` reads.
+/// A single series from a response whose symbol table `resolver` reads,
+/// decoded at once. Production reads go through [`packed_range_series`], so a
+/// budget can refuse a series before its chunk is decoded.
+#[cfg(test)]
 pub(in crate::promql) fn range_sample_from_proto(
     proto: ProtoRangeSample,
     resolver: &mut EvalLabelResolver<'_>,
@@ -160,6 +163,7 @@ pub(in crate::promql) fn packed_range_series(
 
 /// A series that carries its labels inline, as no shard sends them any more
 /// but a test fixture may.
+#[cfg(test)]
 impl TryFrom<ProtoRangeSample> for RangeSample<EvalLabels> {
     type Error = ValkeyError;
 
@@ -294,8 +298,7 @@ impl From<&VectorSelector> for ProtoSeriesSelector {
 
 // ── Aggregation push-down ──────────────────────────────────────────────────
 // Wire conversions for `AggregationFanoutCommand`: the operator, its grouping
-// modifier, the mergeable partial states, and the sample type the selection
-// operators ship.
+// modifier and the mergeable partial states.
 
 /// The 1:1 mapping between an engine enum and its wire enum, stated once:
 /// `From<$kind> for $proto` and `TryFrom<$proto> for $kind` are both generated
@@ -358,6 +361,8 @@ wire_enum_map! {
     Limitk => Limitk,
     LimitRatio => LimitRatio,
 }
+
+// ── Grid push-down ─────────────────────────────────────────────────────────
 
 // `ROLLUP_KIND_UNSPECIFIED` — the value a peer produces when it omits the
 // field — is refused like any other value this node does not know: a rollup
