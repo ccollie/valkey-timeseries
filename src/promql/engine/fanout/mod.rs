@@ -57,10 +57,12 @@ pub(super) fn peer_error(
     what: &str,
     why: impl std::fmt::Display,
 ) -> FanoutError {
-    FanoutError::custom(format!(
-        "TSDB: peer {} {what}: {why}",
-        target.socket_address
-    ))
+    peer_fault(target, format_args!("{what}: {why}"))
+}
+
+/// The one spelling of an error blamed on a peer: `TSDB: peer <addr> <fault>`.
+pub(super) fn peer_fault(target: &NodeInfo, fault: std::fmt::Arguments<'_>) -> FanoutError {
+    FanoutError::custom(format!("TSDB: peer {} {fault}", target.socket_address))
 }
 
 impl From<FanoutError> for QueryError {
