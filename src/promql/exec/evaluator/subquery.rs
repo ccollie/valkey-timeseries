@@ -179,7 +179,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // Align start time to the step interval to ensure consistent evaluation points
         // (see align_subquery_start for the negative-timestamp rationale).
         let aligned_start_ms = align_subquery_start(subquery_start_ms, step_ms);
-        let expected_steps = grid_step_count(aligned_start_ms, subquery_end_ms, step_ms) as usize;
 
         // The inner expression already evaluated at every step of the union
         // (`preload_subqueries`): this window is a slice of it.
@@ -258,35 +257,22 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // merged.
         let materialized = SampleBudget::new(self.options.max_samples);
         let mut series_map = SubquerySeriesMap::default();
-        if expected_steps < PARALLEL_STEP_THRESHOLD {
-            for current_time_ms in steps {
-                let (current_time_ms, samples) =
-                    sub.eval_subquery_step(subquery, ctx, current_time_ms)?;
-                materialized.charge(samples.len())?;
-                merge_step_into_subquery_map(&mut series_map, current_time_ms, samples);
+        // Evaluate in bounded batches. Collecting every inner step before
+        // merging makes a long subquery retain one vector per step in addition
+        // to the final series map.
+        loop {
+            let batch = next_step_batch(&mut steps, SUBQUERY_STEP_BATCH_SIZE);
+            if batch.is_empty() {
+                break;
             }
-        } else {
-            // Evaluate in bounded batches. Collecting every inner step before
-            // merging makes a long subquery retain one vector per step in
-            // addition to the final series map.
-            loop {
-                let batch: Vec<_> = steps.by_ref().take(SUBQUERY_STEP_BATCH_SIZE).collect();
-                if batch.is_empty() {
-                    break;
-                }
-                let threads = step_threads(batch.len());
-                let step_results: Vec<(i64, Vec<EvalSample>)> = batch
-                    .into_par_rayon()
-                    .num_threads(threads)
-                    .map(|eval_ts| sub.eval_subquery_step(subquery, ctx, eval_ts))
-                    .into_fallible()
-                    .collect()?;
-                materialized.charge(step_results.iter().map(|(_, s)| s.len()).sum())?;
-                // Parallel collection preserves batch input order, and batches
-                // are consumed chronologically, so series values stay sorted.
-                for (current_time_ms, samples) in step_results {
-                    merge_step_into_subquery_map(&mut series_map, current_time_ms, samples);
-                }
+            let step_results = evaluate_step_batch(batch, |eval_ts| {
+                sub.eval_subquery_step(subquery, ctx, eval_ts)
+            })?;
+            materialized.charge(step_results.iter().map(|(_, s)| s.len()).sum())?;
+            // Results come back in step order, and batches are consumed
+            // chronologically, so series values stay sorted.
+            for (current_time_ms, samples) in step_results {
+                merge_step_into_subquery_map(&mut series_map, current_time_ms, samples);
             }
         }
 
@@ -444,8 +430,6 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         let mut first_batch = true;
         let mut steps = union.steps();
         loop {
-            // `steps` cannot say how many are left, so a plain `collect` would
-            // grow the batch from empty, reallocating on the way to 64.
             // Where churn would abandon the grid, the first batch is a short
             // probe, so little is evaluated twice when it does.
             let size = if first_batch && windows_per_step < MIN_WINDOWS_PER_UNION_STEP_UNDER_CHURN {
@@ -453,20 +437,14 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             } else {
                 SUBQUERY_STEP_BATCH_SIZE
             };
-            let mut batch: Vec<Timestamp> = Vec::with_capacity(size);
-            batch.extend(steps.by_ref().take(size));
+            let batch = next_step_batch(&mut steps, size);
             if batch.is_empty() {
                 break;
             }
-            let step = |ts| sub.eval_subquery_step(subquery, &ctx, ts);
             // A short union, or the short tail batch of a long one, runs on
             // this thread, as the per-step path does.
-            let results: Vec<(Timestamp, Vec<EvalSample>)> =
-                if batch.len() < PARALLEL_STEP_THRESHOLD {
-                    batch.into_iter().map(step).collect::<EvalResult<_>>()?
-                } else {
-                    batch.into_par_rayon().map(step).into_fallible().collect()?
-                };
+            let results =
+                evaluate_step_batch(batch, |ts| sub.eval_subquery_step(subquery, &ctx, ts))?;
             let before = points;
             // Steps come back in order, so each series' points ascend.
             for (ts, samples) in results {
