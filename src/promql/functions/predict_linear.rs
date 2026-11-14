@@ -58,10 +58,7 @@ mod tests {
             range_ms: at_ms,
             range_end_ms: at_ms,
         };
-        let ctx = EvalContext {
-            evaluation_ts: at_ms,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(at_ms);
         let result = PredictLinearFunction
             .apply_args(
                 vec![

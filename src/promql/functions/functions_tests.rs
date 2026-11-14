@@ -87,10 +87,7 @@ mod tests {
 
     fn call_apply(name: &str, arg: PromQLArg, eval_timestamp_ms: i64) -> Vec<EvalSample> {
         let func = resolve_function(name).unwrap();
-        let ctx = EvalContext {
-            evaluation_ts: eval_timestamp_ms,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(eval_timestamp_ms);
         let result = func.apply(arg, &ctx).unwrap();
         let ExprResult::InstantVector(samples) = result else {
             panic!("expected instant vector result");
@@ -105,10 +102,7 @@ mod tests {
     ) -> Vec<EvalSample> {
         let func = resolve_function(name).unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: eval_timestamp_ms,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(eval_timestamp_ms);
         let result = func.apply_args(args, &ctx).unwrap();
         let ExprResult::InstantVector(samples) = result else {
             panic!("expected instant vector result");
@@ -258,10 +252,7 @@ mod tests {
     fn should_apply_label_replace_with_full_string_match() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -320,10 +311,7 @@ mod tests {
     fn should_not_apply_label_replace_on_substring_match() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -359,10 +347,7 @@ mod tests {
     fn should_drop_destination_label_when_label_replace_replacement_is_empty() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -395,10 +380,7 @@ mod tests {
     fn should_apply_label_replace_with_utf8_destination_label_name() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -427,10 +409,7 @@ mod tests {
     fn should_error_when_label_replace_destination_label_is_empty() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let err = func
             .apply_call(
@@ -459,10 +438,7 @@ mod tests {
     /// label is `src_value`: the `dst` label it produces, or the error.
     fn label_replace_dst(src_value: &str, regex: &str) -> Result<Option<String>, String> {
         let func = resolve_function("label_replace").unwrap();
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
         let result = func
             .apply_call(
                 vec![
@@ -524,10 +500,7 @@ mod tests {
     fn should_error_when_label_replace_produces_duplicate_output_labelsets() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let err = func
             .apply_call(
@@ -563,10 +536,7 @@ mod tests {
     fn should_apply_label_join_with_source_labels_in_order() {
         let func = resolve_function("label_join").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -613,10 +583,7 @@ mod tests {
     fn should_apply_label_join_without_source_labels() {
         let func = resolve_function("label_join").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let result = func
             .apply_call(
@@ -647,10 +614,7 @@ mod tests {
     #[test]
     fn should_error_when_label_join_destination_label_is_empty() {
         let func = resolve_function("label_join").unwrap();
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let err = func
             .apply_call(
@@ -677,10 +641,7 @@ mod tests {
     #[test]
     fn should_error_when_label_join_produces_duplicate_output_labelsets() {
         let func = resolve_function("label_join").unwrap();
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let err = func
             .apply_call(
@@ -715,10 +676,7 @@ mod tests {
     fn should_preserve_metric_name_when_label_replace_writes_name_label() {
         let func = resolve_function("label_replace").unwrap();
 
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
 
         let mut sample =
             create_sample_with_labels(1.0, &[(METRIC_NAME, "metric_total"), ("env", "1")]);
@@ -748,10 +706,7 @@ mod tests {
     #[test]
     fn should_preserve_metric_name_when_label_join_writes_name_label() {
         let func = resolve_function("label_join").unwrap();
-        let ctx = EvalContext {
-            evaluation_ts: 1000,
-            ..Default::default()
-        };
+        let ctx = EvalContext::at(1000);
         let mut sample =
             create_sample_with_labels(1.0, &[(METRIC_NAME, "metric_total"), ("env", "1")]);
         sample.drop_name = true;
