@@ -4,8 +4,7 @@ use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTable
 use crate::fanout::{FanoutError, NodeInfo};
 use crate::labels::HasFingerprint;
 use crate::labels::filters::{
-    FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
-    SeriesSelector,
+    FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, SeriesSelector,
 };
 use crate::labels::try_regex_predicate;
 use crate::promql::QueryError;
@@ -30,7 +29,6 @@ use crate::series::chunks::{
 };
 use promql_parser::label::{Labels as ModifierLabels, MatchOp as PromMatchOp, Matcher, Matchers};
 use promql_parser::parser::{LabelModifier, VectorSelector};
-use regex::Regex;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 /// One shard's answer to a range read as it crossed the wire: each series'
@@ -218,8 +216,8 @@ fn matcher_predicate(matcher: &Matcher) -> PredicateMatch {
     match &matcher.op {
         PromMatchOp::Equal => PredicateMatch::Equal(literal_value(value)),
         PromMatchOp::NotEqual => PredicateMatch::NotEqual(literal_value(value)),
-        PromMatchOp::Re(parsed) => regex_predicate(value, parsed),
-        PromMatchOp::NotRe(parsed) => regex_predicate(value, parsed).inverse(),
+        PromMatchOp::Re(_) => regex_predicate(value),
+        PromMatchOp::NotRe(_) => regex_predicate(value).inverse(),
     }
 }
 
@@ -237,15 +235,12 @@ fn literal_value(value: &str) -> PredicateValue {
 /// selectors — is an equality over the list: resolved by one postings lookup
 /// per value rather than a regex run over every value of the label.
 ///
-/// `parsed` is the regex promql-parser compiled for the same text. It is used
-/// only if the module's own compile fails, which
-/// [`validate_query_regexes`](crate::labels::validate_query_regexes)
-/// rules out for every query a command accepts; falling back keeps this
-/// conversion infallible instead of panicking on a selector that got past it.
-fn regex_predicate(value: &str, parsed: &Regex) -> PredicateMatch {
-    try_regex_predicate(value).unwrap_or_else(|_| {
-        PredicateMatch::RegexEqual(RegexMatcher::new(parsed.clone(), value.to_string()))
-    })
+/// The module's compile cannot fail here:
+/// [`validate_query_regexes`](crate::labels::validate_query_regexes) refuses every query whose
+/// matchers it would refuse, before parsing. Should one get past it, the matcher selects
+/// nothing rather than panicking.
+fn regex_predicate(value: &str) -> PredicateMatch {
+    try_regex_predicate(value).unwrap_or(PredicateMatch::MatchNone)
 }
 
 /// Through [`normalize_selector`], the conversion the query path reads with,
@@ -890,7 +885,7 @@ mod tests {
                     Matcher::new(PromMatchOp::Equal, "job", "api"),
                     Matcher::new(PromMatchOp::NotEqual, "env", "dev"),
                     Matcher::new(
-                        PromMatchOp::Re(RegexMatcher::create("server[0-9]+").unwrap().regex),
+                        PromMatchOp::Re(regex::Regex::new("^(?:server[0-9]+)$").unwrap()),
                         "instance",
                         "server[0-9]+",
                     ),
@@ -944,23 +939,21 @@ mod tests {
         assert!(!env.matches(""));
     }
 
-    /// A pattern promql-parser accepts under the regex crate's 10 MiB default
-    /// but the module's 64 KiB limit refuses used to panic in the conversion.
-    /// A command now rejects it at parse time (see `validate_query_regexes`'s
-    /// tests in `labels::regex_utils`), and the conversion itself falls back to
-    /// the parser's regex rather than panicking.
+    /// A pattern promql-parser accepts but the module refuses used to panic in the conversion.
+    /// A command rejects it at parse time (see `validate_query_regexes`'s tests in
+    /// `labels::regex_utils`); should one reach the conversion anyway, it selects nothing.
     #[test]
-    fn test_regex_over_the_module_size_limit_falls_back_to_the_parsers() {
+    fn test_regex_the_module_refuses_selects_nothing() {
         let query = r#"up{host=~"[a-z]{3000}"}"#;
         let matchers = parsed_matchers(query);
         assert!(
-            RegexMatcher::create("[a-z]{3000}").is_err(),
+            crate::labels::try_regex_predicate("[a-z]{3000}").is_err(),
             "must exceed the module limit"
         );
 
         let filter = LabelFilter::from(&matchers[0]);
-        assert_eq!(filter.op(), MatchOp::RegexEqual);
-        assert!(filter.matches(&"a".repeat(3000)));
+        assert_eq!(filter.matcher, PredicateMatch::MatchNone);
+        assert!(!filter.matches(&"a".repeat(3000)));
         assert!(!filter.matches("a"));
     }
 

@@ -155,6 +155,45 @@ fn decomposed_regex_to_predicate_match(
     }
 }
 
+/// The values of `expr` when it is nothing but `|`-separated literals with
+/// their metacharacters escaped — `a|b\.c` gives `["a", "b.c"]`. Anchored, such
+/// a regex matches exactly those values, so the index can look each one up
+/// instead of running the regex over every value of the label.
+///
+/// `None` for anything else, including an empty alternative: a
+/// [`PredicateValue::List`] never matches `""`. Unlike [`decompose_regex`] this
+/// is a scan of the text, not the HIR, and has no size cap, so it also covers
+/// the long alternations the derived push-down filters produce.
+pub fn literal_alternatives(expr: &str) -> Option<Vec<String>> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut chars = expr.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(escaped) if regex_syntax::is_meta_character(escaped) => current.push(escaped),
+                _ => return None,
+            },
+            '|' => {
+                if current.is_empty() {
+                    return None;
+                }
+                values.push(std::mem::take(&mut current));
+            }
+            // Special only inside a class or under the `x` flag, and neither can
+            // be opened without a metacharacter rejected below.
+            '-' | '&' | '~' | '#' => current.push(c),
+            c if regex_syntax::is_meta_character(c) => return None,
+            c => current.push(c),
+        }
+    }
+    if current.is_empty() {
+        return None;
+    }
+    values.push(current);
+    Some(values)
+}
+
 /// Whether a (Go-syntax) pattern matches every value, judged on its parsed tree: `.*`, but
 /// also `^.*$`, `(.*)`, `.*.*`, `(?s:.*)` or `.*|foo`. A pattern that does not parse is not.
 pub(crate) fn is_match_all_regex_pattern(expr: &str) -> bool {
@@ -785,7 +824,7 @@ pub(crate) fn try_regex_predicate(value: &str) -> Result<PredicateMatch, ParseEr
         };
         return Ok(PredicateMatch::Equal(value));
     }
-    RegexMatcher::create(value).map(PredicateMatch::RegexEqual)
+    RegexMatcher::create(value).map(|m| PredicateMatch::RegexEqual(Box::new(m)))
 }
 
 /// Rejects a query whose regex matchers the module cannot compile, before
@@ -836,7 +875,10 @@ pub(crate) fn validate_query_regexes(query: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod test {
-    use super::{RegexDecomposition, decompose_regex, parse_regex_matcher};
+    use super::{
+        RegexDecomposition, decompose_regex, literal_alternatives, parse_regex_matcher,
+        validate_query_regexes,
+    };
     use crate::labels::filters::{PredicateMatch, PredicateValue};
 
     #[test]
@@ -1816,6 +1858,80 @@ mod test {
         assert!(!matcher.is_match("nodeeex{y}"));
         // Patterns that are invalid for another reason still fail.
         assert!(parse_regex_matcher("a{b}(", true).is_err());
+    }
+
+    /// A query whose regex matcher exceeds the module's size limit is refused
+    /// before it is parsed, wherever the matcher sits in the query.
+    #[test]
+    fn test_query_regex_over_the_module_size_limit_is_refused() {
+        let query = r#"up{host=~"[a-z]{3000}"}"#;
+        let err = validate_query_regexes(query).expect_err("rejected before parsing");
+        assert_eq!(
+            err,
+            "TSDB: the regex for label 'host' is invalid or too large"
+        );
+
+        // Inside a range selector, a subquery, an `or` branch; negated; single-quoted,
+        // backquoted and quoted-name forms; and not the first matcher.
+        for query in [
+            r#"rate(up{host=~"[a-z]{3000}"}[5m])"#,
+            r#"max_over_time(sum(up{host=~"[a-z]{3000}"})[10m:1m])"#,
+            r#"up{job="a"} or on() up{host!~"[a-z]{3000}"}"#,
+            r#"up{host=~'[a-z]{3000}'}"#,
+            r#"up{host=~`[a-z]{3000}`}"#,
+            r#"{"host"=~"[a-z]{3000}"}"#,
+            r#"up{job="a", host=~"[a-z]{3000}"}"#,
+        ] {
+            let err = validate_query_regexes(query).expect_err(query);
+            assert!(err.contains("'host'"), "{query}: {err}");
+        }
+        // The same text where it is not a matcher: an ordinary string argument, a
+        // comment, and a string that merely contains `=~`.
+        for query in [
+            r#"up{host=~"a|b", job=~""}"#,
+            r#"rate(up{host=~"web-[0-9]+"}[5m])"#,
+            r#"label_replace(up, "dst", "$1", "src", "[a-z]{3000}")"#,
+            "up # host=~\"[a-z]{3000}\"",
+            r#"label_join(up, "dst", "=~", "[a-z]{3000}")"#,
+        ] {
+            assert!(validate_query_regexes(query).is_ok(), "{query}");
+        }
+        // Everyday classes compile: `\w`, `\d`, `\s` and `\b` are ASCII, as in Go, so even
+        // two unbounded `\w` runs are small.
+        for pattern in [
+            r"\w+",
+            r"\pL+",
+            r"(?i)\w+",
+            r"\b\w+\b",
+            r"web_stg_\w+",
+            r"\w+-\w+",
+        ] {
+            let query = format!(r#"up{{host=~"{}"}}"#, pattern.replace('\\', r"\\"));
+            assert!(validate_query_regexes(&query).is_ok(), "{query}");
+        }
+
+        // Input the lexer rejects is left for the parser to report.
+        assert!(validate_query_regexes(r#"up{host=~"unterminated}"#).is_ok());
+    }
+
+    /// A 4 KiB query of heavy matchers used to hold the parsing thread for about
+    /// 30 s (each one ~100 ms to build or refuse under the parser's 10 MiB
+    /// default). The check refuses the first one and stops.
+    #[test]
+    fn test_heavy_regex_matchers_are_refused_quickly() {
+        let matcher = r#"a=~"\\w{2000}""#;
+        let query = format!(
+            "up{{{}}}",
+            vec![matcher; 4000 / (matcher.len() + 1)].join(",")
+        );
+        assert!(query.len() <= 4096);
+        let started = std::time::Instant::now();
+        assert!(validate_query_regexes(&query).is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ mod hash;
 pub mod label;
 pub mod labels_struct;
 mod metric_name;
+mod promql_regex;
 mod regex;
 pub(crate) mod regex_cache;
 mod regex_utils;
@@ -16,8 +17,10 @@ pub use labels_struct::*;
 /// `EvalLabels::Interned` variant carries it straight from storage.
 pub use metric_name::MetricName;
 pub(crate) use metric_name::*;
-pub(crate) use regex::build_with_repeat_fallback;
-pub use regex::compile_literal_set;
-pub use regex_utils::{compile_regex, is_match_all_regex_pattern, literal_alternatives};
+pub(crate) use promql_regex::build_with_repeat_fallback;
+pub use promql_regex::compile_literal_set;
+pub use regex_utils::literal_alternatives;
+pub(crate) use regex_utils::{
+    compile_regex, is_any_non_empty_regex_pattern, is_match_all_regex_pattern,
+};
 pub(crate) use regex_utils::{try_regex_predicate, validate_query_regexes};
-pub(crate) use regex_utils::is_any_non_empty_regex_pattern;

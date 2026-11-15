@@ -24,6 +24,7 @@
 
 use crate::labels::regex::CompiledRegex;
 use ahash::{AHashMap, AHashSet, RandomState};
+use std::hash::Hash;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// The number of compiled regexes retained.
@@ -277,6 +278,39 @@ fn make_room<T>(
         }
     }
     evicted
+}
+
+/// Removes the `count` entries whose `stamp` is smallest — the oldest, for a
+/// recency or creation stamp — and returns their values, for the caller to
+/// drop where it chooses.
+pub(crate) fn evict_oldest<K, V, S>(
+    entries: &mut AHashMap<K, V>,
+    count: usize,
+    stamp: impl Fn(&V) -> S,
+) -> Vec<V>
+where
+    K: Eq + Hash + Clone,
+    S: Ord,
+{
+    let count = count.min(entries.len());
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut by_age: Vec<(S, &K)> = entries
+        .iter()
+        .map(|(key, value)| (stamp(value), key))
+        .collect();
+    if count < by_age.len() {
+        by_age.select_nth_unstable_by(count - 1, |a, b| a.0.cmp(&b.0));
+    }
+    let oldest: Vec<K> = by_age[..count]
+        .iter()
+        .map(|(_, key)| (*key).clone())
+        .collect();
+    oldest
+        .iter()
+        .filter_map(|key| entries.remove(key))
+        .collect()
 }
 
 #[cfg(test)]

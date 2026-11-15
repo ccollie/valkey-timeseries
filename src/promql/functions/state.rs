@@ -14,7 +14,7 @@
 //! `docs/plans/state-duration-over-time-requirements.md` and
 //! `docs/plans/state-count-over-time-requirements.md` for the contracts.
 use crate::common::Sample;
-use crate::parser::duration::parse_positive_duration_value;
+use crate::parser::duration::parse_nonnegative_duration_value;
 use crate::promql::functions::RollupKind;
 use crate::promql::functions::rollup_functions::eval_rollup;
 use crate::promql::functions::types::RollupWindow;
@@ -188,7 +188,7 @@ pub(in crate::promql) fn parse_unit(unit: &str) -> EvalResult<i64> {
             "a time unit suffix is required, e.g. \"1s\" or \"5m\"",
         ));
     }
-    let ms = parse_positive_duration_value(unit).map_err(|e| invalid(&e.to_string()))?;
+    let ms = parse_nonnegative_duration_value(unit).map_err(|e| invalid(&e.to_string()))?;
     if ms == 0 {
         return Err(invalid("must be greater than zero"));
     }
