@@ -352,27 +352,40 @@ mod tests {
         querier
     }
 
-    /// A selector the index refuses is the read's error, not a selector that
-    /// matched nothing. The parser never builds one, so it is built by hand.
+    /// An empty label name matching "" is a matcher every series satisfies (an absent label
+    /// reads as ""), so beside another matcher it selects what that one selects, as in
+    /// Prometheus. The parser never builds one, so it is built by hand.
     #[test]
-    fn an_index_error_is_the_reads_error() {
+    fn an_empty_name_matcher_beside_another_selects_its_series() {
         use promql_parser::label::{MatchOp, Matcher, Matchers};
         let querier = retired_and_live();
-        // Alone, an empty name matching "" is Prometheus' match-all; beside
-        // another matcher the index refuses it.
-        let unanswerable = VectorSelector {
+        let selector = |matchers| VectorSelector {
             name: None,
-            matchers: Matchers::new(vec![
-                Matcher::new(MatchOp::Equal, "", ""),
-                Matcher::new(MatchOp::Equal, "region", "eu"),
-            ]),
+            matchers: Matchers::new(matchers),
             offset: None,
             at: None,
         };
-        let err = querier
-            .query(&unanswerable, 1_000, QueryOptions::default())
-            .expect_err("an index error must not read as no series");
-        assert!(err.to_string().contains("at least one matcher"), "{err}");
+        let with_empty = selector(vec![
+            Matcher::new(MatchOp::Equal, "", ""),
+            Matcher::new(MatchOp::Equal, "region", "eu"),
+        ]);
+        let without = selector(vec![Matcher::new(MatchOp::Equal, "region", "eu")]);
+        let read = |vs: &VectorSelector| {
+            querier
+                .query(vs, 1_000, QueryOptions::default())
+                .expect("both selectors are answerable")
+        };
+        let summary = |samples: Vec<_>| {
+            samples
+                .into_iter()
+                .map(|s: crate::promql::model::InstantSample<_>| {
+                    (format!("{:?}", s.labels), s.timestamp_ms, s.value.to_bits())
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = summary(read(&without));
+        assert!(!expected.is_empty());
+        assert_eq!(summary(read(&with_empty)), expected);
     }
 
     /// Reads are refused at the limits a module read applies, so the conformance suite

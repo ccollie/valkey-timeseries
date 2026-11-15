@@ -128,6 +128,18 @@ impl MetricName {
         Self(Self::share(entries))
     }
 
+    /// The pairs as one shared slice, for holders that outlive the borrow (a query's copy of a
+    /// series' labels). A reference-count bump.
+    pub fn shared(&self) -> Arc<[InternedString]> {
+        Arc::clone(&self.0)
+    }
+
+    /// The stored `name=value` strings, in name order. For callers that hash or
+    /// compare whole labels and need neither half on its own.
+    pub fn raw_entries(&self) -> std::slice::Iter<'_, InternedString> {
+        self.0.iter()
+    }
+
     /// The slice for `entries`. An empty set is the one shared empty slice
     /// (`Arc::<[_]>::default()`), never an allocation of its own, so every empty set costs
     /// the same: nothing.

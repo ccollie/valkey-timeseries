@@ -66,7 +66,7 @@ fn vector_selector(alt: &str) -> VectorSelector {
 fn old_filter(alt: &str) -> Option<LabelFilter> {
     Some(LabelFilter {
         label: "instance".to_string(),
-        matcher: PredicateMatch::RegexEqual(RegexMatcher::create(alt).ok()?),
+        matcher: PredicateMatch::RegexEqual(Box::new(RegexMatcher::create(alt).ok()?)),
     })
 }
 

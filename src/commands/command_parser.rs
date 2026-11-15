@@ -185,8 +185,12 @@ pub(super) fn parse_promql_time_arg(arg: &str, name: &str) -> Result<TimestampVa
         });
     }
 
-    // Use auto_scale = true so that small integers are treated as Unix seconds.
-    match parse_timestamp_internal(arg, true) {
+    // Plain integers are scaled by magnitude, so small ones are Unix seconds.
+    let parsed = match arg.parse::<i64>() {
+        Ok(ts) => Ok(scale_integer_timestamp(ts)),
+        Err(_) => parse_timestamp_internal(arg),
+    };
+    match parsed {
         Ok(ms) if ms >= 0 => Ok(TimestampValue::Specific(ms)),
         _ => {
             // Fall back to the RFC-3339 / full parser for date strings.
@@ -195,6 +199,17 @@ pub(super) fn parse_promql_time_arg(arg: &str, name: &str) -> Result<TimestampVa
                 ValkeyError::String(msg)
             })
         }
+    }
+}
+
+/// A plain integer timestamp in seconds, milliseconds, microseconds or nanoseconds, judged by
+/// magnitude, as milliseconds. Below 2^32 it is seconds, as in Prometheus' HTTP API.
+fn scale_integer_timestamp(ts: i64) -> i64 {
+    match ts {
+        ts if ts >= (1 << 32) * 1_000_000 => ts / 1_000_000,
+        ts if ts >= (1 << 32) * 1_000 => ts / 1_000,
+        ts if ts >= (1 << 32) => ts,
+        ts => ts.saturating_mul(1_000),
     }
 }
 
@@ -212,7 +227,7 @@ fn parse_duration_arg(arg: &ValkeyString) -> ValkeyResult<Duration> {
         return Ok(Duration::from_millis(value as u64));
     }
     let value_str = arg.to_string_lossy();
-    parse_duration(&value_str)
+    parse_nonnegative_duration(&value_str)
 }
 
 /// Parse a bucket duration (the `AGGREGATION <aggregator> <bucketDuration>` operand,
