@@ -86,20 +86,21 @@ pub fn evaluate_instant(
     // What the query returns, past what it loaded: see `charge_result_points`.
     evaluator.charge_result_points(result.point_count())?;
 
+    let timestamp_ms = system_time_to_millis(query_time);
     match result {
-        ExprResult::Scalar(value) => {
-            let timestamp_ms = system_time_to_millis(query_time);
-            Ok(QueryValue::Scalar {
-                timestamp_ms,
-                value,
-            })
-        }
+        ExprResult::Scalar(value) => Ok(QueryValue::Scalar {
+            timestamp_ms,
+            value,
+        }),
+        // Every sample is stamped with the evaluation time, as Prometheus does: a
+        // selector's sample keeps its own time while it is evaluated (`timestamp()`
+        // reads it), but the query's answer is the vector *at* the evaluation time.
         ExprResult::InstantVector(samples) => Ok(QueryValue::Vector(
             samples
                 .into_iter()
                 .map(|s| InstantSample {
                     labels: s.labels.into_labels(),
-                    timestamp_ms: s.timestamp_ms,
+                    timestamp_ms,
                     value: s.value,
                 })
                 .collect(),
@@ -638,6 +639,91 @@ mod tests {
                 );
             }
             other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    fn instant_vector(tsdb: &PromqlQuerier, query: &str, secs: u64) -> Vec<InstantSample> {
+        let time = UNIX_EPOCH + Duration::from_secs(secs);
+        match tsdb.eval_query(query, Some(time), &QueryOptions::default()) {
+            Ok(QueryValue::Vector(samples)) => samples,
+            other => panic!("{query}: expected a vector, got {other:?}"),
+        }
+    }
+
+    /// Prometheus forces an instant query's samples to the evaluation time, whatever
+    /// the time of the underlying sample: the documented contract of `TS.QUERY`.
+    #[test]
+    fn instant_vector_samples_carry_the_evaluation_time() {
+        let tsdb = create_tsdb_with_data();
+        for query in [
+            "http_requests",
+            "http_requests offset 50s",
+            "http_requests @ 4000",
+            "abs(http_requests)",
+            "-http_requests",
+            "http_requests > 0",
+            "http_requests * on(env) http_requests",
+            "sort(http_requests)",
+            r#"label_replace(http_requests, "x", "y", "", "")"#,
+            "sum by (env) (http_requests)",
+        ] {
+            let samples = instant_vector(&tsdb, query, 4_100);
+            assert_eq!(samples.len(), 2, "{query}");
+            for sample in samples {
+                assert_eq!(sample.timestamp_ms, 4_100_000, "{query}");
+            }
+        }
+    }
+
+    /// `timestamp()` reports a sample's own time only for a bare vector selector;
+    /// any other argument was computed at the evaluation time, as in Prometheus.
+    #[test]
+    fn timestamp_reports_the_sample_time_only_for_a_bare_selector() {
+        let tsdb = create_tsdb_with_data();
+        for (query, expected) in [
+            ("timestamp(http_requests)", 4_000.0),
+            ("timestamp((http_requests))", 4_000.0),
+            ("timestamp(http_requests @ 4000)", 4_000.0),
+            ("timestamp(abs(http_requests))", 4_100.0),
+            ("timestamp(http_requests > 0)", 4_100.0),
+            ("timestamp(-http_requests)", 4_100.0),
+            ("timestamp(timestamp(http_requests))", 4_100.0),
+        ] {
+            let samples = instant_vector(&tsdb, query, 4_100);
+            assert_eq!(samples.len(), 2, "{query}");
+            for sample in samples {
+                assert_eq!(sample.value, expected, "{query}");
+                assert_eq!(sample.timestamp_ms, 4_100_000, "{query}");
+            }
+        }
+
+        // The same rule at every step of a range query.
+        let start = UNIX_EPOCH + Duration::from_secs(4_060);
+        let end = UNIX_EPOCH + Duration::from_secs(4_120);
+        for (query, sample_time) in [
+            ("timestamp(http_requests)", true),
+            ("timestamp(abs(http_requests))", false),
+        ] {
+            let series = tsdb
+                .eval_query_range(
+                    query,
+                    start..=end,
+                    Duration::from_secs(30),
+                    &QueryOptions::default(),
+                )
+                .unwrap();
+            assert_eq!(series.len(), 2, "{query}");
+            for s in series {
+                assert_eq!(s.samples.len(), 3, "{query}");
+                for point in s.samples {
+                    let expected = if sample_time {
+                        4_000.0
+                    } else {
+                        point.timestamp as f64 / 1000.0
+                    };
+                    assert_eq!(point.value, expected, "{query} at {}", point.timestamp);
+                }
+            }
         }
     }
 

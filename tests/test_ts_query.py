@@ -392,6 +392,19 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         assert value.timestamp == 4000, f"expected timestamp 4000 ms, got {value.timestamp}"
         assert value.value == 4, "expected the value from the most recent point at or before the query time"
 
+    def test_instant_vector_is_stamped_with_the_evaluation_time(self):
+        """A sample is answered at the evaluation time, not at its own time
+        (Prometheus' contract); only timestamp() of a bare selector reports
+        the sample's time."""
+        self.client.execute_command('TS.ADD', 'stamped', 4000, 7, 'LABELS', '__name__', 'stamped')
+
+        for query in ('stamped', 'abs(stamped)', 'sum(stamped)'):
+            value = self.instant_query(query, 30).result[0].value
+            assert value.timestamp == 30_000, f"{query}: got {value.timestamp}"
+
+        assert self.instant_query('timestamp(stamped)', 30).result[0].value.value == 4
+        assert self.instant_query('timestamp(abs(stamped))', 30).result[0].value.value == 30
+
     def test_error_on_invalid_time_format(self):
         """Test TS.QUERY with an invalid TIME format."""
         self.setup_simple_series()

@@ -22,8 +22,31 @@ pub(super) fn optimized_query_options() -> QueryOptions {
     }
 }
 
-/// Execute instant query and return structured results
+/// Execute instant query and return structured results.
+///
+/// The `.test` files give an instant vector's samples without timestamps, so this checks
+/// what they cannot: every sample is stamped with the evaluation time, as in Prometheus.
+/// A panic rather than an error, which an `eval_fail` would accept.
 pub(super) fn eval_instant(
+    tsdb: &PromqlQuerier,
+    time: SystemTime,
+    query: &str,
+    options: &QueryOptions,
+) -> Result<QueryValue, String> {
+    let value = eval_instant_unchecked(tsdb, time, query, options)?;
+    if let QueryValue::Vector(samples) = &value {
+        let eval_ms = crate::common::time::system_time_to_millis(time);
+        for sample in samples {
+            assert_eq!(
+                sample.timestamp_ms, eval_ms,
+                "{query}: an instant vector sample must carry the evaluation time"
+            );
+        }
+    }
+    Ok(value)
+}
+
+fn eval_instant_unchecked(
     tsdb: &PromqlQuerier,
     time: SystemTime,
     query: &str,
