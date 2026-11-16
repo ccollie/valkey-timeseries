@@ -641,6 +641,29 @@ mod tests {
         }
     }
 
+    /// Under 1 KiB of text and no data: each level doubles the label, so 30 levels asked
+    /// for 8 GiB, and the server aborted on the failed allocation before the limit.
+    #[test]
+    fn eval_query_refuses_a_label_doubled_past_the_limit() {
+        let mut query = r#"label_replace(vector(1), "a", "xxxxxxxx", "", "")"#.to_string();
+        for _ in 0..30 {
+            query = format!(r#"label_join({query}, "a", "", "a", "a")"#);
+        }
+        let query = format!("count({query})");
+        assert!(query.len() < 1024);
+
+        let started = std::time::Instant::now();
+        let err = create_tsdb()
+            .eval_query(&query, None, &QueryOptions::default())
+            .expect_err("the doubled label must be refused");
+        assert!(
+            err.to_string()
+                .contains("label_join(): the value of label \"a\" would be longer than"),
+            "unexpected error: {err}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn eval_query_should_return_error_for_invalid_query() {
         let tsdb = create_tsdb();

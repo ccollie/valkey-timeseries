@@ -404,6 +404,12 @@ The following differences are intentional or are limitations of the current impl
   stricter rule would make the same query fail or succeed depending on the data and the
   push-down settings. A comparison over an ambiguous *matched* key errors as in
   Prometheus, even where the comparison would have filtered the pair out.
+- **`label_replace` and `label_join` cap the labels they write.** A value they build may
+  be at most 16 KiB, and a write may not grow a series' labels (names and values together)
+  past 64 KiB; either refuses the query with an `execution error`. Prometheus has no such
+  limit. Without it, nesting these functions doubles or multiplies a value at each level,
+  and a short query could exhaust the server's memory. Stored series whose labels are
+  already larger can still be rewritten, as long as the write does not make them larger.
 - **Operational behavior is different.** Query limits, timeouts, cluster fan-out,
   ordering, and the `HASHTAG` scope are Valkey TimeSeries behavior. They can affect which
   series are read or returned without changing the PromQL grammar.
