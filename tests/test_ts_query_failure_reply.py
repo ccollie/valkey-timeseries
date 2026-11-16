@@ -46,3 +46,35 @@ class TestQueryFailureStillReplies(ValkeyTimeSeriesTestCaseDebugMode):
         assert client.ping()
         assert client.execute_command(*command)
         assert self.server.is_alive()
+
+
+class TestSelectorExecutorSurvivesAPanic(ValkeyTimeSeriesTestCaseDebugMode):
+    """Every PromQL read goes through one selector executor thread. A panic that unwound
+    through it ended the thread, and every later query failed ("selector executor thread is
+    not running") until a restart. `TS._DEBUG PANIC_NEXT_SELECTOR_BATCH` panics in the next
+    batch while it holds the GIL, outside the per-read guards."""
+
+    def _client(self):
+        return StrictValkey(host=self.server.bind_ip, port=self.server.port, socket_timeout=10)
+
+    @pytest.mark.parametrize("command", [
+        ("TS.QUERY", "m", "TIME", "3000"),
+        ("TS.QUERYRANGE", "m", "START", "1000", "END", "3000", "STEP", "1s"),
+    ])
+    def test_a_panicking_batch_fails_its_query_and_the_next_one_runs(self, command):
+        client = self._client()
+        client.execute_command("TS.CREATE", "m", "LABELS", "__name__", "m", "job", "a")
+        for t in (1000, 2000, 3000):
+            client.execute_command("TS.ADD", "m", t, t)
+
+        assert client.execute_command("TS._DEBUG", "PANIC_NEXT_SELECTOR_BATCH") in (b"OK", "OK", True)
+        with pytest.raises(ResponseError):
+            client.execute_command(*command)
+        wait_for_true(lambda: self.server.verify_string_in_logfile(
+            "selector batch panicked: TS._DEBUG PANIC_NEXT_SELECTOR_BATCH"))
+
+        # The thread lives on, and let go of the GIL as it unwound.
+        for _ in range(3):
+            assert client.execute_command(*command)
+        assert client.ping()
+        assert self.server.is_alive()
