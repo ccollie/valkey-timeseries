@@ -45,6 +45,7 @@ pub mod clustermap;
 pub mod exec;
 pub mod fanout;
 pub mod index_reconciliation;
+pub mod promql;
 pub mod rdb;
 pub mod read;
 pub mod string_interning;
@@ -129,6 +130,9 @@ pub enum Section {
     Fanout,
     /// The pass that checks a postings index preloaded from the RDB against the keys that loaded.
     IndexReconciliation,
+    /// `TS.QUERY` / `TS.QUERYRANGE`: how queries ended, and their queue, parse and evaluation
+    /// times.
+    Promql,
     /// The RDB aux field that carries the postings index: loads and saves, and how they went.
     Rdb,
     /// Blocking reads (`TS.READ ... BLOCK`): how many blocked, why they came back, how many
@@ -149,6 +153,7 @@ impl Section {
         Section::Exec,
         Section::Fanout,
         Section::IndexReconciliation,
+        Section::Promql,
         Section::Rdb,
         Section::Read,
         Section::StringInterning,
@@ -163,6 +168,7 @@ impl Section {
             Section::Exec => "exec",
             Section::Fanout => "fanout",
             Section::IndexReconciliation => "index_reconciliation",
+            Section::Promql => "promql",
             Section::Rdb => "rdb",
             Section::Read => "blocked_read",
             Section::StringInterning => "string_interning",
@@ -203,6 +209,7 @@ fn build_registry(section: Section) -> Registry<'static> {
         Section::Exec => exec::register(&mut registry),
         Section::Fanout => fanout::register(&mut registry),
         Section::IndexReconciliation => index_reconciliation::register(&mut registry),
+        Section::Promql => promql::register(&mut registry),
         Section::Rdb => rdb::register(&mut registry),
         Section::Read => read::register(&mut registry),
         Section::StringInterning => string_interning::register(&mut registry),

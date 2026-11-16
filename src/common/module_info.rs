@@ -9,6 +9,7 @@
 //! [`InfoSection::crash_safe`]).
 
 use crate::common::humanize::bytes_to_human;
+use crate::common::metrics::promql as outcomes;
 use crate::common::metrics::{self, MetricValue, Section};
 use crate::promql::engine::{admission, query_cache, query_workers};
 use crate::promql::subquery_grid_counts;
@@ -262,7 +263,10 @@ fn info_value(value: &MetricValue) -> Option<InfoValue> {
 /// `promql_queries_queued` at most `ts-promql-max-queued-queries`. The counter
 /// `promql_queries_rejected_total` counts the queries refused on arrival because the backlog was
 /// full, and `promql_queries_cancelled_total` those abandoned, queued or running, because their
-/// client disconnected. `promql_samples_in_flight` is what running queries and the shard reads
+/// client disconnected. Every other query a worker took up ends in `promql_queries_succeeded_total`
+/// or `promql_queries_failed_total`, and a failure also in the counter of its reason when it has
+/// one: `invalid`, `timeout`, `samples_limit`, `series_limit`, `reply_limit`, `overloaded` (see
+/// `common::metrics::promql`). `promql_samples_in_flight` is what running queries and the shard reads
 /// served for them have charged against `ts-promql-max-samples-in-flight`: running totals, not
 /// samples resident now. A non-zero, growing `promql_queries_queued` with
 /// `promql_queries_rejected_total` climbing is the pool being overrun: either the queries are
@@ -300,6 +304,38 @@ fn promql_fields() -> Vec<(String, InfoValue)> {
         (
             "promql_queries_cancelled_total".to_owned(),
             query_workers::cancelled_count().into(),
+        ),
+        (
+            "promql_queries_succeeded_total".to_owned(),
+            outcomes::SUCCEEDED.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_failed_total".to_owned(),
+            outcomes::FAILED.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_invalid_total".to_owned(),
+            outcomes::INVALID.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_timeout_total".to_owned(),
+            outcomes::TIMEOUTS.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_samples_limit_total".to_owned(),
+            outcomes::SAMPLES_LIMIT.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_series_limit_total".to_owned(),
+            outcomes::SERIES_LIMIT.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_reply_limit_total".to_owned(),
+            outcomes::REPLY_LIMIT.load(Ordering::Relaxed).into(),
+        ),
+        (
+            "promql_queries_overloaded_total".to_owned(),
+            outcomes::OVERLOADED.load(Ordering::Relaxed).into(),
         ),
         (
             "promql_samples_in_flight".to_owned(),
@@ -434,6 +470,14 @@ mod tests {
                 "promql_queries_queued",
                 "promql_queries_rejected_total",
                 "promql_queries_cancelled_total",
+                "promql_queries_succeeded_total",
+                "promql_queries_failed_total",
+                "promql_queries_invalid_total",
+                "promql_queries_timeout_total",
+                "promql_queries_samples_limit_total",
+                "promql_queries_series_limit_total",
+                "promql_queries_reply_limit_total",
+                "promql_queries_overloaded_total",
                 "promql_samples_in_flight",
                 "promql_query_cache_entries",
                 "promql_query_cache_bytes",

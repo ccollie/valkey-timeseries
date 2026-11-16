@@ -2,7 +2,6 @@ use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp, Redu
 use crate::common::Timestamp;
 use crate::common::binop::ComparisonOperator;
 use crate::common::humanize::humanize_duration;
-use crate::common::logging::log_debug;
 use crate::common::rounding::{
     MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, MIN_SIGNIFICANT_DIGITS, RoundingStrategy,
 };
@@ -1791,10 +1790,10 @@ fn parse_promql_query(query: &str) -> ValkeyResult<Expr> {
 fn prepare_promql_query(query: &str) -> ValkeyResult<Expr> {
     // Before parsing: the parser compiles every regex matcher without a size limit.
     validate_query_regexes(query).map_err(ValkeyError::String)?;
-    // TODO: it may be helpful to return the exact error
-    let expr = crate::promql::parse_query(query).map_err(|_e| {
-        log_debug(format!("TSDB: failed to parse query {_e:?}"));
-        ValkeyError::Str(error_consts::INVALID_QUERY)
+    // The parser's message says what it found and where; one line, as an error reply must be.
+    let expr = crate::promql::parse_query(query).map_err(|err| {
+        let detail = err.split_whitespace().collect::<Vec<_>>().join(" ");
+        ValkeyError::String(format!("{}: {detail}", error_consts::INVALID_QUERY))
     })?;
     // Evaluation recurses over the tree on 2 MiB stacks; an overflow aborts the server.
     check_query_depth(&expr).map_err(ValkeyError::String)?;
@@ -2140,11 +2139,23 @@ mod tests {
         }
     }
 
-    /// The worker's parse refuses what the handler used to, with the same reply text.
+    /// The worker's parse refuses what the handler used to. A parse error carries the
+    /// parser's own message, on one line.
     #[test]
     fn the_worker_parse_keeps_the_handler_error_texts() {
-        let invalid = statement("invalid {[}").parse().unwrap_err();
-        assert_eq!(error_text(invalid), error_consts::INVALID_QUERY);
+        for query in [
+            "invalid {[}",
+            "sum(rate(x[5m])",
+            "up +\n\n(",
+            "rate(x[5m]) by (job)",
+        ] {
+            let text = error_text(statement(query).parse().unwrap_err());
+            let detail = text
+                .strip_prefix(&format!("{}: ", error_consts::INVALID_QUERY))
+                .unwrap_or_else(|| panic!("{query}: {text}"));
+            assert!(!detail.trim().is_empty(), "{query}: no detail");
+            assert!(!text.contains(['\n', '\r']), "{query}: {text:?}");
+        }
 
         let regex = statement(r#"up{server=~"[a-z]{3000}"}"#)
             .parse()

@@ -30,6 +30,7 @@
 
 use crate::common::Timestamp;
 use crate::common::context::is_blocking_denied;
+use crate::common::metrics::promql as metrics;
 use crate::common::replies::{CancelToken, ReplyContext, ThreadSafeReplyContext, block_client};
 use crate::common::threads::{
     BoundedExecutor, Capacity, ExecutorStats, Rejected, run_on_eval_pool,
@@ -40,6 +41,7 @@ use crate::error_consts;
 use crate::promql::engine::{admission, promql_config};
 use crate::promql::{QueryError, QueryResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
 /// Set by `TS._DEBUG PANIC_NEXT_EVALUATION` (debug mode only): the next evaluation panics.
@@ -120,15 +122,19 @@ where
     }
     // A fresh sample: this is the main thread, and the cron's may be a tick old.
     admission::sample_memory();
-    admission::check_memory(promql_config().max_memory_percent)
-        .map_err(|err| ValkeyError::String(err.to_string()))?;
+    admission::check_memory(promql_config().max_memory_percent).map_err(|err| {
+        record_failure(&err);
+        ValkeyError::String(err.to_string())
+    })?;
     let slot = QUERY_WORKERS
         .try_reserve()
         .map_err(|rejected| ValkeyError::String(format!("TSDB: {}", rejection(rejected))))?;
     let blocked_client = block_client(ctx);
     let cancel = blocked_client.cancel_token();
+    let admitted = Instant::now();
 
     slot.spawn(move || {
+        metrics::QUEUE_WAIT.observe_duration(admitted.elapsed());
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
         match answer(deadline, current_time_millis(), cancel, prepare, evaluate) {
             Answer::Value(value) => reply(&thread_ctx.get_reply_context(), value),
@@ -174,6 +180,7 @@ where
     R: Send,
 {
     if deadline.is_some_and(|d| now > d) {
+        record_failure(&QueryError::Timeout);
         return Answer::Error(ValkeyError::String(QueryError::Timeout.to_string()));
     }
     if cancel.is_cancelled() {
@@ -181,9 +188,16 @@ where
     }
     // On this thread, not the evaluation pool: it is sequential, and its own thread keeps
     // it from holding a pool worker other evaluations' parallel work could use.
-    let prepared = match prepare() {
+    let started = Instant::now();
+    let prepared = prepare();
+    metrics::PARSE_DURATION.observe_duration(started.elapsed());
+    let prepared = match prepared {
         Ok(prepared) => prepared,
-        Err(err) => return Answer::Error(err),
+        Err(err) => {
+            metrics::FAILED.fetch_add(1, Ordering::Relaxed);
+            metrics::INVALID.fetch_add(1, Ordering::Relaxed);
+            return Answer::Error(err);
+        }
     };
     let evaluate = move || {
         if PANIC_NEXT_EVALUATION.swap(false, Ordering::Relaxed) {
@@ -191,11 +205,53 @@ where
         }
         evaluate(prepared, cancel)
     };
-    match run_evaluation(evaluate) {
-        Ok(value) => Answer::Value(value),
+    let started = Instant::now();
+    let evaluated = run_evaluation(evaluate);
+    metrics::EVAL_DURATION.observe_duration(started.elapsed());
+    match evaluated {
+        Ok(value) => {
+            metrics::SUCCEEDED.fetch_add(1, Ordering::Relaxed);
+            Answer::Value(value)
+        }
         Err(QueryError::Cancelled) => Answer::Abandoned,
-        Err(err) => Answer::Error(ValkeyError::String(err.to_string())),
+        Err(err) => {
+            record_failure(&err);
+            Answer::Error(ValkeyError::String(err.to_string()))
+        }
     }
+}
+
+/// Counts a query that failed with `err`, and under its reason when it has one of those
+/// `INFO ts_promql` breaks out (see `common::metrics::promql`).
+fn record_failure(err: &QueryError) {
+    metrics::FAILED.fetch_add(1, Ordering::Relaxed);
+    if let Some(reason) = failure_reason(err) {
+        reason.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The reason counter a failure with `err` counts under, if it has one.
+fn failure_reason(err: &QueryError) -> Option<&'static AtomicU64> {
+    Some(match err {
+        QueryError::InvalidQuery(_) => &metrics::INVALID,
+        QueryError::Timeout => &metrics::TIMEOUTS,
+        QueryError::TooManySamples { .. } => &metrics::SAMPLES_LIMIT,
+        QueryError::ReplyTooLarge { .. } => &metrics::REPLY_LIMIT,
+        QueryError::Overloaded(_) => &metrics::OVERLOADED,
+        QueryError::Execution(message) if is_series_limit(message) => &metrics::SERIES_LIMIT,
+        QueryError::Execution(_) | QueryError::Cancelled => return None,
+    })
+}
+
+/// Whether an execution error is a refusal on one of the series limits, raised here or by a
+/// shard (whose text crosses the fan-out unchanged).
+fn is_series_limit(message: &str) -> bool {
+    [
+        error_consts::PROMQL_MAX_SERIES_ERROR,
+        error_consts::PROMQL_MAX_SELECTOR_SERIES_ERROR,
+    ]
+    .iter()
+    .any(|prefix| message.starts_with(prefix))
 }
 
 fn rejection(rejected: Rejected) -> String {
@@ -299,6 +355,48 @@ mod answer_tests {
             text(got),
             QueryError::Execution("bad".to_string()).to_string()
         );
+    }
+
+    /// Each refusal `INFO ts_promql` breaks out counts under its own reason; other
+    /// execution errors count only as failures.
+    #[test]
+    fn failures_are_counted_under_their_reason() {
+        use super::failure_reason;
+        use crate::common::metrics::promql as m;
+        use crate::error_consts;
+        let reason = |err: QueryError| failure_reason(&err).map(|c| c as *const _);
+        let of = |counter: &'static std::sync::atomic::AtomicU64| Some(counter as *const _);
+        let series = |prefix: &str| QueryError::Execution(format!("{prefix}: 7 > 5"));
+
+        assert_eq!(reason(QueryError::Timeout), of(&m::TIMEOUTS));
+        assert_eq!(
+            reason(QueryError::InvalidQuery("x".into())),
+            of(&m::INVALID)
+        );
+        assert_eq!(
+            reason(QueryError::TooManySamples {
+                loaded: 2,
+                limit: 1
+            }),
+            of(&m::SAMPLES_LIMIT)
+        );
+        assert_eq!(
+            reason(QueryError::ReplyTooLarge { bytes: 2, limit: 1 }),
+            of(&m::REPLY_LIMIT)
+        );
+        assert_eq!(
+            reason(QueryError::Overloaded("memory".into())),
+            of(&m::OVERLOADED)
+        );
+        assert_eq!(
+            reason(series(error_consts::PROMQL_MAX_SERIES_ERROR)),
+            of(&m::SERIES_LIMIT)
+        );
+        assert_eq!(
+            reason(series(error_consts::PROMQL_MAX_SELECTOR_SERIES_ERROR)),
+            of(&m::SERIES_LIMIT)
+        );
+        assert_eq!(reason(QueryError::Execution("bad join".into())), None);
     }
 
     /// An evaluation the disconnect stopped was abandoned, not failed: no error

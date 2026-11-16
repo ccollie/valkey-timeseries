@@ -354,6 +354,32 @@ identity; otherwise they mean what the [`task`](#task) lifecycle names mean.
 The same metrics, except the duration histogram, are in `INFO ts_index_reconciliation`, each
 prefixed `ts_`, without the `debug-mode` gate.
 
+#### `promql`
+
+How `TS.QUERY` and `TS.QUERYRANGE` queries ended, and where their time went, counted by the query
+workers. Every query a worker takes up ends succeeded, failed, or cancelled (its client
+disconnected; `INFO ts_promql`'s `ts_promql_queries_cancelled_total`). A failure is also counted
+under its reason when it has one of those below, so the reasons add up to at most the failures.
+Queries refused on arrival because the backlog was full are `ts_promql_queries_rejected_total` in
+`INFO ts_promql`, not counted here; a refusal for memory on arrival is a failure, `overloaded`.
+
+| Name | Kind | Description |
+|------|------|-------------|
+| `promql_queries_succeeded_total` | counter | Queries answered with a result |
+| `promql_queries_failed_total` | counter | Queries answered with an error |
+| `promql_queries_invalid_total` | counter | Failures: the query did not parse, or was refused before evaluation (depth, regex size) |
+| `promql_queries_timeout_total` | counter | Failures: the query's deadline passed, waiting for a worker or running |
+| `promql_queries_samples_limit_total` | counter | Failures on `ts-promql-max-samples-per-query` |
+| `promql_queries_series_limit_total` | counter | Failures on `ts-promql-max-response-series` or `ts-promql-max-series-per-selector` |
+| `promql_queries_reply_limit_total` | counter | Failures on `ts-promql-max-reply-bytes` |
+| `promql_queries_overloaded_total` | counter | Failures because a node refused PromQL work for memory or samples in flight |
+| `promql_queue_wait_seconds` | histogram | Time from a query's admission to the start of its run on a worker |
+| `promql_parse_duration_seconds` | histogram | Time spent preparing a query's text: parsing and the checks after it |
+| `promql_eval_duration_seconds` | histogram | Time spent evaluating a prepared query |
+
+The counters are also in `INFO ts_promql`, each prefixed `ts_`, without the `debug-mode` gate,
+alongside the worker pool's state and the query cache's.
+
 #### `rdb`
 
 The RDB aux field that carries the postings index, counted once per RDB that has one (not per

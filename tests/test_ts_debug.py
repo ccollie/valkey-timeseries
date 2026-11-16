@@ -1078,8 +1078,8 @@ class TestIndexMemory(ValkeyTimeSeriesTestCaseDebugMode):
 class TestDebugMetrics(ValkeyTimeSeriesTestCaseDebugMode):
     """TS._DEBUG METRICS: the module metrics registries."""
 
-    SECTIONS = ['asm', 'chunk', 'clustermap', 'exec', 'fanout', 'index_reconciliation', 'rdb',
-                'blocked_read', 'string_interning', 'task']
+    SECTIONS = ['asm', 'chunk', 'clustermap', 'exec', 'fanout', 'index_reconciliation', 'promql',
+                'rdb', 'blocked_read', 'string_interning', 'task']
     # Within a section, metrics are sorted by family name (a counter's name before `_total`).
     RDB_METRICS = ['rdb_load_failures_total', 'rdb_load_repairs_total',
                    'rdb_load_tolerated_total', 'rdb_loads_total',
@@ -1096,7 +1096,8 @@ class TestDebugMetrics(ValkeyTimeSeriesTestCaseDebugMode):
     HISTOGRAMS = {'fanout_duration_seconds'} | {
         f'task_{task}_duration_seconds' for task in TASKS
     } | {f'asm_{task}_duration_seconds' for task in ASM_TASKS} | {
-        'index_reconciliation_duration_seconds'}
+        'index_reconciliation_duration_seconds'} | {
+        f'promql_{name}_seconds' for name in ('queue_wait', 'parse_duration', 'eval_duration')}
     DOUBLE_GAUGES = {'clustermap_refresh_interval_seconds',
                      'clustermap_age_seconds'}
     DURATION_BUCKETS = 24
@@ -1142,7 +1143,7 @@ class TestDebugMetrics(ValkeyTimeSeriesTestCaseDebugMode):
 
     def test_unknown_section_lists_valid_ones(self):
         with pytest.raises(ResponseError,
-                           match="unknown METRICS section 'bogus'.*asm, chunk, clustermap, exec, fanout, index_reconciliation, rdb, blocked_read, string_interning, task"):
+                           match="unknown METRICS section 'bogus'.*asm, chunk, clustermap, exec, fanout, index_reconciliation, promql, rdb, blocked_read, string_interning, task"):
             self.client.execute_command('TS._DEBUG', 'METRICS', 'rdb', 'bogus')
 
     def test_string_interning(self):

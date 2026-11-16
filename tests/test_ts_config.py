@@ -700,6 +700,43 @@ class TestPromqlQueryQueueConfig(ValkeyTimeSeriesTestCaseBase):
         assert info["ts_promql_queries_queued"] == 0
         assert info["ts_promql_queries_rejected_total"] == 0
 
+    def test_info_counts_how_queries_ended(self):
+        """Every query a worker took up ends succeeded or failed, and a failure also under
+        its reason when it has one INFO breaks out."""
+        for i in range(3):
+            self.client.execute_command("TS.ADD", f"q:w{i}", 1000, 1.0,
+                                        "LABELS", "__name__", "w", "i", str(i))
+        reasons = ("invalid", "timeout", "samples_limit", "series_limit", "reply_limit",
+                   "overloaded")
+        fields = [f"ts_promql_queries_{name}_total"
+                  for name in ("succeeded", "failed") + reasons]
+
+        def counts():
+            info = self._promql_info()
+            return {name: info[name] for name in fields}
+
+        def fails(*command):
+            with pytest.raises(ResponseError):
+                self.client.execute_command(*command)
+
+        before = counts()
+        self.client.execute_command("TS.QUERY", "sum(w)", "TIME", 1)
+        self.client.execute_command("TS.QUERYRANGE", "w", "START", 0, "END", 2000, "STEP", "1s")
+        fails("TS.QUERY", "sum(w", "TIME", 1)
+        fails("TS.QUERY", 'label_replace(vector(1), "a", "b", "", "") + on() w', "TIME", 1)
+        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-response-series", 2)
+        try:
+            fails("TS.QUERY", "w", "TIME", 1)
+        finally:
+            self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-response-series", 1000)
+        after = counts()
+
+        delta = {name.removeprefix("ts_promql_queries_").removesuffix("_total"):
+                 after[name] - before[name] for name in fields}
+        assert delta == {"succeeded": 2, "failed": 3, "invalid": 1, "series_limit": 1,
+                         **{name: 0 for name in reasons if name not in
+                            ("invalid", "series_limit")}}, delta
+
 
 class TestPromqlConfigIsLive(ValkeyTimeSeriesTestCaseBase):
     """`CONFIG SET ts-promql-*` takes effect for the next query. The engine reads a snapshot
