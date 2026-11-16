@@ -190,7 +190,9 @@ pub const PROMQL_MAX_MEMORY_PERCENT_DEFAULT: i64 = 90;
 pub const PROMQL_MAX_REPLY_BYTES_DEFAULT: i64 = 256 * 1024 * 1024;
 // See `check_subquery_cost` for why 20 million. 0 = unlimited.
 pub const PROMQL_MAX_SUBQUERY_STEPS_DEFAULT: i64 = 20_000_000;
-const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
+// At least 1 ms: a zero lookback makes every series stale, so every instant query and every
+// range step answers empty. A query's own `LOOKBACK_DELTA 0` means this default instead.
+const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 1;
 const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
 const PROMQL_MAX_LOOKBACK_MIN_MS: i64 = 0;

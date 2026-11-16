@@ -65,7 +65,8 @@ How far back from the evaluation time a selector looks for a series' most recent
 sample is older than this is treated as stale and left out of the result. The window is open at the start: a
 sample exactly `lookback` old does not count.
 
-Accepts a duration string (e.g., `30s`, `5m`, `1h30m`) or an integer number of milliseconds.
+Accepts a duration string (e.g., `30s`, `5m`, `1h30m`) or an integer number of milliseconds. `0` selects the
+default, as in Prometheus.
 
 **Default:** `ts-promql-lookback-delta` (5m).
 

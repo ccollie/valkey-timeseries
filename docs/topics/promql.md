@@ -544,7 +544,7 @@ at startup.
 | `ts-promql-max-memory-percent` | 90 | Refuse new queries, and stop running ones at their next check, while used memory is at or past this percentage of `maxmemory`. `0` disables it; it has no effect without `maxmemory`. |
 | `ts-promql-max-reply-bytes` | 268435456 (256 MiB) | Maximum estimated size of a query's reply, checked before any of it is written. `0` means unlimited. |
 | `ts-promql-max-subquery-steps` | 20000000 | Maximum subquery steps one query may evaluate in all: each subquery's steps, multiplied by every subquery around it and by the query's own steps, summed. Checked before anything runs. `0` means unlimited. |
-| `ts-promql-lookback-delta` | 5m | Default sample lookback interval. |
+| `ts-promql-lookback-delta` | 5m | Default sample lookback interval; at least 1 ms. A query's `LOOKBACK_DELTA 0` selects it. |
 | `ts-promql-max-lookback` | 1h | Longest `LOOKBACK_DELTA` a query may request; longer ones are refused. The default lookback and, for a range query, its `STEP` are always allowed. `0` means unlimited. |
 | `ts-promql-max-query-duration` | 30s | Maximum wall-clock query duration. |
 | `ts-promql-set-lookback-to-step` | no | Use the range query step as the lookback interval; `LOOKBACK_DELTA` is then ignored. |
