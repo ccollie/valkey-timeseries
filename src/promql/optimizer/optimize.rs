@@ -20,7 +20,9 @@
 
 use crate::promql::optimizer::const_folding::fold_constants;
 use crate::promql::optimizer::filter_pushdown::pushdown_filters_in_place;
-use crate::promql::optimizer::utils::{expr_contains, is_null, is_number, is_op_with};
+use crate::promql::optimizer::utils::{
+    and_chain_source, has_matching, is_null, is_number, operands, plain_chain_contains, unparen,
+};
 use crate::promql::utils::map_children;
 use promql_parser::label::{Matcher, Matchers};
 use promql_parser::parser::token::{T_ADD, T_DIV, T_LAND, T_LOR, T_MUL, TokenType};
@@ -84,6 +86,9 @@ fn optimize_binary(binary: BinaryExpr) -> Expr {
 
     let left = optimize_internal(*lhs);
     let right = optimize_internal(*rhs);
+    // The set-operator rules hold only for an outer operator that matches on all labels.
+    let plain = !has_matching(&modifier);
+    let (lor, land) = (TokenType::new(T_LOR), TokenType::new(T_LAND));
     match op.id() {
         //
         // Rules for Add
@@ -113,64 +118,41 @@ fn optimize_binary(binary: BinaryExpr) -> Expr {
             })
         }
 
-        // Rules for OR
+        // Rules for OR and AND
         //
-        // (..A..) OR A --> (..A..)
-        T_LOR if expr_contains(&left, &right, TokenType::new(T_LOR)) => left,
-        // A OR (A AND B) --> A
-        T_LOR if is_op_with(TokenType::new(T_LAND), &right, &left) => left,
-        // (A AND B) OR A --> A
-        T_LOR if is_op_with(TokenType::new(T_LAND), &left, &right) => right,
-
+        // Each holds only for what PromQL's set operators actually do: `a and b`
+        // keeps the series of `a` whose labels (all but `__name__`, or those an
+        // `on`/`ignoring` names) are in `b`, with `a`'s values; `a or b` returns all
+        // of `a` and the series of `b` whose labels are not in `a`. So which operand
+        // a result's values come from matters, and so does every matching modifier,
+        // the outer one (never rewritten) and the inner ones (some rules need none).
         //
-        // Rules for AND
-        //
-        // (..A..) AND A --> ..A..  (unwrap a single-level Paren if present)
-        T_LAND if expr_contains(&left, &right, TokenType::new(T_LAND)) => {
-            // if both sides are identical (e.g., `(A) AND (A)`), preserve the original
-            // wrapper by returning lhs as-is. Otherwise, unwrap a single-level Paren.
+        // (..A..) OR A --> (..A..), an `or` chain without modifiers: it has a series
+        // with the labels of every series of A already.
+        T_LOR if plain && plain_chain_contains(&left, &right, lor) => left,
+        // A OR (A AND B) --> A, and A OR (B AND A) --> A when that `and` has no
+        // modifier: either way the right side's labels are all in A.
+        T_LOR if plain && absorbs(&left, &right, land) => left,
+        // (A AND B) OR A --> A: the left side is some of A's own series.
+        T_LOR if plain && is_left_operand(&left, &right, land) => right,
+        // (..A..) AND A --> (..A..), an `and` chain without modifiers: every series
+        // it returns has labels in A.
+        T_LAND if plain && plain_chain_contains(&left, &right, land) => {
             if left == right {
                 left
             } else {
-                match left {
-                    Expr::Paren(p) => *p.expr,
-                    other => other,
-                }
+                unwrap_paren(left)
             }
         }
-        // A AND (..A..) --> A..
-        T_LAND if expr_contains(&right, &left, TokenType::new(T_LAND)) => {
-            if left == right {
-                right
-            } else {
-                match right {
-                    Expr::Paren(p) => *p.expr,
-                    other => other,
-                }
-            }
-        }
-        // A AND (A OR B) --> A
-        T_LAND if is_op_with(TokenType::new(T_LOR), &right, &left) => {
-            if left == right {
-                left
-            } else {
-                match left {
-                    Expr::Paren(p) => *p.expr,
-                    other => other,
-                }
-            }
-        }
-        // (A OR B) AND A --> A
-        T_LAND if is_op_with(TokenType::new(T_LOR), &left, &right) => {
-            if left == right {
-                right
-            } else {
-                match right {
-                    Expr::Paren(p) => *p.expr,
-                    other => other,
-                }
-            }
-        }
+        // A AND (A AND ..) --> (A AND ..): the right side is some of A's own series,
+        // with their values, whatever its modifiers.
+        T_LAND if plain && and_chain_source(&right) == unparen(&left) => unwrap_paren(right),
+        // A AND (A OR B) --> A, and A AND (B OR A) --> A when that `or` has no
+        // modifier: either way the right side has the labels of every series of A.
+        T_LAND if plain && absorbs(&left, &right, lor) => unwrap_paren(left),
+        // (A OR B) AND A --> A: the series of B the left side kept have labels A
+        // lacks, so only A's own survive.
+        T_LAND if plain && is_left_operand(&left, &right, lor) => unwrap_paren(right),
 
         //
         // Rules for Div
@@ -194,6 +176,29 @@ fn optimize_binary(binary: BinaryExpr) -> Expr {
             op,
             modifier,
         }),
+    }
+}
+
+/// Whether `outer OP2 inner`, `inner` being `X op Y`, is `outer`'s own series under the
+/// absorption law: `X` is `outer`, or `Y` is and `inner` matches on all labels. With a
+/// modifier, an `inner` whose right operand is `outer` can keep (`and`) or drop (`or`)
+/// series by fewer labels than the outer operator compares.
+fn absorbs(outer: &Expr, inner: &Expr, op: TokenType) -> bool {
+    let outer = unparen(outer);
+    operands(inner, op).is_some_and(|(x, y, plain)| x == outer || (plain && y == outer))
+}
+
+/// Whether `compound` is `simple op Y`, whatever `Y` and its modifier: `simple` is where
+/// the left side's values come from.
+fn is_left_operand(compound: &Expr, simple: &Expr, op: TokenType) -> bool {
+    operands(compound, op).is_some_and(|(x, _, _)| x == unparen(simple))
+}
+
+/// `expr` with one level of parentheses taken off, for a rewrite that returns an operand.
+fn unwrap_paren(expr: Expr) -> Expr {
+    match expr {
+        Expr::Paren(p) => *p.expr,
+        other => other,
     }
 }
 
@@ -545,7 +550,9 @@ mod tests {
     fn test_simplify_or_and() {
         // (c2 > 5) OR ((c1 < 6) AND (c2 > 5)) --> c2 > 5
         assert_string_simplify("(c2 > 5) OR ((c1 < 6) AND (c2 > 5))", "(c2 > 5.0)");
-        assert_string_simplify("((c1 < 6.0) AND (c2 > 5.0)) OR (c2 > 5)", "(c2 > 5.0)");
+        // Not `c2 > 5`: where both match, the left side keeps `c1`'s values.
+        let kept = "((c1 < 6.0) AND (c2 > 5.0)) OR (c2 > 5.0)";
+        assert_string_simplify(kept, kept);
     }
 
     #[test]
@@ -553,8 +560,49 @@ mod tests {
         // (c2 > 5) AND ((c1 < 6) OR (c2 > 5)) --> c2 > 5
         assert_string_simplify("(c2 > 5) AND ((c1 < 6) OR (c2 > 5))", "c2 > 5.0");
 
-        // ((c1 < 6) OR (c2 > 5)) AND (c2 > 5) --> c2 > 5
-        assert_string_simplify("((c1 < 6) OR (c2 > 5)) AND (c2 > 5)", "c2 > 5.0");
+        // Not `c2 > 5`: the left side returns `c1`'s series where it has them.
+        let kept = "((c1 < 6.0) OR (c2 > 5.0)) AND (c2 > 5.0)";
+        assert_string_simplify(kept, kept);
+
+        // `(c2 > 5) OR ..` first: the left side's series are `c2`'s own.
+        assert_string_simplify("((c2 > 5) OR (c1 < 6)) AND (c2 > 5)", "c2 > 5.0");
+    }
+
+    /// The rewrites the set operators allow only where values come from the operand kept and
+    /// matching is on all labels; each of these used to be rewritten and changed the result.
+    #[test]
+    fn test_set_operator_rewrites_respect_operands_and_modifiers() {
+        for unchanged in [
+            // `foo and (bar and foo)` has foo's values; `bar and foo` has bar's.
+            "foo and (bar and foo)",
+            "(bar and foo) or foo",
+            "(bar or foo) and foo",
+            // An `on` inside lets the chain miss series of `foo` the outer `or` adds back.
+            "(bar or on(job) foo) or foo",
+            "foo or (bar and on(job) foo)",
+            "foo and (bar or on(job) foo)",
+            // An outer modifier: never rewritten.
+            "(foo and bar) or on(job) foo",
+            "foo or on(job) (foo and bar)",
+        ] {
+            assert_string_simplify(unchanged, unchanged);
+        }
+        for (expr, expected) in [
+            ("foo and (foo and bar)", "foo and bar"),
+            ("foo and (foo and on(job) bar)", "foo and on(job) bar"),
+            ("(foo and bar) and foo", "foo and bar"),
+            ("(bar and foo) and foo", "bar and foo"),
+            ("foo or (foo and bar)", "foo"),
+            ("foo or (bar and foo)", "foo"),
+            ("foo or (foo and on(job) bar)", "foo"),
+            ("(foo and on(job) bar) or foo", "foo"),
+            ("(bar or foo) or foo", "(bar or foo)"),
+            ("foo and (foo or bar)", "foo"),
+            ("foo and (bar or foo)", "foo"),
+            ("(foo or on(job) bar) and foo", "foo"),
+        ] {
+            assert_string_simplify(expr, expected);
+        }
     }
 
     #[test]
