@@ -81,6 +81,8 @@ pub(in crate::promql) struct GridFanoutCommand {
     /// Raw spans a shard chose to ship instead, run through the per-series
     /// stage by [`Self::into_result`].
     raw: Vec<RangeSample<EvalLabels>>,
+    /// The series the shards read, summed: see [`Self::series_read`].
+    series_read: u64,
     /// `ts-promql-max-samples-per-query`, charged for what this command holds
     /// as it grows: every shard bounds its own output by the same limit, so
     /// without it the shards together could leave the coordinator holding
@@ -110,6 +112,7 @@ impl GridFanoutCommand {
             max_points_per_series,
             sink,
             raw: Vec::new(),
+            series_read: 0,
             budget: SampleBudget::new(max_samples),
             state: PushdownState::new(deadline),
         }
@@ -118,6 +121,13 @@ impl GridFanoutCommand {
     /// See [`PushdownState::peer_unsupported`].
     pub fn peer_unsupported(&self) -> bool {
         self.state.peer_unsupported()
+    }
+
+    /// How many series the selector read across every shard that answered, before any
+    /// reduction: what `ts-promql-max-series-per-selector` bounds, as it bounds a single
+    /// node's read, where each shard applied it only to its own share.
+    pub fn series_read(&self) -> u64 {
+        self.series_read
     }
 
     /// The shards' output as one result.
@@ -187,7 +197,7 @@ impl FanoutCommand for GridFanoutCommand {
         // Held through `finish`: the grid keeps what it made of the windows until then.
         let read = shard_read(ctx)?;
         let mut grid = ShardGrid::new(&request, &window_ends, &read.budget, read.deadline);
-        local_grid_windows(
+        let series_read = local_grid_windows(
             ctx,
             series_selector,
             &window_ends,
@@ -197,7 +207,9 @@ impl FanoutCommand for GridFanoutCommand {
             &read,
             |windows| grid.add(windows),
         )?;
-        grid.finish()
+        let mut response = grid.finish()?;
+        response.series_read = series_read;
+        Ok(response)
     }
 
     fn generate_request(&self) -> GridQuery {
@@ -225,6 +237,7 @@ impl FanoutCommand for GridFanoutCommand {
         if self.state.stopped.is_some() {
             return Ok(());
         }
+        self.series_read = self.series_read.saturating_add(resp.series_read);
         // Every element's labels are refs into the response's symbol table,
         // resolved to interned labels: each distinct pair once per response.
         let table = resp.labels.take().unwrap_or_default();
@@ -603,5 +616,6 @@ fn respond(
         partials,
         raw,
         labels: Some(symbols.finish()),
+        series_read: 0,
     })
 }

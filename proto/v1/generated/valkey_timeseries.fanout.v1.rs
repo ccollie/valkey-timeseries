@@ -812,6 +812,12 @@ pub struct GridQueryResponse {
     /// / crosses the wire once rather than once per series.
     #[prost(message, optional, tag = "4")]
     pub labels: ::core::option::Option<SymbolTable>,
+    /// / How many series the selector read on this shard: those with samples in
+    /// / the windows, before any reduction. The coordinator sums them to apply
+    /// / `ts-promql-max-series-per-selector` to the whole cluster's read, as a
+    /// / single node applies it, rather than to each shard's share.
+    #[prost(uint64, tag = "5")]
+    pub series_read: u64,
 }
 /// / The labels of the series a selector matches on this node, for the
 /// / coordinator's derived filter push-down (a range query narrows one operand
@@ -883,6 +889,10 @@ pub struct AggregationQueryResponse {
     /// / The symbol table the label refs of `samples` and `partials` index into.
     #[prost(message, optional, tag = "3")]
     pub labels: ::core::option::Option<SymbolTable>,
+    /// / How many series the selector read on this shard: those with a sample in
+    /// / the lookback window, before aggregation. See `GridQueryResponse.series_read`.
+    #[prost(uint64, tag = "4")]
+    pub series_read: u64,
 }
 /// / A PromQL aggregation operator. Mirrors
 /// / `crate::promql::exec::aggregations::AggregationKind`; QUANTILE has no

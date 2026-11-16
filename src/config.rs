@@ -175,6 +175,9 @@ const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
 const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
 const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
 const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
+const PROMQL_MAX_SERIES_PER_SELECTOR_MIN: i64 = 0;
+const PROMQL_MAX_SERIES_PER_SELECTOR_MAX: i64 = i64::MAX;
+pub(crate) const PROMQL_MAX_SERIES_PER_SELECTOR_DEFAULT: i64 = 100_000;
 const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
 // Every grid is capped at MAX_GRID_STEPS regardless; a larger setting could never apply.
 const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = crate::promql::MAX_GRID_STEPS as i64;
@@ -590,6 +593,8 @@ pub fn is_fanout_rollup_pushdown_enabled() -> bool {
 // is the only place the text is parsed and range-checked.
 static PROMQL_MAX_QUERY_LEN: AtomicI64 = AtomicI64::new(PROMQL_MAX_QUERY_LEN_DEFAULT);
 static PROMQL_MAX_RESPONSE_SERIES: AtomicI64 = AtomicI64::new(PROMQL_MAX_RESPONSE_SERIES_DEFAULT);
+static PROMQL_MAX_SERIES_PER_SELECTOR: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_SERIES_PER_SELECTOR_DEFAULT);
 static PROMQL_MAX_POINTS_PER_TIMESERIES: AtomicI64 =
     AtomicI64::new(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT);
 static PROMQL_MAX_SAMPLES_PER_QUERY: AtomicI64 =
@@ -1019,6 +1024,10 @@ fn read_promql_max_query_len() -> ConfigValue {
 
 fn read_promql_max_response_series() -> ConfigValue {
     ConfigValue::Integer(PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed))
+}
+
+fn read_promql_max_series_per_selector() -> ConfigValue {
+    ConfigValue::Integer(PROMQL_MAX_SERIES_PER_SELECTOR.load(Ordering::Relaxed))
 }
 
 fn read_promql_max_points_per_timeseries() -> ConfigValue {
@@ -1485,6 +1494,21 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
+        name: "ts-promql-max-series-per-selector",
+        read: read_promql_max_series_per_selector,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(PROMQL_MAX_SERIES_PER_SELECTOR_DEFAULT),
+        min: Some(ConfigValue::Integer(PROMQL_MAX_SERIES_PER_SELECTOR_MIN)),
+        max: Some(ConfigValue::Integer(PROMQL_MAX_SERIES_PER_SELECTOR_MAX)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Maximum number of series one PromQL selector may read, across the \
+                      cluster (0 = unlimited)",
+        storage: ConfigStorage::I64 {
+            cell: || &PROMQL_MAX_SERIES_PER_SELECTOR,
+            validate: None,
+        },
+    },
+    ConfigDesc {
         name: "ts-promql-max-points-per-timeseries",
         read: read_promql_max_points_per_timeseries,
         kind: ConfigType::Integer,
@@ -1836,6 +1860,8 @@ fn sync_promql_config() {
     update_prom_config(|cfg| {
         cfg.max_query_len = PROMQL_MAX_QUERY_LEN.load(Ordering::Relaxed) as usize;
         cfg.max_response_series = PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed) as usize;
+        cfg.max_series_per_selector =
+            PROMQL_MAX_SERIES_PER_SELECTOR.load(Ordering::Relaxed) as usize;
         cfg.max_points_per_timeseries =
             PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
         cfg.max_samples_per_query = PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed) as usize;
@@ -1931,6 +1957,7 @@ mod tests {
         ("ts-promql-enable-experimental-functions", "no"),
         ("ts-promql-max-query-len", "4096"),
         ("ts-promql-max-response-series", "1000"),
+        ("ts-promql-max-series-per-selector", "100000"),
         ("ts-promql-max-points-per-timeseries", "0"),
         ("ts-promql-max-samples-per-query", "50000000"),
         ("ts-promql-max-samples-in-flight", "200000000"),

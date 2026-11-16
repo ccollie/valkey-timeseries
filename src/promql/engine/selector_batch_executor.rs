@@ -26,7 +26,7 @@ use crate::promql::engine::{
     InstantVectorSelectorFanoutCommand, LabelProfileFanoutCommand,
     RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, copy_snapshots,
     decode_range_series, decode_snapshot, exceeds_max_series, instant_lookback_start_ms,
-    validate_max_points, validate_max_series,
+    validate_max_points, validate_selector_series,
 };
 use crate::promql::{InstantSample, QueryError, QueryOptions, QueryResult, RangeSample};
 use crate::series::chunks::ChunkOps;
@@ -680,7 +680,7 @@ fn execute_cluster_vector_selector(
         &iqc.options,
     ));
 
-    let max_series = iqc.options.max_series;
+    let max_series = iqc.options.max_selector_series;
 
     fan_out(
         ctx,
@@ -691,7 +691,7 @@ fn execute_cluster_vector_selector(
         move |cmd: InstantVectorSelectorFanoutCommand, result: FanoutCommandResult| match result {
             Ok(()) => {
                 let samples = cmd.into_samples();
-                validate_max_series(samples.len(), max_series)
+                validate_selector_series(samples.len(), max_series)
                     .map_err(warned)
                     .map(|_| SelectorOutput::Vector(samples))
             }
@@ -711,11 +711,11 @@ fn execute_cluster_range_selector(
         rc.matchers,
         rc.start_timestamp,
         rc.end_timestamp,
-        rc.options.max_series as u64,
+        rc.options.max_selector_series as u64,
         rc.options.max_points_per_series.unwrap_or(0) as u64,
     );
 
-    let max_series = rc.options.max_series;
+    let max_series = rc.options.max_selector_series;
     let max_points_per_series = rc.options.max_points_per_series;
     let max_samples = rc.options.max_samples;
 
@@ -731,7 +731,7 @@ fn execute_cluster_range_selector(
                     let responses = cmd.get_responses();
                     let series_count = responses.iter().map(|r| r.series.len()).sum();
 
-                    validate_max_series(series_count, max_series)
+                    validate_selector_series(series_count, max_series)
                         .map_err(warned)
                         .and_then(|_| {
                             // The chunks know their length without being decoded, so
@@ -782,7 +782,7 @@ fn execute_cluster_aggregation(
     let deadline = Deadline::from_options(&ac.options);
     let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, deadline);
 
-    let max_series = ac.options.max_series;
+    let max_series = ac.options.max_selector_series;
 
     fan_out(
         ctx,
@@ -792,10 +792,13 @@ fn execute_cluster_aggregation(
         responder,
         move |cmd: AggregationFanoutCommand, result: FanoutCommandResult| {
             match result {
-                Ok(()) => cmd
-                    .into_result()
-                    .map_err(QueryError::from)
-                    .and_then(|samples| {
+                // The selector's input across every shard, as a single node bounds its
+                // read: each shard bounded only its own share. The aggregated groups are
+                // not bounded here; only the query's result is (`max_response_series`).
+                Ok(()) => validate_selector_series(cmd.series_read() as usize, max_series)
+                    .map_err(warned)
+                    .and_then(|()| cmd.into_result().map_err(QueryError::from))
+                    .map(|samples| {
                         // Two series with the same labels on *different* shards are not
                         // refused here, unlike everywhere else a PromQL read sees series:
                         // each shard refused the duplicates among its own input, but sent
@@ -805,10 +808,6 @@ fn execute_cluster_aggregation(
                         // request), which for a high-cardinality `sum by` outweighs the
                         // partials the push-down exists to send instead. Accepted and
                         // documented: such a pair is aggregated as two series.
-                        //
-                        // The aggregated vector, not the input, is what this bounds:
-                        // one sample per group.
-                        validate_max_series(samples.len(), max_series).map_err(warned)?;
                         let samples = samples
                             .into_iter()
                             .map(|s| InstantSample {
@@ -817,9 +816,7 @@ fn execute_cluster_aggregation(
                                 value: s.value,
                             })
                             .collect();
-                        Ok(SelectorOutput::Aggregation(AggregationOutcome::Aggregated(
-                            samples,
-                        )))
+                        SelectorOutput::Aggregation(AggregationOutcome::Aggregated(samples))
                     }),
                 Err(e) => pushdown_failure(
                     "aggregation",
@@ -844,7 +841,7 @@ fn execute_cluster_grid(
     responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
 ) {
     let timeout = calculate_timeout(&gc.options);
-    let max_series = gc.options.max_series;
+    let max_series = gc.options.max_selector_series;
     let max_points_per_series = gc.options.max_points_per_series;
     let max_samples = gc.options.max_samples;
     let deadline = Deadline::from_options(&gc.options);
@@ -865,42 +862,45 @@ fn execute_cluster_grid(
         responder,
         move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
             let peer_unsupported = cmd.peer_unsupported();
+            let series_read = cmd.series_read() as usize;
             match result {
-                Ok(()) => cmd.into_result().and_then(|outcome| {
-                    // The grid output, not the input, is what these bound: one
-                    // entry per series (or group), one point per step that produced
-                    // one.
-                    let check = |series: usize, points: &mut dyn Iterator<Item = usize>| {
-                        validate_max_series(series, max_series)?;
-                        for count in points {
-                            validate_max_points(count, max_points_per_series)?;
+                // The selector's input across every shard, as a single node bounds its
+                // read: each shard bounded only its own share.
+                Ok(()) => validate_selector_series(series_read, max_series)
+                    .map_err(warned)
+                    .and_then(|()| cmd.into_result())
+                    .and_then(|outcome| {
+                        // One point per step that produced one, per entry.
+                        let check = |points: &mut dyn Iterator<Item = usize>| {
+                            for count in points {
+                                validate_max_points(count, max_points_per_series)?;
+                            }
+                            Ok(())
+                        };
+                        // Series from every shard meet here, so two with the same labels
+                        // are refused wherever they live. Reduced entries are groups: as
+                        // for a pushed-down aggregation (see `execute_cluster_aggregation`),
+                        // each shard refused the duplicates among its own input, and two
+                        // on different shards were folded into the group like any two series.
+                        match &outcome {
+                            GridOutcome::Stepped(series) => {
+                                check(&mut series.iter().map(|s| s.points.len()))
+                                    .map_err(warned)?;
+                                unique_series(series.iter().map(|s| &s.labels))?;
+                            }
+                            GridOutcome::Rolled(series) | GridOutcome::Raw(series) => {
+                                check(&mut series.iter().map(|s| s.samples.len()))
+                                    .map_err(warned)?;
+                                unique_series(series.iter().map(|s| &s.labels))?;
+                            }
+                            GridOutcome::Reduced(groups) => {
+                                check(&mut groups.iter().map(|s| s.samples.len()))
+                                    .map_err(warned)?;
+                            }
+                            GridOutcome::Unsupported => {}
                         }
-                        Ok(())
-                    };
-                    // Series from every shard meet here, so two with the same labels
-                    // are refused wherever they live. Reduced entries are groups: as
-                    // for a pushed-down aggregation (see `execute_cluster_aggregation`),
-                    // each shard refused the duplicates among its own input, and two
-                    // on different shards were folded into the group like any two series.
-                    match &outcome {
-                        GridOutcome::Stepped(series) => {
-                            check(series.len(), &mut series.iter().map(|s| s.points.len()))
-                                .map_err(warned)?;
-                            unique_series(series.iter().map(|s| &s.labels))?;
-                        }
-                        GridOutcome::Rolled(series) | GridOutcome::Raw(series) => {
-                            check(series.len(), &mut series.iter().map(|s| s.samples.len()))
-                                .map_err(warned)?;
-                            unique_series(series.iter().map(|s| &s.labels))?;
-                        }
-                        GridOutcome::Reduced(groups) => {
-                            check(groups.len(), &mut groups.iter().map(|s| s.samples.len()))
-                                .map_err(warned)?;
-                        }
-                        GridOutcome::Unsupported => {}
-                    }
-                    Ok(SelectorOutput::Grid(outcome))
-                }),
+                        Ok(SelectorOutput::Grid(outcome))
+                    }),
                 Err(e) => pushdown_failure(
                     "grid",
                     e,
@@ -1228,7 +1228,7 @@ impl LocalRead {
             return Ok(None);
         }
         let _ = set_current_db(ctx, self.cursor.db());
-        let max_series = self.options.max_series;
+        let max_series = self.options.max_selector_series;
         let Self { cursor, state, .. } = self;
         // Kept apart from the read's own errors, which become `Execution`: this
         // one must reach the caller as the budget error `decode` would raise.
@@ -1349,7 +1349,7 @@ impl LocalRead {
         match decode_snapshot_batch(batch, &self.options, budget) {
             Ok(decoded) => {
                 ranges.extend(decoded);
-                if exceeds_max_series(ranges.len(), self.options.max_series) {
+                if exceeds_max_series(ranges.len(), self.options.max_selector_series) {
                     // `finish` refuses the read whatever the rest holds: copy no more.
                     self.cursor.finish();
                 }
@@ -1362,21 +1362,21 @@ impl LocalRead {
     fn finish(self) {
         let result = match self.state {
             ReadState::Instant { samples, .. } => {
-                // Bound what the query returns, not what the selector matched: a
+                // Bound what the read returns, not what the selector matched: a
                 // series whose latest sample predates the lookback window
                 // contributes nothing, so it must not count against the limit.
                 // The cluster paths filter first for the same reason. No
                 // per-series point limit: an instant read yields one sample.
-                validate_max_series(samples.len(), self.options.max_series)
+                validate_selector_series(samples.len(), self.options.max_selector_series)
                     .map_err(warned)
                     .and_then(|()| unique_series(samples.iter().map(|s| &s.labels)))
                     .map(|()| SelectorOutput::Vector(samples))
             }
             ReadState::Range { ranges, .. } => {
-                // The series the query returns, as above. This is also the path
+                // The series the read returns, as above. This is also the path
                 // a single-node grid query takes, so it must agree with the
-                // pushed-down one about which queries `max_series` rejects.
-                validate_max_series(ranges.len(), self.options.max_series)
+                // pushed-down one, which sums every shard's `series_read`.
+                validate_selector_series(ranges.len(), self.options.max_selector_series)
                     .map_err(warned)
                     .and_then(|()| unique_series(ranges.iter().map(|s| &s.labels)))
                     .map(|()| SelectorOutput::Matrix(ranges))

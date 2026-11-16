@@ -176,6 +176,22 @@ fn test_partial_without_samples_is_rejected() {
     assert!(cmd.on_response(response(Some(real)), &node(7000)).is_ok());
 }
 
+/// `ts-promql-max-series-per-selector` bounds the cluster's read as a single node's: the
+/// coordinator adds up what every shard read, which a fused reduction's groups don't show.
+#[test]
+fn test_series_read_is_summed_over_the_shards() {
+    let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
+    let mut cmd = command(request);
+    for (port, series_read) in [(7000, 3), (7001, 0), (7002, 4)] {
+        let response = GridQueryResponse {
+            series_read,
+            ..Default::default()
+        };
+        cmd.on_response(response, &node(port)).unwrap();
+    }
+    assert_eq!(cmd.series_read(), 7);
+}
+
 /// A peer that rejects the operation as unknown (an older build) latches the
 /// fallback; an ordinary failure does not.
 #[test]

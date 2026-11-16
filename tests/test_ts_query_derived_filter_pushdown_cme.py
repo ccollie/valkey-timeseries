@@ -18,7 +18,7 @@ What this file is for:
   push-down on and off. The toggle is a module load argument, so on and off are
   two test classes over one set of expectations; a divergence between them is a
   defect in the narrowing.
-* Direct evidence that fewer series were read. `ts-promql-max-response-series`
+* Direct evidence that fewer series were read. `ts-promql-max-series-per-selector`
   bounds what a selector read returns: with it set to 4, `mem_usage{job="api"} +
   mem_usage` reads six series for the right operand without the push-down and
   is refused, and reads three with it and succeeds. The same limit refuses
@@ -86,7 +86,7 @@ class DerivedFilterPushdownBase(SelectorPushdownClusterBase):
         lines = super().get_config_file_lines(test_dir, port)
         extra = f' ts-promql-derived-filter-pushdown {self.DERIVED_FILTER_PUSHDOWN}'
         if self.MAX_SERIES:
-            extra += f' ts-promql-max-response-series {self.MAX_SERIES}'
+            extra += f' ts-promql-max-series-per-selector {self.MAX_SERIES}'
         return [f'{line}{extra}' if line.startswith('loadmodule ') else line
                 for line in lines]
 
@@ -260,7 +260,7 @@ class TestPromQLDerivedFilterPushdownLimitsCluster(DerivedFilterPushdownBase):
         """`mem_usage` alone is six series and refused; narrowed to the api
         job by the left operand it is three, and the query succeeds."""
         self.setup_fleet()
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage', end=T0 + 60)
         got = self.by_instance('mem_usage{job="api"} + mem_usage')
         expected = {i: [(step, 2 * value) for step, value in _series_points(i)]
@@ -279,14 +279,14 @@ class TestPromQLDerivedFilterPushdownLimitsCluster(DerivedFilterPushdownBase):
             assert result.is_matrix() and result.result == [], query
         # The complement: an empty *right* side of `unless` leaves the left
         # side to be read in full, and refused.
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage unless on(job) no_such_metric')
 
     def test_or_still_reads_the_whole_operand(self):
         """The control: `or` may not be narrowed, so the six-series read
         is refused exactly as it is without the push-down."""
         self.setup_fleet()
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage{job="api"} or mem_usage')
 
     def test_a_churned_operand_narrows_the_other_over_its_window(self):
@@ -314,7 +314,7 @@ class TestPromQLDerivedFilterPushdownLimitsCluster(DerivedFilterPushdownBase):
             cluster_client.execute_command(
                 'TS.CREATE', key, 'METRIC', f'app_info{{instance="old-{n}"}}')
             cluster_client.execute_command('TS.ADD', key, _rfc3339(RETIRED_T0), 1)
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage and on(instance) app_info')
 
 
@@ -326,16 +326,16 @@ class TestPromQLDerivedFilterPushdownOffLimitsCluster(DerivedFilterPushdownBase)
 
     def test_unnarrowed_operand_exceeds_the_series_limit(self):
         self.setup_fleet()
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage{job="api"} + mem_usage')
 
     def test_empty_operand_does_not_spare_the_wide_read(self):
         self.setup_fleet()
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('no_such_metric - mem_usage')
 
     def test_a_churned_operand_does_not_spare_the_wide_read(self):
         self.setup_fleet()
         self.setup_app_info()
-        with pytest.raises(ResponseError, match='max series'):
+        with pytest.raises(ResponseError, match='series-per-selector'):
             self.range_query('mem_usage and on(instance) app_info')

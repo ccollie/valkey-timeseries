@@ -28,6 +28,7 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
 ROLLUP_PUSHDOWN_CONFIG = 'ts.ts-fanout-rollup-pushdown'
 MAX_RESPONSE_SERIES_CONFIG = 'ts.ts-promql-max-response-series'
+MAX_SELECTOR_SERIES_CONFIG = 'ts.ts-promql-max-series-per-selector'
 
 # {h1} lands on primary 1 of the harness's 3-node cluster; see
 # test_ts_query_selector_pushdown_cme.py, whose fixture check guards the mapping.
@@ -271,7 +272,7 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
             self.set_config(MAX_SAMPLES_CONFIG, '50000000')
 
     def test_series_limit_stops_the_shard_walk(self, rollup_pushdown):
-        """A shard refusing its share for `ts-promql-max-response-series` stops walking at
+        """A shard refusing its share for `ts-promql-max-series-per-selector` stops walking at
         the series that takes it over the limit, or for a range read at the end of that
         batch, instead of opening all 1,300 of its matched series first. The refusal
         reports the count at which it stopped. Covers the instant selector, the
@@ -279,12 +280,12 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
         and the grid push-down (and the raw read it falls back to)."""
         import re
         self.setup_fleet()
-        self.set_config(MAX_RESPONSE_SERIES_CONFIG, '100')
+        self.set_config(MAX_SELECTOR_SERIES_CONFIG, '100')
         try:
             def refused_at(command) -> int:
                 with pytest.raises(ResponseError) as err:
                     self.coordinator().execute_command(*command)
-                found = re.search(r'max series limit: (\d+) > 100', str(err.value))
+                found = re.search(r'series-per-selector allows: (\d+) > 100', str(err.value))
                 assert found, str(err.value)
                 return int(found.group(1))
 
@@ -301,7 +302,35 @@ class TestBatchedSelectorReadsCluster(ValkeyTimeSeriesClusterTestCase):
             ):
                 assert 100 < refused_at(command) < WIDE_COUNT, command
         finally:
-            self.set_config(MAX_RESPONSE_SERIES_CONFIG, '0')
+            self.set_config(MAX_SELECTOR_SERIES_CONFIG, '100000')
+
+    def test_series_limit_counts_the_whole_cluster(self, rollup_pushdown):
+        """`ts-promql-max-series-per-selector` bounds a selector's read across the cluster,
+        as on a single node: here each shard's share fits (1,300 and 1 and 1), and the
+        1,302 they add up to does not, whether the shards answer with series or with
+        pushed-down partials that name none of them."""
+        total = WIDE_COUNT + len(OTHER_TAGS)
+        self.setup_fleet()
+        queries = (
+            ('TS.QUERY', 'wide', 'TIME', str(END)),
+            ('TS.QUERY', 'sum(wide)', 'TIME', str(END)),
+            ('TS.QUERY', 'sum by (g) (wide)', 'TIME', str(END)),
+            ('TS.QUERYRANGE', 'sum(wide)', 'START', str(T0 * 1000), 'END', str(END * 1000),
+             'STEP', '30s'),
+            ('TS.QUERYRANGE', 'sum_over_time(wide[1m])', 'START', str(T0 * 1000),
+             'END', str(END * 1000), 'STEP', '30s'),
+        )
+        self.set_config(MAX_SELECTOR_SERIES_CONFIG, str(WIDE_COUNT))
+        try:
+            for command in queries:
+                with pytest.raises(ResponseError,
+                                   match=f'series-per-selector allows: {total} > {WIDE_COUNT}'):
+                    self.coordinator().execute_command(*command)
+            self.set_config(MAX_SELECTOR_SERIES_CONFIG, str(total))
+            for command in queries:
+                self.coordinator().execute_command(*command)
+        finally:
+            self.set_config(MAX_SELECTOR_SERIES_CONFIG, '100000')
 
 
 # ── Heavy series: batches bounded by copied bytes, not just series ────────

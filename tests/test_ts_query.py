@@ -620,7 +620,7 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 4096)
 
     def test_series_limit_stops_the_read_early(self):
-        """A read over `ts-promql-max-response-series` stops at the series that takes it
+        """A read over `ts-promql-max-series-per-selector` stops at the series that takes it
         over the limit (an instant read), or at the end of that lock hold's batch (a range
         read), instead of collecting every matched series first. The refusal reports the
         count at which it stopped: before, this one said 1500."""
@@ -634,11 +634,11 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         def refused_at(*command) -> int:
             with pytest.raises(ResponseError) as err:
                 self.client.execute_command(*command)
-            found = re.search(r'max series limit: (\d+) > 10', str(err.value))
+            found = re.search(r'series-per-selector allows: (\d+) > 10', str(err.value))
             assert found, str(err.value)
             return int(found.group(1))
 
-        self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '10')
+        self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-series-per-selector', '10')
         try:
             # TIME is in seconds: 1 s is the samples' 1000 ms.
             assert refused_at('TS.QUERY', 'wide', 'TIME', '1') == 11
@@ -648,12 +648,34 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
                                    'STEP', '30s') < 1500
 
             # Under the limit, the same read still sees every series.
-            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '1500')
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-series-per-selector', '1500')
             result = QueryResult.from_raw(
                 self.client.execute_command('TS.QUERY', 'count(wide)', 'TIME', '1'))
             assert result.result[0].value.value == 1500
         finally:
-            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '1000')
+            self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-series-per-selector',
+                                        '100000')
+
+    def test_result_limit_bounds_only_what_the_query_returns(self):
+        """`ts-promql-max-response-series` (1000 by default) bounds the query's result, not
+        its input: an aggregation over 1,500 series is one series. Before, every read was
+        held to it, so `sum()` over more than 1,000 series failed on a single node."""
+        pipe = self.client.pipeline(transaction=False)
+        for i in range(1500):
+            pipe.execute_command('TS.ADD', f'wide:{i}', 1000, 1,
+                                 'LABELS', '__name__', 'wide', 'i', str(i))
+        pipe.execute()
+
+        for query in ('sum(wide)', 'count(wide)'):
+            result = QueryResult.from_raw(
+                self.client.execute_command('TS.QUERY', query, 'TIME', '1'))
+            assert result.result[0].value.value == 1500, query
+        result = QueryResult.from_raw(self.client.execute_command(
+            'TS.QUERYRANGE', 'sum(wide)', 'START', '1000', 'END', '61000', 'STEP', '30s'))
+        assert [p.value for p in result.result[0].values] == [1500, 1500, 1500]
+
+        with pytest.raises(ResponseError, match='max series limit: 1500 > 1000'):
+            self.client.execute_command('TS.QUERY', 'wide', 'TIME', '1')
 
     def test_slow_parses_do_not_stall_the_main_thread(self):
         """Parsing grows faster than the query text: a 16 KiB chain of unary minus signs took

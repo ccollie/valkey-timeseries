@@ -278,6 +278,7 @@ class TestTimeSeriesDebug(ValkeyTimeSeriesTestCaseDebugMode):
             'ts-promql-enable-experimental-functions',
             'ts-promql-max-query-len',
             'ts-promql-max-response-series',
+            'ts-promql-max-series-per-selector',
             'ts-promql-max-points-per-timeseries',
             'ts-promql-max-samples-per-query',
             'ts-promql-max-samples-in-flight',

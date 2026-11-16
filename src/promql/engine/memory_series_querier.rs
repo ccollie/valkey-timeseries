@@ -10,7 +10,7 @@ use crate::promql::engine::label_profile::{
     LabelProfile, LabelProfileBuilder, ProfileCollector, ProfileWindow, profiled_series_cap,
 };
 use crate::promql::engine::query_limits::{
-    copy_snapshots, decode_snapshot, instant_lookback_start_ms, validate_max_series,
+    copy_snapshots, decode_snapshot, instant_lookback_start_ms, validate_selector_series,
 };
 use crate::promql::engine::query_reader::{AggregationOutcome, AggregationRequest};
 use crate::promql::engine::sample_budget::SampleBudget;
@@ -178,7 +178,7 @@ impl QueryReader for MemorySeriesQuerier {
 
             Ok(None)
         })?;
-        validate_max_series(samples.len(), options.max_series)?;
+        validate_selector_series(samples.len(), options.max_selector_series)?;
         check_unique_series(samples.iter().map(|s| &s.labels)).map_err(QueryError::Execution)?;
         Ok(samples)
     }
@@ -214,7 +214,7 @@ impl QueryReader for MemorySeriesQuerier {
             .into_fallible()
             .filter_map(|series| series)
             .collect::<Vec<_>>()?;
-        validate_max_series(series.len(), options.max_series)?;
+        validate_selector_series(series.len(), options.max_selector_series)?;
         check_unique_series(series.iter().map(|s| &s.labels)).map_err(QueryError::Execution)?;
         Ok(series)
     }
@@ -285,9 +285,10 @@ mod tests {
         querier
     }
 
-    fn options(max_series: usize) -> QueryOptions {
+    /// Options whose reads stop past `max_selector_series` series.
+    fn options(max_selector_series: usize) -> QueryOptions {
         QueryOptions {
-            max_series,
+            max_selector_series,
             ..QueryOptions::default()
         }
     }

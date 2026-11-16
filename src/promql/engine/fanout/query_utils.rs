@@ -15,7 +15,7 @@ use crate::promql::engine::query_reader::grid_fetch_bounds;
 use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{
     copy_snapshots, decode_snapshot, exceeds_max_series, instant_lookback_start_ms,
-    validate_max_points, validate_max_series,
+    validate_max_points, validate_selector_series,
 };
 use crate::promql::generated::{
     InstantQueryResponse, InstantSample, RangeQueryResponse, RangeSample,
@@ -145,7 +145,7 @@ where
         },
     )?;
     let samples = samples.finish()?;
-    validate_max_series(samples.len(), max_series as usize).map_err(super::shard_error)?;
+    validate_selector_series(samples.len(), max_series as usize).map_err(super::shard_error)?;
     Ok(samples)
 }
 
@@ -377,6 +377,8 @@ fn decode_work<T>(snapshots: &[(T, RangeSnapshot)]) -> usize {
 /// The samples are charged to `read`'s budget as they are decoded, and its deadline is
 /// checked between batches. `sink` keeps what it makes of them past this call, so the
 /// caller holds the budget until it has built its response.
+///
+/// Returns how many series the read admitted, for the response's `series_read`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     src: &S,
@@ -387,9 +389,9 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
     max_points_per_series: u64,
     read: &ShardRead,
     mut sink: impl FnMut(Vec<crate::promql::model::RangeSample<EvalLabels>>) -> ValkeyResult<()>,
-) -> ValkeyResult<()> {
+) -> ValkeyResult<u64> {
     let Some((start_time, end_time)) = grid_fetch_bounds(window_ends, backward_ms) else {
-        return Ok(());
+        return Ok(0);
     };
 
     let budget = &read.budget;
@@ -438,7 +440,9 @@ pub(super) fn local_grid_windows<S: GilSource + ?Sized>(
         },
     )?;
 
-    bounds.finish().map_err(super::shard_error)
+    let returned = bounds.returned as u64;
+    bounds.finish().map_err(super::shard_error)?;
+    Ok(returned)
 }
 
 /// What a read this node performs on another node's behalf runs under, from one read of
@@ -474,8 +478,8 @@ pub(super) fn shard_read(ctx: &FanoutContext) -> ValkeyResult<ShardRead> {
 /// The query limits on a shard's grid windows, applied as batches of them are
 /// decoded: drop the matched-but-empty series, then bound what is left.
 ///
-/// `max_series` bounds the series the query actually *returns*, not the ones
-/// the selector happened to match. Validating the match count instead would
+/// `max_series` (`ts-promql-max-series-per-selector`) bounds the series the
+/// read actually *returns*, not the ones the selector happened to match. Validating the match count instead would
 /// make the push-down reject queries that the unaggregated range path — which
 /// filters first, see [`handle_range_query`] — accepts, so whether a query
 /// succeeded would depend on an internal optimization decision.
@@ -526,7 +530,7 @@ impl WindowBounds {
 
     /// The verdict over every batch admitted.
     fn finish(self) -> QueryResult<()> {
-        validate_max_series(self.returned, self.max_series as usize)?;
+        validate_selector_series(self.returned, self.max_series as usize)?;
         self.over_points.map_or(Ok(()), Err)
     }
 }
@@ -600,7 +604,7 @@ pub(super) fn handle_range_query<S: GilSource + ?Sized>(
         },
     )?;
 
-    validate_max_series(ranges.len(), max_series as usize).map_err(super::shard_error)?;
+    validate_selector_series(ranges.len(), max_series as usize).map_err(super::shard_error)?;
 
     // Labels go into the response's symbol table by identity, as for an
     // instant query: serially, since the table is one per response, and after
@@ -821,8 +825,14 @@ mod tests {
     }
 
     #[test]
-    fn exceeds_max_series_agrees_with_validate_max_series() {
+    fn exceeds_max_series_agrees_with_both_validations() {
+        use crate::promql::engine::validate_max_series;
         for (count, max) in [(0, 0), (5, 0), (3, 3), (4, 3), (1, 1), (2, 1)] {
+            assert_eq!(
+                exceeds_max_series(count, max),
+                validate_selector_series(count, max).is_err(),
+                "{count} vs {max}"
+            );
             assert_eq!(
                 exceeds_max_series(count, max),
                 validate_max_series(count, max).is_err(),
