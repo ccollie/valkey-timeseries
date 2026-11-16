@@ -1,21 +1,57 @@
-use crate::promql::functions::types::{PromQLArg, PromQLFunction};
+use crate::promql::functions::types::{FunctionCallContext, PromQLArg, PromQLFunction};
 use crate::promql::functions::utils::{exact_arity_error, max_arity_error};
 use crate::promql::{EvalContext, EvalResult, EvalSample, ExprResult};
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use promql_parser::parser::Expr;
 
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct TimestampFunction;
 
-impl PromQLFunction for TimestampFunction {
-    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
+impl TimestampFunction {
+    fn timestamps(arg: PromQLArg, ctx: &EvalContext, sample_times: bool) -> EvalResult<ExprResult> {
         let mut samples = arg.into_instant_vector()?;
         for sample in &mut samples {
-            sample.value = sample.timestamp_ms as f64 / 1000.0;
+            let time = if sample_times {
+                sample.timestamp_ms
+            } else {
+                ctx.evaluation_ts
+            };
+            sample.value = time as f64 / 1000.0;
             sample.timestamp_ms = ctx.evaluation_ts;
             sample.drop_name = true;
         }
 
         Ok(ExprResult::InstantVector(samples))
+    }
+}
+
+/// Whether `timestamp()` reports its argument's sample times: only a vector selector
+/// (in any parentheses, with any `offset` or `@`) has them. Anything computed from one
+/// was computed at the evaluation time, even though its samples still carry the
+/// selector's times, so `timestamp(abs(m))` is the evaluation time, as in Prometheus.
+fn reports_sample_times(arg: &Expr) -> bool {
+    match arg {
+        Expr::VectorSelector(_) => true,
+        Expr::Paren(paren) => reports_sample_times(&paren.expr),
+        _ => false,
+    }
+}
+
+impl PromQLFunction for TimestampFunction {
+    fn apply(&self, arg: PromQLArg, ctx: &EvalContext) -> EvalResult<ExprResult> {
+        Self::timestamps(arg, ctx, true)
+    }
+
+    fn apply_call(
+        &self,
+        evaluated_args: Vec<PromQLArg>,
+        ctx: &FunctionCallContext,
+    ) -> EvalResult<ExprResult> {
+        let [arg] = <[PromQLArg; 1]>::try_from(evaluated_args)
+            .map_err(|args| exact_arity_error("timestamp", 1, args.len()))?;
+        // Without the unevaluated argument (direct callers), the samples' own times.
+        let sample_times = ctx.raw_arg(0).is_none_or(reports_sample_times);
+        Self::timestamps(arg, ctx.eval_context, sample_times)
     }
 }
 
