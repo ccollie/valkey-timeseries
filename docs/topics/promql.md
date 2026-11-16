@@ -441,6 +441,14 @@ allowed to read from them. A `HASHTAG` clause narrows that shard set without cha
 replica/primary policy; see [Restricting a query to part of a
 cluster](#restricting-a-query-to-part-of-a-cluster).
 
+A query never answers from a partial view of the cluster. Any shard that fails or times out
+fails the whole query. So does a change of slot ownership while the query reads, such as an
+atomic slot migration completing on a shard after its request arrived, or on the coordinator
+after it routed the query. That query fails with `A multi-shard command failed because the
+cluster topology has changed` and can be retried as it is: the next attempt is routed by the
+new map. Without this, a shard reading in several lock holds could answer for a slot whose keys
+were removed part-way, and the result would silently miss that slot's series.
+
 ## Query optimization
 
 The PromQL optimizer can rewrite an expression before execution to reduce evaluation
