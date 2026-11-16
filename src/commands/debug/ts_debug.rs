@@ -13,6 +13,7 @@ use crate::fanout::{
     peer_requests, refresh_cluster_map,
 };
 use crate::promql::engine::query_workers::panic_next_evaluation;
+use crate::promql::engine::selector_batch_executor::panic_next_selector_batch;
 use crate::series::index::series_keys_by_selectors;
 use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -200,6 +201,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
             "Make the next PromQL evaluation panic (tests that a failed query still answers)",
         ),
         (
+            "TS._DEBUG PANIC_NEXT_SELECTOR_BATCH",
+            "Make the PromQL selector executor's next batch panic (tests that it keeps serving)",
+        ),
+        (
             "TS._DEBUG CLEAR_QUERY_CACHE [LOCAL|PRIMARY|CLUSTER|HASHTAG <tags>]",
             "Empty this node's parsed PromQL query cache and reply with how many entries it held, keeping the INFO counters (CLUSTER clears every node and sums the entries; PRIMARY: shard primaries; HASHTAG: the primaries of the shards owning those tags)",
         ),
@@ -278,6 +283,12 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         "PANIC_NEXT_EVALUATION" => {
             itr.done()?;
             panic_next_evaluation();
+            reply_with_simple_string(ctx, "OK");
+            Ok(())
+        },
+        "PANIC_NEXT_SELECTOR_BATCH" => {
+            itr.done()?;
+            panic_next_selector_batch();
             reply_with_simple_string(ctx, "OK");
             Ok(())
         },

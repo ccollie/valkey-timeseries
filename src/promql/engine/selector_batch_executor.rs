@@ -39,6 +39,7 @@ use orx_parallel::Par;
 use orx_parallel::ParResult;
 use promql_parser::label::Matchers;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use valkey_module::{Context, MODULE_CONTEXT};
@@ -316,20 +317,64 @@ pub struct SelectorBatchExecutor {
 fn run_processor(receiver: mpsc::Receiver<SelectorTask>) {
     while let Ok(first) = receiver.recv() {
         let batch = collect_batch(&receiver, first, MAX_BATCH_SIZE);
+        // The backstop: a panic anywhere in the batch outside the reads and tasks that are
+        // isolated one by one (planning, scheduling, finishing a read, taking the lock) fails
+        // the batch's queries — their responders go with the unwind — and the processor
+        // serves the next batch, instead of ending and failing every query until a restart.
+        isolate_panic("selector batch", || run_batch(batch));
+    }
+}
 
-        let local = {
-            let ctx = MODULE_CONTEXT.lock_gil();
-            if is_clustered(&ctx) {
-                for task in batch {
-                    isolate_panic("selector task", || execute_selector_task(&ctx, task));
-                }
-                Vec::new()
-            } else {
-                batch
+/// Set by `TS._DEBUG PANIC_NEXT_SELECTOR_BATCH` (debug mode only): the next batch panics while
+/// it holds the GIL, outside every per-read guard. Tests that the processor survives it.
+static PANIC_NEXT_BATCH: AtomicBool = AtomicBool::new(false);
+
+/// Makes the processor's next batch panic; see [`PANIC_NEXT_BATCH`].
+pub(crate) fn panic_next_selector_batch() {
+    PANIC_NEXT_BATCH.store(true, Ordering::Relaxed);
+}
+
+fn run_batch(batch: Vec<SelectorTask>) {
+    let local = {
+        let ctx = MODULE_CONTEXT.lock_gil();
+        if PANIC_NEXT_BATCH.swap(false, Ordering::Relaxed) {
+            panic!("TS._DEBUG PANIC_NEXT_SELECTOR_BATCH");
+        }
+        if is_clustered(&ctx) {
+            for task in batch {
+                isolate_panic("selector task", || execute_selector_task(&ctx, task));
             }
-        };
-        if !local.is_empty() {
-            run_local_batch(local);
+            Vec::new()
+        } else {
+            batch
+        }
+    };
+    if !local.is_empty() {
+        run_local_batch(local);
+    }
+}
+
+/// Puts the module context back on the database it was on when made, however the scope
+/// ends: the context is shared, and a panic that skipped the restore would leave whatever
+/// uses it next on the database of the read that panicked.
+struct RestoreDb<'a> {
+    ctx: &'a Context,
+    db: i32,
+}
+
+impl<'a> RestoreDb<'a> {
+    fn new(ctx: &'a Context) -> Self {
+        Self {
+            ctx,
+            db: get_current_db(ctx),
+        }
+    }
+}
+
+impl Drop for RestoreDb<'_> {
+    fn drop(&mut self) {
+        if get_current_db(self.ctx) != self.db {
+            let _ = set_current_db(self.ctx, self.db);
         }
     }
 }
@@ -578,10 +623,9 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
         hash_tags,
         responder,
     } = task;
-    let original_db = get_current_db(ctx);
+    let restore = RestoreDb::new(ctx);
     let target_db = kind.db();
-
-    if target_db != original_db {
+    if target_db != restore.db {
         let _ = set_current_db(ctx, target_db);
     }
 
@@ -598,10 +642,6 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
             &error_responder,
             Err(QueryError::Execution(err.to_string())),
         );
-    }
-
-    if target_db != original_db {
-        let _ = set_current_db(ctx, original_db);
     }
 }
 
@@ -1088,7 +1128,8 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
         let mut copied: Vec<Option<CopiedSnapshots>> = Vec::with_capacity(reads.len());
         {
             let ctx = MODULE_CONTEXT.lock_gil();
-            let original_db = get_current_db(&ctx);
+            // Each read selects its own database; the hold ends on the one it started on.
+            let _restore = RestoreDb::new(&ctx);
             let mut budget = HOLD_BUDGET;
             let mut copy_bytes = DEFAULT_BATCH_COPY_BYTES;
             for read in reads.iter_mut() {
@@ -1118,9 +1159,6 @@ fn run_local_batch(tasks: Vec<SelectorTask>) {
                         None
                     }
                 });
-            }
-            if get_current_db(&ctx) != original_db {
-                let _ = set_current_db(&ctx, original_db);
             }
         }
 

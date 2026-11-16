@@ -23,7 +23,7 @@ mod query_limits_tests;
 pub mod query_reader;
 pub mod query_workers;
 pub mod sample_budget;
-mod selector_batch_executor;
+pub(crate) mod selector_batch_executor;
 #[cfg(test)]
 mod subquery_grid_tests;
 #[cfg(test)]
