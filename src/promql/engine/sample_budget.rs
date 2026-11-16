@@ -88,6 +88,37 @@ impl SampleBudget {
         Self::counted_against(admission, limit, in_flight_limit)
     }
 
+    /// A budget of `limit` (0: none) that counts toward the in-flight limit `options` carry,
+    /// against the test's own [`Admission`] when the options name one.
+    pub(crate) fn counted_for(options: &crate::promql::QueryOptions, limit: usize) -> Self {
+        #[cfg(test)]
+        if let Some(admission) = options.admission {
+            return Self::counted_in(admission, limit, options.max_samples_in_flight);
+        }
+        Self::counted(limit, options.max_samples_in_flight)
+    }
+
+    /// [`Self::counted_for`], but never refused for the process-wide count: its samples are
+    /// added to it, so `promql_samples_in_flight` and every other query's charges see them,
+    /// but the in-flight limit refuses only charges that do not come from here.
+    ///
+    /// For memory a query holds transiently and in amounts that depend on scheduling — each
+    /// outer step's materialized subquery result, as many alive as steps run at once.
+    /// Refusing on it would make whether a query passes depend on that scheduling, and on
+    /// whether an optional subquery grid replaced the per-step results.
+    pub(crate) fn observed_for(options: &crate::promql::QueryOptions, limit: usize) -> Self {
+        let observed = if options.max_samples_in_flight > 0 {
+            usize::MAX
+        } else {
+            0
+        };
+        #[cfg(test)]
+        if let Some(admission) = options.admission {
+            return Self::counted_in(admission, limit, observed);
+        }
+        Self::counted(limit, observed)
+    }
+
     fn counted_against(
         admission: &'static Admission,
         limit: usize,

@@ -3,6 +3,7 @@ use crate::commands::promql_utils::{get_promql_querier, reply_with_query_value};
 use crate::common::context::get_current_db;
 use crate::common::time::system_time_to_millis;
 use crate::promql::engine::query_workers::submit_evaluation;
+use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{QueryOptions, admission, evaluate_instant, promql_config};
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
@@ -54,9 +55,13 @@ pub fn ts_query_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 admission::estimate_reply_bytes(&value),
                 options.max_reply_bytes,
             )?;
-            Ok(value)
+            // The evaluation's budget is gone, but the result, and the reply built from it,
+            // are held until the reply is written: counted toward the in-flight limit meanwhile.
+            let held = SampleBudget::counted_for(&options, 0);
+            held.charge(admission::result_points(&value))?;
+            Ok((value, held))
         },
-        move |ctx, result| {
+        move |ctx, (result, _held)| {
             reply_with_query_value(ctx, result, system_time_to_millis(eval_ts));
         },
     )

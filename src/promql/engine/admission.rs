@@ -208,6 +208,21 @@ pub(crate) fn estimate_range_reply_bytes(series: &[RangeSample]) -> usize {
     REPLY_OVERHEAD + series.iter().map(series_reply_bytes).sum::<usize>()
 }
 
+/// The points a result holds: what its reply, built and buffered after the evaluation's own
+/// budget is gone, is charged to the in-flight limit as (see the command handlers).
+pub(crate) fn result_points(value: &QueryValue) -> usize {
+    match value {
+        QueryValue::Vector(samples) => samples.len(),
+        QueryValue::Matrix(series) => range_points(series),
+        QueryValue::Scalar { .. } | QueryValue::String { .. } => 1,
+    }
+}
+
+/// [`result_points`] for a range query's series.
+pub(crate) fn range_points(series: &[RangeSample]) -> usize {
+    series.iter().map(|s| s.samples.len()).sum()
+}
+
 /// Fail if a reply estimated at `bytes` is larger than `limit` (0: no limit).
 pub(crate) fn check_reply_size(bytes: usize, limit: usize) -> QueryResult<()> {
     if limit > 0 && bytes > limit {
@@ -220,6 +235,67 @@ pub(crate) fn check_reply_size(bytes: usize, limit: usize) -> QueryResult<()> {
 mod tests {
     use super::*;
     use crate::common::Sample;
+
+    /// A transient result budget is seen by the process-wide count, never refuses its own
+    /// query, and gives its samples back when dropped; an enforcing one refuses past the limit.
+    #[test]
+    fn an_observed_budget_is_counted_but_never_refused() {
+        use crate::promql::QueryOptions;
+        use crate::promql::engine::sample_budget::SampleBudget;
+        static COUNTS: Admission = Admission::new();
+        let options = QueryOptions {
+            max_samples_in_flight: 10,
+            admission: Some(&COUNTS),
+            ..QueryOptions::default()
+        };
+        {
+            let observed = SampleBudget::observed_for(&options, 0);
+            observed
+                .charge(25)
+                .expect("never refused for the process-wide count");
+            assert_eq!(COUNTS.samples_in_flight(), 25);
+            let enforced = SampleBudget::counted_for(&options, 0);
+            assert!(matches!(enforced.charge(1), Err(QueryError::Overloaded(_))));
+        }
+        assert_eq!(
+            COUNTS.samples_in_flight(),
+            0,
+            "both given back when dropped"
+        );
+
+        // With in-flight counting off, neither counts.
+        let off = QueryOptions {
+            max_samples_in_flight: 0,
+            ..options
+        };
+        SampleBudget::observed_for(&off, 0).charge(25).unwrap();
+        assert_eq!(COUNTS.samples_in_flight(), 0);
+    }
+
+    #[test]
+    fn result_points_count_every_point_returned() {
+        let labels = crate::labels::Labels::empty;
+        let range = vec![
+            RangeSample {
+                labels: labels(),
+                samples: vec![Sample::new(1, 1.0), Sample::new(2, 2.0)],
+            },
+            RangeSample {
+                labels: labels(),
+                samples: vec![Sample::new(1, 1.0)],
+            },
+        ];
+        assert_eq!(range_points(&range), 3);
+        assert_eq!(result_points(&QueryValue::Matrix(range)), 3);
+        assert_eq!(
+            result_points(&QueryValue::Scalar {
+                timestamp_ms: 0,
+                value: 1.0
+            }),
+            1
+        );
+        assert_eq!(result_points(&QueryValue::Vector(Vec::new())), 0);
+    }
 
     #[test]
     fn memory_is_refused_at_and_past_the_limit_only() {

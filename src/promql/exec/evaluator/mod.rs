@@ -231,16 +231,7 @@ pub(crate) struct Evaluator<'reader, R: QueryReader + ?Sized> {
 
 impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
     pub(crate) fn new(reader: &'reader R, options: QueryOptions) -> Self {
-        let budget = SampleBudget::counted(options.max_samples, options.max_samples_in_flight);
-        #[cfg(test)]
-        let budget = match options.admission {
-            Some(admission) => SampleBudget::counted_in(
-                admission,
-                options.max_samples,
-                options.max_samples_in_flight,
-            ),
-            None => budget,
-        };
+        let budget = SampleBudget::counted_for(&options, options.max_samples);
         Self::with_prepared(
             reader,
             options,
