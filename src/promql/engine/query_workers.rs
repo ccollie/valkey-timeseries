@@ -23,8 +23,10 @@
 //! steals other jobs while it waits (see `SelectorBatchExecutor`'s design
 //! notes for what that did). A plain thread waits without stealing.
 //!
-//! An evaluation's own parallel work runs on the evaluation pool, never the
-//! shared pool: see [`run_evaluation`].
+//! An evaluation's own parallel work runs on its worker's evaluation pool, never
+//! the shared pool or another worker's: see [`run_evaluation`]. So up to
+//! `ts-promql-max-concurrent-queries` × `ts-num-threads` evaluation threads exist
+//! once every worker has run a query; each pool's threads sleep while it is idle.
 
 use crate::common::Timestamp;
 use crate::common::context::is_blocking_denied;
@@ -64,7 +66,8 @@ static QUERY_WORKERS: BoundedExecutor = BoundedExecutor::new(
     Capacity::Dynamic(max_queued_queries),
 );
 
-/// Run a PromQL evaluation on the evaluation pool.
+/// Run a PromQL evaluation on this query worker's evaluation pool: each worker has its own,
+/// so one query's evaluation never runs nested inside another's.
 ///
 /// Every parallel entry point the evaluation reaches — the `*_rayon` iterators,
 /// `threads::join` — resolves to the pool of the pinned worker that calls it, so
@@ -326,6 +329,37 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
+
+    /// The pool an evaluation's thread belongs to: its name without the worker index.
+    fn evaluation_pool() -> String {
+        run_evaluation(|| {
+            let name = std::thread::current().name().map(str::to_string);
+            let name = name.expect("evaluation pool threads are named");
+            let (pool, _index) = name.rsplit_once('-').expect("named <pool>-<index>");
+            pool.to_string()
+        })
+    }
+
+    /// Each query worker evaluates on a pool of its own. With one pool for all of them, a
+    /// pool worker waiting in a `join` inside one query took another query's whole evaluation
+    /// (an injected job) and ran it on its own stack: the first query could not answer before
+    /// the second did, and evaluations stacked that way could overflow the worker's stack.
+    #[test]
+    fn each_query_worker_evaluates_on_a_pool_of_its_own() {
+        let mine = evaluation_pool();
+        assert!(mine.starts_with("ts-promql-eval-"), "{mine}");
+        assert_eq!(evaluation_pool(), mine, "a worker keeps its pool");
+
+        let others: Vec<String> = (0..2)
+            .map(|_| std::thread::spawn(evaluation_pool))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert_ne!(others[0], mine);
+        assert_ne!(others[1], mine);
+        assert_ne!(others[0], others[1]);
+    }
 
     /// The freeze the evaluation pool exists to prevent: evaluation jobs parked on
     /// a processor that needs the GIL (a mutex here), while the GIL holder waits on
