@@ -27,7 +27,7 @@ use crate::promql::engine::{
     InstantVectorSelectorFanoutCommand, LabelProfileFanoutCommand,
     RangeVectorSelectorFanoutCommand, WireRangeResponse, check_unique_series, copy_snapshots,
     decode_range_series, decode_snapshot, exceeds_max_series, instant_lookback_start_ms,
-    validate_max_points, validate_selector_series,
+    validate_selector_series,
 };
 use crate::promql::{InstantSample, QueryError, QueryOptions, QueryResult, RangeSample};
 use crate::series::chunks::ChunkOps;
@@ -820,11 +820,11 @@ fn execute_cluster_range_selector(
         rc.start_timestamp,
         rc.end_timestamp,
         rc.options.max_selector_series as u64,
-        rc.options.max_points_per_series.unwrap_or(0) as u64,
+        // No per-series point limit on a read: see `QueryOptions::max_points_per_series`.
+        0,
     );
 
     let max_series = rc.options.max_selector_series;
-    let max_points_per_series = rc.options.max_points_per_series;
     let max_samples = rc.options.max_samples;
 
     fan_out(
@@ -860,10 +860,6 @@ fn execute_cluster_range_selector(
                                 series().map(|s| s.chunk.len()).sum(),
                                 max_samples,
                             )?;
-                            for s in series() {
-                                validate_max_points(s.chunk.len(), max_points_per_series)
-                                    .map_err(warned)?;
-                            }
                             // Still packed: the requester resolves and decodes them
                             // in parallel.
                             Ok(SelectorOutput::WireMatrix(responses))
@@ -954,14 +950,14 @@ fn execute_cluster_grid(
     let timeout = calculate_timeout(&gc.options);
     let cancel = gc.options.cancel;
     let max_series = gc.options.max_selector_series;
-    let max_points_per_series = gc.options.max_points_per_series;
     let max_samples = gc.options.max_samples;
     let deadline = Deadline::from_options(&gc.options);
     let cmd = GridFanoutCommand::new(
         gc.matchers,
         gc.request,
         max_series as u64,
-        max_points_per_series.unwrap_or(0) as u64,
+        // No per-series point limit on a read: see `QueryOptions::max_points_per_series`.
+        0,
         max_samples,
         deadline,
     );
@@ -983,13 +979,6 @@ fn execute_cluster_grid(
                     .map_err(warned)
                     .and_then(|()| cmd.into_result())
                     .and_then(|outcome| {
-                        // One point per step that produced one, per entry.
-                        let check = |points: &mut dyn Iterator<Item = usize>| {
-                            for count in points {
-                                validate_max_points(count, max_points_per_series)?;
-                            }
-                            Ok(())
-                        };
                         // Series from every shard meet here, so two with the same labels
                         // are refused wherever they live. Reduced entries are groups: as
                         // for a pushed-down aggregation (see `execute_cluster_aggregation`),
@@ -997,20 +986,12 @@ fn execute_cluster_grid(
                         // on different shards were folded into the group like any two series.
                         match &outcome {
                             GridOutcome::Stepped(series) => {
-                                check(&mut series.iter().map(|s| s.points.len()))
-                                    .map_err(warned)?;
                                 unique_series(series.iter().map(|s| &s.labels))?;
                             }
                             GridOutcome::Rolled(series) | GridOutcome::Raw(series) => {
-                                check(&mut series.iter().map(|s| s.samples.len()))
-                                    .map_err(warned)?;
                                 unique_series(series.iter().map(|s| &s.labels))?;
                             }
-                            GridOutcome::Reduced(groups) => {
-                                check(&mut groups.iter().map(|s| s.samples.len()))
-                                    .map_err(warned)?;
-                            }
-                            GridOutcome::Unsupported => {}
+                            GridOutcome::Reduced(_) | GridOutcome::Unsupported => {}
                         }
                         Ok(SelectorOutput::Grid(outcome))
                     }),
@@ -1459,7 +1440,7 @@ impl LocalRead {
         let ReadState::Range { budget, ranges, .. } = &mut self.state else {
             return;
         };
-        match decode_snapshot_batch(batch, &self.options, budget) {
+        match decode_snapshot_batch(batch, budget) {
             Ok(decoded) => {
                 ranges.extend(decoded);
                 if exceeds_max_series(ranges.len(), self.options.max_selector_series) {
@@ -1513,14 +1494,13 @@ impl LocalRead {
 /// series per pool thread.
 fn decode_snapshot_batch(
     series: CopiedSnapshots,
-    options: &QueryOptions,
     budget: &SampleBudget,
 ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
-    let max_points = options.max_points_per_series;
     series
         .into_par_on(&MATERIALIZE_POOL)
         .map(
-            |(labels, snapshot)| match decode_snapshot(budget, &snapshot, max_points) {
+            // No per-series point limit on a read: see `QueryOptions::max_points_per_series`.
+            |(labels, snapshot)| match decode_snapshot(budget, &snapshot, None) {
                 Ok(samples) => Ok(samples.map(|samples| RangeSample { samples, labels })),
                 // The per-series point limit, logged as the other limits here are;
                 // the budget's own errors are not.

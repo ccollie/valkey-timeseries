@@ -345,7 +345,8 @@ COPY_BUDGET = 4 << 20
 MAX_SAMPLES_CONFIG = 'ts.ts-promql-max-samples-per-query'
 MAX_POINTS_CONFIG = 'ts.ts-promql-max-points-per-timeseries'
 MAX_SERIES_CONFIG = MAX_RESPONSE_SERIES_CONFIG
-LIMIT_DEFAULTS = {MAX_SAMPLES_CONFIG: '50000000', MAX_POINTS_CONFIG: '0', MAX_SERIES_CONFIG: '1000'}
+LIMIT_DEFAULTS = {MAX_SAMPLES_CONFIG: '50000000', MAX_POINTS_CONFIG: '0', MAX_SERIES_CONFIG: '1000',
+                  MAX_SELECTOR_SERIES_CONFIG: '100000'}
 
 
 def _heavy_value(i: int, j: int) -> float:
@@ -462,14 +463,16 @@ class TestBatchedCopyBudgetCluster(ValkeyTimeSeriesClusterTestCase):
     def test_shard_limit_refusals_reach_the_client_verbatim(self):
         """A shard refusing its share for a query limit must not collapse into
         the generic fan-out failure: its message names the limit and both
-        numbers. All the series are on one shard, so the shard is the one that
-        refuses, before the coordinator sees anything."""
+        numbers. All the series are on one shard, so for the read limits
+        (series per selector, samples) the shard is the one that refuses,
+        before the coordinator sees anything; the result limit is the
+        coordinator's."""
         self.setup_heavy(count=5, metric='few')
         at = T0 + HEAVY_SAMPLES - 1
         cases = (
+            (MAX_SELECTOR_SERIES_CONFIG, '3', 'few[1000s]',
+             'ts-promql-max-series-per-selector allows: '),
             (MAX_SERIES_CONFIG, '3', 'few[1000s]', 'max series limit: 5 > 3'),
-            (MAX_POINTS_CONFIG, '100', 'few[1000s]',
-             'max points per series limit: 101 > 100'),
             (MAX_SAMPLES_CONFIG, '1000', 'few[1000s]', 'too many samples'),
         )
         for name, value, query, expected in cases:
@@ -481,3 +484,20 @@ class TestBatchedCopyBudgetCluster(ValkeyTimeSeriesClusterTestCase):
                 assert 'Internal error in fanout' not in str(err.value), name
             finally:
                 self.set_config(name, LIMIT_DEFAULTS[name])
+
+    def test_the_point_limit_bounds_steps_not_raw_samples(self):
+        """`ts-promql-max-points-per-timeseries` is the resolution limit: the points a
+        range query returns per series. A window of more raw samples than that is read,
+        on the shards as on one node; a query with more steps is refused before any read."""
+        self.setup_heavy(count=5, metric='few')
+        at = T0 + HEAVY_SAMPLES - 1
+        self.set_config(MAX_POINTS_CONFIG, '100')
+        try:
+            assert self.instant_query('count_over_time(few[1000s])', at).result
+            assert self.instant_query('few[1000s]', at).result
+            with pytest.raises(ResponseError, match='points'):
+                self.new_client_for_primary(0).execute_command(
+                    'TS.QUERYRANGE', 'count_over_time(few[10s])',
+                    'START', str((at - 200) * 1000), 'END', str(at * 1000), 'STEP', '1s')
+        finally:
+            self.set_config(MAX_POINTS_CONFIG, LIMIT_DEFAULTS[MAX_POINTS_CONFIG])
