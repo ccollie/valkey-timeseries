@@ -207,6 +207,35 @@ impl SelectorOutput {
     }
 }
 
+/// What a selector task's caller receives.
+///
+/// A cluster read finishes in the fan-out's completion, on whichever thread delivered the
+/// last shard's answer: for a reply under the deferred-decode threshold, or with the fan-out
+/// lane full, that is the main thread, holding the GIL. Turning the shards' answers into the
+/// selector's output there — a grid's per-series rollups over every raw span, a reduction's
+/// finalize, a range read's chunk copies — stalled every client for as long as it took. So
+/// the completion sends that work instead, and the caller runs it on its own thread
+/// ([`TaskAnswer::resolve`]): an evaluation thread, which is there for that work.
+enum TaskAnswer {
+    /// The result itself: a local read's, or a failure known before any work.
+    Ready(QueryResult<SelectorOutput>),
+    /// The work that makes the result, for the caller to run.
+    Deferred(Box<dyn FnOnce() -> QueryResult<SelectorOutput> + Send>),
+}
+
+impl TaskAnswer {
+    /// The result, computing it here if it was deferred.
+    fn resolve(self) -> QueryResult<SelectorOutput> {
+        match self {
+            TaskAnswer::Ready(result) => result,
+            TaskAnswer::Deferred(work) => work(),
+        }
+    }
+}
+
+/// Where a selector task's [`TaskAnswer`] goes.
+type Responder = mpsc::SyncSender<TaskAnswer>;
+
 /// A single batched request for a `SelectorBatchExecutor`.
 struct SelectorTask {
     kind: SelectorTaskKind,
@@ -220,7 +249,7 @@ struct SelectorTask {
     /// it, and the local execution path ignores it entirely.
     hash_tags: Arc<[String]>,
     /// responder receives the processed result (Ok) or the error (Err)
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 }
 
 /// An executor responsible for executing PromQL selectors as part of a keyspace batch operation.
@@ -496,7 +525,8 @@ impl SelectorBatchExecutor {
         }
 
         match wait_for_result(&result_rx, wait_limit) {
-            Ok(res) => res,
+            // On this thread, not the one that delivered it: see `TaskAnswer`.
+            Ok(answer) => answer.resolve(),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(QueryError::Timeout),
             Err(e) => {
                 let msg = format!("Failed to receive query response: {}", e);
@@ -604,11 +634,12 @@ fn warned(err: QueryError) -> QueryError {
     err
 }
 
-fn deliver_task_result(
-    responder: &mpsc::SyncSender<QueryResult<SelectorOutput>>,
-    result: QueryResult<SelectorOutput>,
-) {
-    if responder.send(result).is_err() {
+fn deliver_task_result(responder: &Responder, result: QueryResult<SelectorOutput>) {
+    deliver_answer(responder, TaskAnswer::Ready(result));
+}
+
+fn deliver_answer(responder: &Responder, answer: TaskAnswer) {
+    if responder.send(answer).is_err() {
         // Its caller stopped waiting (see `wait_for_result`), and has answered without it.
         log_debug("promql: selector result arrived after its caller stopped waiting");
     }
@@ -644,26 +675,43 @@ fn pushdown_failure(
 
 /// Start the cluster fan-out of `cmd` over the shards `hash_tags` route to.
 /// `answer` turns the command and its result into the selector's output once
-/// every shard has answered; a fan-out that cannot start answers its error at
-/// once. The one shape every `execute_cluster_*` shares.
+/// every shard has answered, run by the task's caller rather than the fan-out's
+/// completion (see [`TaskAnswer`]); a fan-out that cannot start answers its
+/// error at once. The one shape every `execute_cluster_*` shares.
 fn fan_out<C, F>(
     ctx: &Context,
     cmd: C,
     hash_tags: &[String],
     timeout: Duration,
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
     answer: F,
 ) where
     C: FanoutCommand,
     F: FnOnce(C, FanoutCommandResult) -> QueryResult<SelectorOutput> + Send + 'static,
 {
     let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
-    let on_done = responder.clone();
-    let handler = move |cmd: C, result: FanoutCommandResult| {
-        deliver_task_result(&on_done, answer(cmd, result));
-    };
+    let handler = deferring_handler(responder.clone(), answer);
     if let Err(e) = exec_command(ctx, cmd, targets, Instant::now(), timeout, handler) {
         deliver_task_result(&responder, Err(e.into()));
+    }
+}
+
+/// The fan-out's completion handler for `answer`: it sends `answer`, unrun, to the task's
+/// caller, which runs it on its own thread. The completion runs wherever the last shard's
+/// answer was delivered, often the main thread; see [`TaskAnswer`].
+fn deferring_handler<C, F>(
+    responder: Responder,
+    answer: F,
+) -> impl FnOnce(C, FanoutCommandResult) + Send + 'static
+where
+    C: Send + 'static,
+    F: FnOnce(C, FanoutCommandResult) -> QueryResult<SelectorOutput> + Send + 'static,
+{
+    move |cmd: C, result: FanoutCommandResult| {
+        deliver_answer(
+            &responder,
+            TaskAnswer::Deferred(Box::new(move || answer(cmd, result))),
+        );
     }
 }
 
@@ -671,7 +719,7 @@ fn execute_cluster_vector_selector(
     ctx: &Context,
     iqc: InstantVectorSelectorCommand,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     let timeout = calculate_timeout(&iqc.options);
     let cmd = InstantVectorSelectorFanoutCommand::new(InstantVectorParams::of(
@@ -704,7 +752,7 @@ fn execute_cluster_range_selector(
     ctx: &Context,
     rc: RangeSelectorCommand,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     let timeout = calculate_timeout(&rc.options);
     let cmd = RangeVectorSelectorFanoutCommand::new(
@@ -775,7 +823,7 @@ fn execute_cluster_aggregation(
     ctx: &Context,
     ac: AggregationSelectorCommand,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     let timeout = calculate_timeout(&ac.options);
     let vector = InstantVectorParams::of(ac.matchers, ac.timestamp, &ac.options);
@@ -838,7 +886,7 @@ fn execute_cluster_grid(
     ctx: &Context,
     gc: GridSelectorCommand,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     let timeout = calculate_timeout(&gc.options);
     let max_series = gc.options.max_selector_series;
@@ -919,7 +967,7 @@ fn execute_cluster_label_profile(
     ctx: &Context,
     pc: ProfileSelectorCommand,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     let timeout = calculate_timeout(&pc.options);
     let cmd = LabelProfileFanoutCommand::new(
@@ -945,7 +993,7 @@ fn execute_selector_task_cluster(
     ctx: &Context,
     kind: SelectorTaskKind,
     hash_tags: &[String],
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
 ) {
     // Every path below routes through the same scope, including the push-down
     // ones: a push-down that a peer cannot serve falls back to the ordinary
@@ -1091,7 +1139,7 @@ struct LocalRead {
     cursor: SeriesCursor,
     caller_user: Option<Arc<str>>,
     options: QueryOptions,
-    responder: mpsc::SyncSender<QueryResult<SelectorOutput>>,
+    responder: Responder,
     state: ReadState,
     /// Answered with an error, or lost to a panic: nothing more to do.
     failed: bool,
@@ -1603,6 +1651,45 @@ mod selector_batch_executor_tests {
             ..QueryOptions::default()
         };
         assert_eq!(calculate_timeout(&options), get_cluster_command_timeout());
+    }
+
+    /// A fan-out's completion runs on whichever thread delivered the last shard's answer,
+    /// often the main thread. The work that turns the answers into the selector's output
+    /// must not run there, but on the caller that waits for it.
+    #[test]
+    fn a_fanout_answer_is_computed_by_its_caller_not_its_completion() {
+        use super::{SelectorOutput, deferring_handler};
+        use std::sync::mpsc;
+
+        let (tx, rx) = mpsc::sync_channel(1);
+        let handler = deferring_handler(tx, |(): (), result| {
+            result.map_err(|e| crate::promql::QueryError::Execution(e.to_string()))?;
+            let name = std::thread::current().name().map(str::to_string);
+            Ok(SelectorOutput::Profile(name.filter(|n| n == "caller").map(
+                |_| crate::promql::engine::label_profile::LabelProfileBuilder::default().finish(),
+            )))
+        });
+        std::thread::Builder::new()
+            .name("completion".to_string())
+            .spawn(move || handler((), Ok(())))
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let answer = std::thread::Builder::new()
+            .name("caller".to_string())
+            .spawn(move || {
+                wait_for_result(&rx, Duration::from_secs(5))
+                    .unwrap()
+                    .resolve()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(
+            matches!(answer, Ok(SelectorOutput::Profile(Some(_)))),
+            "the answer was computed off the caller's thread"
+        );
     }
 
     #[test]
