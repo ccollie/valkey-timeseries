@@ -1977,6 +1977,10 @@ pub(super) fn parse_query_range_command_args(
     })
 }
 
+/// The lookback a query evaluates with: `look_back` as requested, the configured default
+/// for none or `0` (as in Prometheus), or — for a range query, `step` non-zero — the step
+/// when it is longer than the default, or always under `ts-promql-set-lookback-to-step`.
+/// An instant query passes a zero `step`.
 fn normalize_lookback(
     config: &PromqlConfig,
     look_back: Option<Duration>,
@@ -2051,8 +2055,11 @@ pub(super) fn parse_query_command_args(
                 evaluation_ts = parse_promql_time_arg(next, token.as_str())?;
             }
             CommandArgToken::LookbackDelta => {
-                lookback_delta = parse_duration_internal(args.next(), token.as_str())?;
-                check_requested_lookback(config, lookback_delta, Duration::ZERO)?;
+                let requested = parse_duration_internal(args.next(), token.as_str())?;
+                check_requested_lookback(config, requested, Duration::ZERO)?;
+                // `0` is the default, as for `TS.QUERYRANGE` and in Prometheus: taken as
+                // written, it made every series stale and every result empty.
+                lookback_delta = normalize_lookback(config, Some(requested), Duration::ZERO);
             }
             CommandArgToken::Timeout => {
                 let timeout = parse_duration_internal(args.next(), token.as_str())?;
@@ -2228,6 +2235,27 @@ mod tests {
             PromqlConfig::default().max_lookback,
             Duration::from_millis(crate::config::PROMQL_MAX_LOOKBACK_DEFAULT_MS as u64)
         );
+    }
+
+    /// `LOOKBACK_DELTA 0` means the configured default for both commands, as in Prometheus.
+    /// Taken as written, a zero lookback made every series stale: `TS.QUERY` answered empty.
+    #[test]
+    fn a_zero_lookback_is_the_default() {
+        let config = lookback_config(Duration::from_secs(3600));
+        let default = config.lookback_delta;
+        // An instant query (no step), and a range query whose step is short.
+        for step in [Duration::ZERO, Duration::from_secs(15)] {
+            assert_eq!(
+                normalize_lookback(&config, Some(Duration::ZERO), step),
+                default
+            );
+            assert_eq!(normalize_lookback(&config, None, step), default);
+            let two_minutes = Duration::from_secs(120);
+            assert_eq!(
+                normalize_lookback(&config, Some(two_minutes), step),
+                two_minutes
+            );
+        }
     }
 
     #[test]

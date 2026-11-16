@@ -795,6 +795,23 @@ class TestPromqlConfigIsLive(ValkeyTimeSeriesTestCaseBase):
             self._set("ts-promql-lookback-delta", "300000")
         assert found()
 
+    def test_a_zero_lookback_means_the_default(self):
+        """`LOOKBACK_DELTA 0` is the configured default for both commands, as in Prometheus;
+        taken as written it made every series stale. A zero default is refused outright."""
+        self.client.execute_command("TS.ADD", "zero:lb", self.BASE, 1.0, "LABELS", "__name__", "zlb")
+        at = self.BASE + 10000
+        result = self.client.execute_command("TS.QUERY", "zlb", "TIME", at, "LOOKBACK_DELTA", 0)
+        assert QueryResult.from_raw(result).result, "TS.QUERY with LOOKBACK_DELTA 0"
+        result = self.client.execute_command("TS.QUERYRANGE", "zlb", "START", at, "END", at,
+                                             "STEP", "1s", "LOOKBACK_DELTA", 0)
+        assert QueryResult.from_raw(result).result, "TS.QUERYRANGE with LOOKBACK_DELTA 0"
+
+        with pytest.raises(ResponseError):
+            self.client.execute_command("CONFIG", "SET", "ts.ts-promql-lookback-delta", 0)
+        # Refused, so the default is unchanged and still finds the sample.
+        result = self.client.execute_command("TS.QUERY", "zlb", "TIME", at)
+        assert QueryResult.from_raw(result).result
+
     def test_experimental_functions_are_off_by_default_and_can_be_enabled(self):
         name = "ts.ts-promql-enable-experimental-functions"
         assert self.client.execute_command("CONFIG", "GET", name)[1] == b"no"
