@@ -659,6 +659,37 @@ class TestFanoutStatsCME(ValkeyTimeSeriesClusterTestCaseDebugMode):
         reply = coordinator.execute_command('TS.MRANGE', '-', '+', 'FILTER', 'env=prod')
         assert len(reply) == 3 * self.CLUSTER_SIZE
 
+    def test_a_promql_query_whose_client_disconnects_ends_its_fanout(self):
+        """A PromQL query's reads are fan-outs the query waits on, not the client's own: a
+        client that hangs up while one waits on a sleeping peer still ends it at once, and the
+        peer is sent a cancel. The query counts as abandoned, not failed."""
+        self.populate()
+        self.reset_all()
+        coordinator, peer = self.primaries()[:2]
+
+        def ended_before_the_peer_answers():
+            stats = debug_metrics(coordinator, 'fanout')
+            assert stats['fanout_client_disconnects_total'] == 1
+            assert stats['fanout_cancels_sent_total'] == 1
+            assert stats['fanout_inflight'] == 0
+            assert coordinator.execute_command('TS._DEBUG', 'INFLIGHT') == []
+
+        before = coordinator.info('ts_promql')
+        self.hang_up_while_a_peer_sleeps(
+            'TS.QUERY', '{env="prod"}', while_asleep=ended_before_the_peer_answers)
+
+        def abandoned():
+            info = coordinator.info('ts_promql')
+            return (info['ts_promql_queries_cancelled_total']
+                    == before['ts_promql_queries_cancelled_total'] + 1)
+        wait_for_true(abandoned)
+        after = coordinator.info('ts_promql')
+        assert after['ts_promql_queries_failed_total'] == before['ts_promql_queries_failed_total']
+        wait_for_true(lambda: debug_metrics(peer, 'fanout')['fanout_cancels_received_total'] == 1)
+        # The coordinator still answers the next query.
+        reply = coordinator.execute_command('TS.QUERY', 'count({env="prod"})')
+        assert reply
+
     def test_a_write_whose_client_disconnects_runs_to_the_end(self):
         """TS.MDEL is not ended by its client hanging up: the sleeping peer still deletes."""
         self.populate()

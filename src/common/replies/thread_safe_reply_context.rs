@@ -39,7 +39,7 @@ unsafe extern "C" fn on_disconnect(
     ctx: *mut raw::RedisModuleCtx,
     bc: *mut raw::RedisModuleBlockedClient,
 ) {
-    mark_disconnected(bc as u64);
+    stop_all(mark_disconnected(bc as u64), &Context::new(ctx));
     let hook = lock(&DISCONNECTED)
         .get_mut(&(bc as usize))
         .and_then(|watched| {

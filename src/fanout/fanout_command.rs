@@ -276,7 +276,11 @@ const CLIENT_GONE: &str = "the client disconnected";
 ///
 /// Only for an operation that may be abandoned ([`FanoutCommand::cancellable`]): a write
 /// runs to the end on every shard, as it does when it times out.
-pub struct FanoutCancel(Box<dyn FnOnce(&Context) + Send>);
+pub struct FanoutCancel {
+    hook: Box<dyn FnOnce(&Context) + Send>,
+    /// Whether the fan-out is still running: once it completes the hook has nothing to do.
+    pending: Box<dyn Fn() -> bool + Send>,
+}
 
 impl FanoutCancel {
     fn new<OP, F>(state: &Arc<FanoutState<OP, F>>, rpc_id: Option<u64>) -> Option<Self>
@@ -290,23 +294,40 @@ impl FanoutCancel {
         // Weak: whoever holds this (the blocked client's disconnect hook) is itself held by
         // the completion callback, which the state owns until the fan-out completes.
         let state = Arc::downgrade(state);
-        Some(Self(Box::new(move |ctx: &Context| {
-            let Some(state) = state.upgrade() else {
-                return;
-            };
-            if state.client_gone()
-                && let Some(id) = rpc_id
-            {
-                abandon_inflight_request(ctx, id);
-            }
-        })))
+        let watched = state.clone();
+        Some(Self {
+            hook: Box::new(move |ctx: &Context| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                if state.client_gone()
+                    && let Some(id) = rpc_id
+                {
+                    abandon_inflight_request(ctx, id);
+                }
+            }),
+            pending: Box::new(move || watched.upgrade().is_some_and(|s| !s.is_completed())),
+        })
     }
 
     /// The hook to run when the client disconnects: on the main thread, under the GIL (it may
     /// tell the RPC layer to abandon the remote shares). A fan-out that has already completed
     /// is left alone.
     pub(crate) fn into_hook(self) -> Box<dyn FnOnce(&Context) + Send> {
-        self.0
+        self.hook
+    }
+}
+
+/// For work that waits on a fan-out for a blocked client it did not start the fan-out for
+/// (a PromQL query's reads): the client's disconnect completes the fan-out and tells the
+/// remote shares to stop, as it does for a fan-out command's own client.
+impl crate::common::replies::DisconnectAction for FanoutCancel {
+    fn is_pending(&self) -> bool {
+        (self.pending)()
+    }
+
+    fn run(self: Box<Self>, ctx: &Context) {
+        (self.hook)(ctx);
     }
 }
 
