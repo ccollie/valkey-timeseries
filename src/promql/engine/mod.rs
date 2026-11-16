@@ -62,8 +62,13 @@ pub struct QueryOptions {
     /// The most series one selector read may return, summed over every shard
     /// (`ts-promql-max-series-per-selector`): what bounds the query's input. 0 = unlimited.
     pub max_selector_series: usize,
-    /// The maximum number of data points to return per series for each series. This is to help guard against
-    /// OOMs and accidental self-DOS, especially in cluster mode.
+    /// The most points a range query may return per series (`ts-promql-max-points-per-timeseries`,
+    /// Prometheus' resolution limit): checked once, on the step count, before anything is read.
+    /// `None` = only the `MAX_GRID_STEPS` ceiling.
+    ///
+    /// Not applied to the raw samples a read examines: that capped `rate(x[1d])` on 1 s data
+    /// (86,400 samples a window) at any setting a dashboard's resolution needs. The sample
+    /// budget (`max_samples`) bounds what reads load.
     pub max_points_per_series: Option<usize>,
     /// The maximum number of samples this query may load across all its reads,
     /// as a running total (`ts-promql-max-samples-per-query`). 0 = unlimited.

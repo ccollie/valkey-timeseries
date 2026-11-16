@@ -203,12 +203,11 @@ impl QueryReader for MemorySeriesQuerier {
                 EvalLabels::interned(&ts.labels)
             })?
         };
-        let max_points = options.max_points_per_series;
         let series = snapshots
             .into_iter()
             .iter_into_par_rayon()
             .map(|(labels, snapshot)| {
-                decode_snapshot(&budget, &snapshot, max_points)
+                decode_snapshot(&budget, &snapshot, None)
                     .map(|samples| samples.map(|samples| RangeSample { labels, samples }))
             })
             .into_fallible()
@@ -423,12 +422,14 @@ mod tests {
             .unwrap_err();
         assert!(both.to_string().contains("2 > 1"), "{both}");
 
+        // The per-series point limit bounds a range query's output steps, checked before
+        // any read; a read itself may return more raw samples than that.
         let points = QueryOptions {
             max_points_per_series: Some(5),
             ..options(0)
         };
-        let err = querier.query_range(&m, 1_000, 1_009, points).unwrap_err();
-        assert!(err.to_string().contains("max points per series"), "{err}");
+        let read = querier.query_range(&m, 1_000, 1_009, points).unwrap();
+        assert!(read.iter().any(|s| s.samples.len() > 5), "{read:?}");
 
         let samples = QueryOptions {
             max_samples: 15,

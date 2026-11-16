@@ -707,6 +707,56 @@ mod tests {
         }
     }
 
+    /// `max_points_per_series` (`ts-promql-max-points-per-timeseries`) is Prometheus'
+    /// resolution limit: points a range query returns per series, checked on its steps. It
+    /// used to cap the raw samples each read examined too, so a limit sized for a dashboard
+    /// refused `rate(m[1d])` on 1 s data however few steps the query had.
+    #[test]
+    fn the_point_limit_bounds_output_steps_not_raw_samples() {
+        let querier = MemorySeriesQuerier::new();
+        let labels = crate::labels::Labels::new(vec![Label {
+            name: "__name__".to_string(),
+            value: "dense".to_string(),
+        }]);
+        // One sample a second for 200 s.
+        for i in 0..200 {
+            querier.add_sample(&labels, Sample::new(1_000_000 + i * 1_000, i as f64));
+        }
+        let tsdb = PromqlQuerier::with_query_reader(Arc::new(querier));
+        let opts = QueryOptions {
+            max_points_per_series: Some(10),
+            ..QueryOptions::default()
+        };
+        let at = |secs| UNIX_EPOCH + Duration::from_secs(secs);
+
+        // 150 raw samples per window, one output point: within a limit of 10.
+        let rate = tsdb.eval_query("rate(dense[150s])", Some(at(1_199)), &opts);
+        assert!(
+            matches!(rate, Ok(QueryValue::Vector(ref v)) if v.len() == 1),
+            "{rate:?}"
+        );
+        let range = tsdb
+            .eval_query_range(
+                "rate(dense[150s])",
+                at(1_190)..=at(1_199),
+                Duration::from_secs(1),
+                &opts,
+            )
+            .unwrap();
+        assert_eq!(range[0].samples.len(), 10);
+
+        // Eleven steps: past it.
+        let err = tsdb
+            .eval_query_range(
+                "rate(dense[150s])",
+                at(1_189)..=at(1_199),
+                Duration::from_secs(1),
+                &opts,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("points"), "{err}");
+    }
+
     fn instant_vector(tsdb: &PromqlQuerier, query: &str, secs: u64) -> Vec<InstantSample> {
         let time = UNIX_EPOCH + Duration::from_secs(secs);
         match tsdb.eval_query(query, Some(time), &QueryOptions::default()) {
