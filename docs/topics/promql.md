@@ -587,6 +587,16 @@ unrun, and a read past it stops before its next batch.
 `INFO ts_promql` shows the pool's state as `ts_promql_queries_running`,
 `ts_promql_queries_queued`, the counters `ts_promql_queries_rejected_total` and
 `ts_promql_queries_cancelled_total`, the queries abandoned because their client disconnected.
+Every other query a worker takes up ends in `ts_promql_queries_succeeded_total` or
+`ts_promql_queries_failed_total`; a refusal for memory on arrival counts as failed too. A failure
+is also counted under its reason when it has one of these: `ts_promql_queries_invalid_total`
+(the text did not parse, or was refused before evaluation), `_timeout_total`,
+`_samples_limit_total` (`ts-promql-max-samples-per-query`), `_series_limit_total`
+(`ts-promql-max-response-series` or `ts-promql-max-series-per-selector`), `_reply_limit_total`
+(`ts-promql-max-reply-bytes`) and `_overloaded_total` (`ts-promql-max-memory-percent` or
+`ts-promql-max-samples-in-flight`). The rest of the failures are errors in the query itself.
+Queue wait, parse time and evaluation time are histograms in the `promql` section of
+[`TS._DEBUG METRICS`](../commands/ts._debug.md#promql).
 `ts_promql_samples_in_flight` is what running queries, and the shard reads
 this node serves for other nodes, have charged against `ts-promql-max-samples-in-flight`: their
 running totals, which include samples already dropped, not the samples resident now.

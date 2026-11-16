@@ -177,7 +177,7 @@ only each shard's per-group partials. Give every key a distinct label set. See
 
 | Condition | Error |
 | --- | --- |
-| The expression does not parse | `TSDB: the query string could not be parsed or is otherwise invalid.` |
+| The expression does not parse | `TSDB: the query string could not be parsed: <reason>`, where `<reason>` is the parser's message, such as `unclosed left parenthesis` or `unknown function with name 'f'` |
 | The expression is longer than `ts-promql-max-query-len` | `TSDB: query too long` |
 | An unknown option | `TSDB: invalid query argument '<arg>'` |
 | `TIME` cannot be parsed | `TSDB: invalid TIME timestamp` |
@@ -426,7 +426,7 @@ shards — series held elsewhere in the cluster do not contribute.
 
 ```bash
 127.0.0.1:6379> TS.QUERY 'sum('
-(error) TSDB: the query string could not be parsed or is otherwise invalid.
+(error) TSDB: the query string could not be parsed: unclosed left parenthesis
 
 127.0.0.1:6379> MULTI
 OK

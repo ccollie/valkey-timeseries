@@ -208,7 +208,7 @@ only each shard's per-group partials. Give every key a distinct label set. See
 | The grid has more than 1,000,000 points | `execution error: PromQL argument error: too many points for the given step=..., start=... and end=...: <n>; cannot exceed 1000000` |
 | All subqueries together would evaluate more than `ts-promql-max-subquery-steps` steps | `execution error: PromQL argument error: subqueries would evaluate more than <limit> steps (ts-promql-max-subquery-steps); ...` |
 | The expression is a range vector or a string | `execution error: range vectors not supported in range query evaluation` (or `string expressions ...`) |
-| The expression does not parse | `TSDB: the query string could not be parsed or is otherwise invalid.` |
+| The expression does not parse | `TSDB: the query string could not be parsed: <reason>`, where `<reason>` is the parser's message, such as `unclosed left parenthesis` or `unknown function with name 'f'` |
 | The expression is longer than `ts-promql-max-query-len` | `TSDB: query too long` |
 | An unknown option | `ERR invalid argument '<arg>'` |
 | `HASHTAG` is missing or has an empty tag | `TSDB: missing HASHTAG argument` |
