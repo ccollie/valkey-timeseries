@@ -404,6 +404,15 @@ The following differences are intentional or are limitations of the current impl
   stricter rule would make the same query fail or succeed depending on the data and the
   push-down settings. A comparison over an ambiguous *matched* key errors as in
   Prometheus, even where the comparison would have filtered the pair out.
+- **There are no staleness markers.** Prometheus writes a marker when a scrape target goes
+  away or a series stops being exported, and a series disappears from query results at that
+  marker. Valkey TimeSeries stores only the samples it is sent, so a series that stops
+  receiving samples stays visible until its last sample is older than the lookback
+  (`LOOKBACK_DELTA`, `ts-promql-lookback-delta`, 5m by default). `absent()`, an alert on a
+  series' disappearance, or a dashboard panel that should go empty notices up to one lookback
+  later than in Prometheus. A shorter `LOOKBACK_DELTA` narrows the gap, at the cost of series
+  sampled less often than the lookback dropping out between samples. A sample whose value is
+  Prometheus' stale-marker NaN is an ordinary NaN here.
 - **`label_replace` and `label_join` cap the labels they write.** A value they build may
   be at most 16 KiB, and a write may not grow a series' labels (names and values together)
   past 64 KiB; either refuses the query with an `execution error`. Prometheus has no such
