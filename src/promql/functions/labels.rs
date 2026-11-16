@@ -89,21 +89,104 @@ fn with_anchored_regex<T>(regex_src: &str, f: impl FnOnce(&Regex) -> T) -> EvalR
     })
 }
 
+/// The longest value `label_replace` or `label_join` may write into a label.
+///
+/// Prometheus has no such limit. Without one, each nesting level of these
+/// functions can double a value (`label_join(v, "a", "", "a", "a")`) or
+/// multiply it (a replacement of `$1` repeated), so a sub-KiB query over
+/// `vector(1)` asked for terabytes: 26 levels of `label_join` took the server
+/// to 1 GB in 0.4 s, and an allocation that fails aborts the process, which no
+/// panic guard can catch. A value is refused while it is being built, before
+/// the memory is spent.
+pub(in crate::promql) const MAX_GENERATED_LABEL_VALUE_BYTES: usize = 16 * 1024;
+
+/// The largest label set, names and values together, a `label_replace` or
+/// `label_join` write may grow a series to. The per-value cap alone still let
+/// a deep query add hundreds of maximal labels to every series.
+///
+/// Only growth is refused: a stored series whose labels are already larger
+/// can still be rewritten so long as the write does not make them larger.
+pub(in crate::promql) const MAX_GENERATED_LABEL_SET_BYTES: usize = 64 * 1024;
+
+fn label_value_too_long(function: &str, dst_label: &str) -> EvaluationError {
+    EvaluationError::execution(format!(
+        "{function}(): the value of label \"{dst_label}\" would be longer than \
+         {MAX_GENERATED_LABEL_VALUE_BYTES} bytes"
+    ))
+}
+
 #[derive(Copy, Clone)]
 pub(in crate::promql) struct LabelReplaceFunction;
 
 /// Write `value` into `sample`'s `dst_label`, or remove the label when `value`
 /// is empty. A sample whose `__name__` is written is named again, so it no
 /// longer owes the name drop a function before it left pending.
-fn write_label(sample: &mut EvalSample, dst_label: &str, value: String) {
+///
+/// Refused when the write would grow the sample's labels past
+/// [`MAX_GENERATED_LABEL_SET_BYTES`]; `value` itself was bounded by its builder.
+fn write_label(
+    sample: &mut EvalSample,
+    function: &str,
+    dst_label: &str,
+    value: String,
+) -> EvalResult<()> {
     if value.is_empty() {
         sample.labels.remove(dst_label);
     } else {
+        let current: usize = sample
+            .labels
+            .iter()
+            .map(|l| l.name.len() + l.value.len())
+            .sum();
+        let replaced = sample
+            .labels
+            .get(dst_label)
+            .map_or(0, |old| dst_label.len() + old.len());
+        let grown = current - replaced + dst_label.len() + value.len();
+        if grown > current && grown > MAX_GENERATED_LABEL_SET_BYTES {
+            return Err(EvaluationError::execution(format!(
+                "{function}(): writing label \"{dst_label}\" would make a series' labels \
+                 longer than {MAX_GENERATED_LABEL_SET_BYTES} bytes"
+            )));
+        }
         sample.labels.set(dst_label, value);
     }
     if dst_label == METRIC_NAME {
         sample.drop_name = false;
     }
+    Ok(())
+}
+
+/// [`regex::Captures::expand`], refused once the result would pass
+/// [`MAX_GENERATED_LABEL_VALUE_BYTES`]: each capture is checked before it is
+/// appended, so at most the literal text of `replacement` lands past the limit.
+fn expand_bounded(
+    regex: &Regex,
+    captures: &regex::Captures<'_>,
+    replacement: &str,
+    dst_label: &str,
+) -> EvalResult<String> {
+    let mut expanded = String::new();
+    let mut too_long = false;
+    regex_automata::util::interpolate::string(
+        replacement,
+        |index, dst| {
+            let Some(group) = captures.get(index) else {
+                return;
+            };
+            if too_long || dst.len() + group.len() > MAX_GENERATED_LABEL_VALUE_BYTES {
+                too_long = true;
+                return;
+            }
+            dst.push_str(group.as_str());
+        },
+        |name| regex.capture_names().position(|n| n == Some(name)),
+        &mut expanded,
+    );
+    if too_long || expanded.len() > MAX_GENERATED_LABEL_VALUE_BYTES {
+        return Err(label_value_too_long("label_replace", dst_label));
+    }
+    Ok(expanded)
 }
 
 fn apply_label_replace_to_samples(
@@ -120,12 +203,12 @@ fn apply_label_replace_to_samples(
             let src_value = sample.labels.get(src_label).unwrap_or_default();
 
             if let Some(captures) = regex.captures(src_value) {
-                let mut replaced = String::new();
-                captures.expand(replacement, &mut replaced);
-                write_label(sample, dst_label, replaced);
+                let replaced = expand_bounded(regex, &captures, replacement, dst_label)?;
+                write_label(sample, "label_replace", dst_label, replaced)?;
             }
         }
-    })?;
+        EvalResult::Ok(())
+    })??;
 
     Ok(ExprResult::InstantVector(samples))
 }
@@ -217,15 +300,17 @@ impl PromQLFunction for LabelJoinFunction {
         for sample in &mut samples {
             let mut joined = String::new();
             for (index, src_label) in src_labels.iter().enumerate() {
-                if index > 0 {
-                    joined.push_str(&separator);
+                let value = sample.labels.get(src_label).unwrap_or_default();
+                let separator = if index > 0 { separator.as_str() } else { "" };
+                // Checked before growing: a nested join doubles the value per level.
+                if joined.len() + separator.len() + value.len() > MAX_GENERATED_LABEL_VALUE_BYTES {
+                    return Err(label_value_too_long("label_join", &dst_label));
                 }
-                if let Some(value) = sample.labels.get(src_label) {
-                    joined.push_str(value);
-                }
+                joined.push_str(separator);
+                joined.push_str(value);
             }
 
-            write_label(sample, &dst_label, joined);
+            write_label(sample, "label_join", &dst_label, joined)?;
         }
 
         ensure_unique_labelsets(&samples)?;
@@ -293,6 +378,183 @@ mod tests {
         assert!(with_anchored_regex(&long, |regex| regex.is_match("a")).unwrap());
         assert!(cached_patterns().is_empty());
         assert!(with_anchored_regex("(", |_| ()).is_err());
+    }
+
+    fn sample(labels: &[(&str, &str)]) -> EvalSample {
+        EvalSample {
+            timestamp_ms: 1000,
+            value: 1.0,
+            labels: crate::promql::exec::types::EvalLabels::from_pairs(labels),
+            drop_name: false,
+        }
+    }
+
+    fn call(
+        function: impl PromQLFunction,
+        input: EvalSample,
+        args: &[&str],
+    ) -> EvalResult<Vec<EvalSample>> {
+        let mut all = vec![PromQLArg::InstantVector(vec![input])];
+        all.extend(args.iter().map(|&arg| PromQLArg::from(arg)));
+        match function.apply_args(all, &EvalContext::at(1000))? {
+            ExprResult::InstantVector(samples) => Ok(samples),
+            other => panic!("expected an instant vector, got {other:?}"),
+        }
+    }
+
+    fn label_join(input: EvalSample, args: &[&str]) -> EvalResult<Vec<EvalSample>> {
+        call(LabelJoinFunction, input, args)
+    }
+
+    fn label_replace(input: EvalSample, args: &[&str]) -> EvalResult<Vec<EvalSample>> {
+        call(LabelReplaceFunction, input, args)
+    }
+
+    fn assert_refused(result: EvalResult<Vec<EvalSample>>, what: &str) {
+        let err = result.expect_err("an oversized label must be refused");
+        assert!(err.to_string().contains(what), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn label_join_refuses_a_value_past_the_limit() {
+        let half = "x".repeat(MAX_GENERATED_LABEL_VALUE_BYTES / 2);
+        let at_limit = label_join(sample(&[("a", &half)]), &["b", "", "a", "a"]).unwrap();
+        assert_eq!(
+            at_limit[0].labels.get("b").map(str::len),
+            Some(MAX_GENERATED_LABEL_VALUE_BYTES)
+        );
+
+        // One separator byte more than fits.
+        assert_refused(
+            label_join(sample(&[("a", &half)]), &["b", "-", "a", "a"]),
+            "label_join(): the value of label \"b\" would be longer than",
+        );
+    }
+
+    #[test]
+    fn label_replace_refuses_a_value_past_the_limit() {
+        let half = "x".repeat(MAX_GENERATED_LABEL_VALUE_BYTES / 2);
+        let at_limit = label_replace(sample(&[("a", &half)]), &["b", "$1$1", "a", "(.*)"]).unwrap();
+        assert_eq!(
+            at_limit[0].labels.get("b").map(str::len),
+            Some(MAX_GENERATED_LABEL_VALUE_BYTES)
+        );
+
+        // Exactly at it, then past it through a capture and through trailing literal text.
+        label_replace(sample(&[("a", &half)]), &["b", "${1}$1", "a", "(.*)"]).unwrap();
+        for replacement in ["$1$1$1", "$1${1}-"] {
+            assert_refused(
+                label_replace(sample(&[("a", &half)]), &["b", replacement, "a", "(.*)"]),
+                "label_replace(): the value of label \"b\" would be longer than",
+            );
+        }
+    }
+
+    /// The bounded expansion must keep `Captures::expand`'s syntax exactly.
+    #[test]
+    fn label_replace_expands_like_the_regex_crate() {
+        let pattern = "(?P<name>[a-z]+)-(?P<num>[0-9]+)\\.(.*)";
+        let haystack = "host-42.example";
+        let regex = Regex::new(&format!("^(?s:{pattern})$")).unwrap();
+        let captures = regex.captures(haystack).unwrap();
+        for replacement in [
+            "$1:$3",
+            "${name}_$num",
+            "$name$num",
+            "$name_$num",
+            "$$1",
+            "$9-x",
+            "${missing}",
+            "${3}x$",
+            "plain",
+        ] {
+            let mut reference = String::new();
+            captures.expand(replacement, &mut reference);
+            let result = label_replace(
+                sample(&[("src", haystack)]),
+                &["dst", replacement, "src", pattern],
+            )
+            .unwrap();
+            let got = result[0].labels.get("dst").unwrap_or_default();
+            assert_eq!(got, reference, "expansion of {replacement:?}");
+        }
+    }
+
+    fn label_bytes(sample: &EvalSample) -> usize {
+        sample
+            .labels
+            .iter()
+            .map(|l| l.name.len() + l.value.len())
+            .sum()
+    }
+
+    #[test]
+    fn label_writes_may_not_grow_a_label_set_past_the_limit() {
+        let value = "v".repeat(MAX_GENERATED_LABEL_VALUE_BYTES - 1);
+        let mut input = sample(&[("src", &value)]);
+        // Copies of `src` under new names until the next one would not fit.
+        for n in 0.. {
+            let dst = format!("l{n}");
+            match label_replace(input.clone(), &[&dst, "$1", "src", "(.*)"]) {
+                Ok(mut out) => input = out.pop().unwrap(),
+                Err(err) => {
+                    assert!(
+                        err.to_string().contains(&format!(
+                            "label_replace(): writing label \"{dst}\" would make a series' \
+                             labels longer than"
+                        )),
+                        "unexpected error: {err}"
+                    );
+                    assert!(
+                        label_bytes(&input) + dst.len() + value.len()
+                            > MAX_GENERATED_LABEL_SET_BYTES
+                    );
+                    break;
+                }
+            }
+        }
+        assert!(label_bytes(&input) <= MAX_GENERATED_LABEL_SET_BYTES);
+    }
+
+    /// A stored series' labels may already be larger than the limit: such a set can be
+    /// rewritten in place or shrunk, only not grown.
+    #[test]
+    fn an_oversized_stored_label_set_may_be_rewritten_but_not_grown() {
+        let value = "v".repeat(MAX_GENERATED_LABEL_VALUE_BYTES);
+        let pairs: Vec<(String, String)> =
+            (0..5).map(|n| (format!("l{n}"), value.clone())).collect();
+        let pairs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        let stored = sample(&pairs);
+        assert!(label_bytes(&stored) > MAX_GENERATED_LABEL_SET_BYTES);
+
+        let shrunk = label_replace(stored.clone(), &["l0", "short", "l1", ".*"]).unwrap();
+        assert_eq!(shrunk[0].labels.get("l0"), Some("short"));
+        let same = label_join(stored.clone(), &["l0", "", "l1"]).unwrap();
+        assert_eq!(same[0].labels.get("l0"), Some(value.as_str()));
+
+        assert_refused(
+            label_replace(stored, &["extra", "x", "l1", ".*"]),
+            "would make a series' labels longer than",
+        );
+    }
+
+    /// The attack the limits exist for: no data, under 1 KiB of query text.
+    #[test]
+    fn nested_label_join_is_refused_before_it_grows() {
+        let mut input = sample(&[("a", "xxxxxxxx")]);
+        let started = Instant::now();
+        let err = loop {
+            match label_join(input.clone(), &["a", "", "a", "a"]) {
+                Ok(mut out) => input = out.pop().unwrap(),
+                Err(err) => break err,
+            }
+        };
+        assert!(err.to_string().contains("label_join()"), "{err}");
+        assert!(input.labels.get("a").unwrap().len() <= MAX_GENERATED_LABEL_VALUE_BYTES);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
