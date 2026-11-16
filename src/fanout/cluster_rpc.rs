@@ -689,6 +689,13 @@ fn process_request_message(
         return;
     }
 
+    // Taken before the check below, so that a change of slot ownership after it, while
+    // the read runs, fails the read instead of answering for slots in part (a write
+    // runs to the end regardless: see `FanoutCommand::cancellable`).
+    let generation = operation
+        .cancellable
+        .then(crate::fanout::slot_ownership_generation);
+
     // Reject the request if the cluster topology changed between the requester
     // generating it and us receiving it. This runs on the worker thread (not the
     // cluster-message callback), so the potential `CLUSTER NODES` refresh stays
@@ -713,7 +720,15 @@ fn process_request_message(
 
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
 
-    match (operation.run)(&fanout_ctx, request_buf, &mut dest) {
+    let ran =
+        (operation.run)(&fanout_ctx, request_buf, &mut dest).and_then(|()| match generation {
+            Some(generation) if crate::fanout::ownership_changed_since(generation) => {
+                metrics::FANOUT_REJECTED_CLUSTER_MAP_MISMATCH.incr();
+                Err(FanoutError::cluster_map_mismatch())
+            }
+            _ => Ok(()),
+        });
+    match ran {
         Ok(()) => {
             // Cancelled, or finished after the deadline: either way nobody is
             // waiting, so don't take the GIL to send what would be ignored.

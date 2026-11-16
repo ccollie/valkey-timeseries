@@ -126,6 +126,37 @@ pub fn mark_cluster_map_stale() {
     CLUSTER_MAP_STALE.store(true, Ordering::Release);
 }
 
+/// Changes to which slots this node serves reads for, counted: see
+/// [`slot_ownership_generation`].
+static SLOT_OWNERSHIP_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Record that the slots this node serves reads for just changed — an atomic slot migration
+/// completed or aborted here — and mark the cluster map stale with it.
+///
+/// Called on the main thread, inside the same GIL hold as the change itself (the source's
+/// deletion of the exported keys, the destination's publication of the imported series), so a
+/// read that saw any part of the change sees the new generation afterwards.
+pub fn slot_ownership_changed() {
+    SLOT_OWNERSHIP_GENERATION.fetch_add(1, Ordering::AcqRel);
+    mark_cluster_map_stale();
+}
+
+/// How many times this node's slot ownership has changed. A fan-out read takes it before it
+/// starts and compares it once it has read everything ([`ownership_changed_since`]): the
+/// fingerprint check catches a change that came before a request arrived, but a read that
+/// releases the lock between batches can straddle one, and would then answer for a slot it
+/// only partly read — or, on the destination, for none of a slot the source no longer holds.
+pub(crate) fn slot_ownership_generation() -> u64 {
+    SLOT_OWNERSHIP_GENERATION.load(Ordering::Acquire)
+}
+
+/// Whether slot ownership changed since `generation` was taken: the read is then refused as
+/// a topology change (`ErrorKind::ClusterMapMismatch`), which the requester retries, rather
+/// than answered with a partial view.
+pub(crate) fn ownership_changed_since(generation: u64) -> bool {
+    slot_ownership_generation() != generation
+}
+
 fn take_cluster_map_stale() -> bool {
     CLUSTER_MAP_STALE.swap(false, Ordering::AcqRel)
 }

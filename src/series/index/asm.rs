@@ -19,7 +19,7 @@ use crate::common::metrics::asm as metrics;
 use crate::common::module_options::{HANDLE_ATOMIC_SLOT_MIGRATION, declare_module_options};
 use crate::common::sync::{lock, write_lock};
 use crate::fanout::NUM_SLOTS;
-use crate::fanout::{is_clustered, mark_cluster_map_stale};
+use crate::fanout::{is_clustered, mark_cluster_map_stale, slot_ownership_changed};
 use crate::series::index::TIMESERIES_INDEX;
 use crate::series::index::postings::Postings;
 use crate::series::tasks::optimize_index_fully;
@@ -247,15 +247,15 @@ unsafe extern "C" fn on_atomic_slot_migration_event(
             raise_event(AtomicSlotMigrationEvent::ImportStarted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_COMPLETED => {
-            mark_cluster_map_stale();
+            slot_ownership_changed();
             raise_event(AtomicSlotMigrationEvent::ImportCompleted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_ABORTED => {
-            mark_cluster_map_stale();
+            slot_ownership_changed();
             raise_event(AtomicSlotMigrationEvent::ImportAborted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_EXPORT_COMPLETED => {
-            mark_cluster_map_stale();
+            slot_ownership_changed();
             raise_event(AtomicSlotMigrationEvent::ExportCompleted, data);
         }
         _ => {}

@@ -12,6 +12,7 @@ use crate::fanout::workers::PEER_REQUEST_EXECUTOR;
 use crate::fanout::{
     FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_target, get_fanout_targets,
 };
+use crate::fanout::{ownership_changed_since, slot_ownership_generation};
 use metered::Counter;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,6 +170,9 @@ where
 
     let op = command;
     let deadline = started + timeout;
+    // Before the targets: an ownership change after this point fails the local share
+    // rather than letting it answer for slots the map it was routed by no longer gives it.
+    let generation = slot_ownership_generation();
     let (targets, cluster_fingerprint) = get_fanout_targets(ctx, targets);
     metrics::FANOUT_OPERATIONS.incr();
     metrics::FANOUT_TARGETS.incr_by(targets.len() as u64);
@@ -197,13 +201,22 @@ where
         metrics::FANOUT_LOCAL_ONLY.incr();
         let state = Arc::new(FanoutState::new(op, outstanding, f, started));
         let cancel = FanoutCancel::new(&state, None);
-        return spawn_local_request(state, req, local, fanout_user, db, deadline, None)
-            .map(|()| cancel)
-            .map_err(|_| {
-                metrics::FANOUT_LOCAL_SHARE_BUSY.incr();
-                metrics::FANOUT_DURATION.observe_duration(started.elapsed());
-                FanoutError::busy()
-            });
+        return spawn_local_request(
+            state,
+            req,
+            local,
+            fanout_user,
+            db,
+            deadline,
+            None,
+            generation,
+        )
+        .map(|()| cancel)
+        .map_err(|_| {
+            metrics::FANOUT_LOCAL_SHARE_BUSY.incr();
+            metrics::FANOUT_DURATION.observe_duration(started.elapsed());
+            FanoutError::busy()
+        });
     }
 
     let state = Arc::new(FanoutState::new(op, outstanding, f, started));
@@ -252,6 +265,7 @@ where
             db,
             deadline,
             Some(request_id),
+            generation,
         );
         if spawned.is_err() {
             // Remote shares are already in flight, so this one fails through
@@ -799,8 +813,13 @@ where
 /// `rpc_id` is the RPC carrying the remote shares, if any: when this share's
 /// own answer ends the fanout early, the remote shares are abandoned.
 ///
+/// `generation` is this node's slot-ownership generation from before the fanout
+/// chose its targets. A read that finds it changed answers with a topology
+/// change instead of its result: see [`crate::fanout::ownership_changed_since`].
+///
 /// On `Err` the share was not queued and `state` has been dropped; the caller
 /// decides how the fanout fails.
+#[allow(clippy::too_many_arguments)]
 fn spawn_local_request<OP, F>(
     state: Arc<FanoutState<OP, F>>,
     req: OP::Request,
@@ -809,6 +828,7 @@ fn spawn_local_request<OP, F>(
     db: i32,
     deadline: Instant,
     rpc_id: Option<u64>,
+    generation: u64,
 ) -> Result<(), Rejected>
 where
     OP: FanoutCommand,
@@ -845,6 +865,11 @@ where
             OP::get_local_response(&fanout_ctx, req)
         }));
         let ends_early = match outcome {
+            // Slot ownership changed while it read: its answer may cover a slot only in part.
+            Ok(Ok(_)) if OP::cancellable() && ownership_changed_since(generation) => {
+                metrics::FANOUT_REJECTED_CLUSTER_MAP_MISMATCH.incr();
+                state.local_error_ends_early(FanoutError::cluster_map_mismatch(), &target)
+            }
             Ok(Ok(response)) => state.local_response_ends_early(response, &target),
             Ok(Err(err)) => state.local_error_ends_early(err.into(), &target),
             Err(_) => {
@@ -1074,6 +1099,90 @@ mod tests {
         let err = rx.try_recv().unwrap().1.unwrap_err();
         assert_eq!(err.kind, ErrorKind::InvalidDb);
         assert_eq!(err.to_string(), ErrorKind::InvalidDb.as_str());
+    }
+
+    /// Like [`Sum`], but its read sees this node's slot ownership change part-way, as a
+    /// migration completing between two of a read's lock holds would.
+    #[derive(Default)]
+    struct SumAcrossMigration(Sum);
+
+    impl FanoutCommand for SumAcrossMigration {
+        type Request = Count;
+        type Response = Count;
+
+        fn name() -> &'static str {
+            "sum_across_migration"
+        }
+
+        fn get_local_response(ctx: &FanoutContext, req: Count) -> ValkeyResult<Count> {
+            crate::fanout::slot_ownership_changed();
+            Sum::get_local_response(ctx, req)
+        }
+
+        fn generate_request(&self) -> Count {
+            self.0.generate_request()
+        }
+
+        fn on_response(&mut self, resp: Count, target: &NodeInfo) -> FanoutCommandResult {
+            self.0.on_response(resp, target)
+        }
+    }
+
+    /// Runs one fan-out of `op` whose only share is the local one, the way `exec_command`
+    /// does once it has taken `generation`, and returns how it ended.
+    fn local_only<OP: FanoutCommand + Default + 'static>(generation: u64) -> FanoutCommandResult
+    where
+        OP::Request: Default + Send + 'static,
+        OP::Response: Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel();
+        let callback = move |_op: OP, result: FanoutCommandResult| {
+            let _ = tx.send(result);
+        };
+        let state = Arc::new(FanoutState::new(OP::default(), 1, callback, Instant::now()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let local = NodeInfo {
+            location: NodeLocation::Local,
+            ..node(7000)
+        };
+        let spawned = spawn_local_request(
+            state,
+            OP::Request::default(),
+            local,
+            None,
+            0,
+            deadline,
+            None,
+            generation,
+        );
+        assert!(spawned.is_ok(), "the local share was not queued");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the fan-out completed")
+    }
+
+    /// A read during which this node's slot ownership changed may cover a slot only in
+    /// part: it answers with a topology change, which the requester retries, not its result.
+    #[test]
+    fn a_read_that_straddles_an_ownership_change_is_refused() {
+        let err = local_only::<SumAcrossMigration>(slot_ownership_generation())
+            .expect_err("the read saw the ownership change");
+        assert_eq!(err.kind, ErrorKind::ClusterMapMismatch);
+    }
+
+    /// A change before the fan-out chose its targets fails the local share too: it was
+    /// routed by a map that no longer holds here.
+    #[test]
+    fn a_change_since_the_fanout_began_refuses_the_local_read() {
+        let before = slot_ownership_generation();
+        crate::fanout::slot_ownership_changed();
+        let err = local_only::<Sum>(before).expect_err("ownership changed since");
+        assert_eq!(err.kind, ErrorKind::ClusterMapMismatch);
+        // From the current generation on, the same read answers. Other tests may bump it
+        // meanwhile, so retry a few times rather than assume nothing else runs.
+        assert!(
+            (0..20).any(|_| local_only::<Sum>(slot_ownership_generation()).is_ok()),
+            "an unchanged read answers"
+        );
     }
 
     /// Like [`Sum`], but a write: it runs to the end on every shard.
