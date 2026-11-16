@@ -32,7 +32,7 @@ impl InstantVectorParams {
             matchers,
             timestamp,
             lookback_delta: options.lookback_delta.as_millis() as u64,
-            max_series: options.max_series as u64,
+            max_series: options.max_selector_series as u64,
         }
     }
 }

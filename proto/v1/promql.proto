@@ -332,6 +332,11 @@ message GridQueryResponse {
   /// refs index into: one per response, so each distinct name and value
   /// crosses the wire once rather than once per series.
   SymbolTable labels = 4;
+  /// How many series the selector read on this shard: those with samples in
+  /// the windows, before any reduction. The coordinator sums them to apply
+  /// `ts-promql-max-series-per-selector` to the whole cluster's read, as a
+  /// single node applies it, rather than to each shard's share.
+  uint64 series_read = 5;
 }
 
 /// The labels of the series a selector matches on this node, for the
@@ -388,4 +393,7 @@ message AggregationQueryResponse {
   repeated InstantSample samples = 2;
   /// The symbol table the label refs of `samples` and `partials` index into.
   SymbolTable labels = 3;
+  /// How many series the selector read on this shard: those with a sample in
+  /// the lookback window, before aggregation. See `GridQueryResponse.series_read`.
+  uint64 series_read = 4;
 }

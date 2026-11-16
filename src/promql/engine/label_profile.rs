@@ -68,11 +68,11 @@ pub const MAX_PROFILED_NAME_BYTES: usize = 16 * 1024;
 pub const MAX_PROFILED_SERIES: usize = 50_000;
 
 /// How many series a profile may be built from for a query with these
-/// options: the query's own series limit when it is tighter than
+/// options: the query's own per-selector series limit when it is tighter than
 /// [`MAX_PROFILED_SERIES`]. A selector past the limit is left as written.
 pub fn profiled_series_cap(options: &crate::promql::engine::QueryOptions) -> usize {
-    if options.max_series > 0 {
-        options.max_series.min(MAX_PROFILED_SERIES)
+    if options.max_selector_series > 0 {
+        options.max_selector_series.min(MAX_PROFILED_SERIES)
     } else {
         MAX_PROFILED_SERIES
     }

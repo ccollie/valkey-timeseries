@@ -75,6 +75,8 @@ pub(in crate::promql) struct AggregationFanoutCommand {
     aggregation: AggregationRequest,
     /// Where the shards' output goes, by the operator's strategy.
     sink: AggregationSink,
+    /// The series the shards read, summed: see [`Self::series_read`].
+    series_read: u64,
     state: PushdownState,
 }
 
@@ -91,8 +93,16 @@ impl AggregationFanoutCommand {
             vector,
             sink: AggregationSink::for_kind(aggregation.operation.kind),
             aggregation,
+            series_read: 0,
             state: PushdownState::new(deadline),
         }
+    }
+
+    /// How many series the selector read across every shard that answered, before
+    /// aggregation: what `ts-promql-max-series-per-selector` bounds, as it bounds a
+    /// single node's read, where each shard applied it only to its own share.
+    pub fn series_read(&self) -> u64 {
+        self.series_read
     }
 
     /// True when at least one peer could not handle the operation: the caller
@@ -194,8 +204,12 @@ impl FanoutCommand for AggregationFanoutCommand {
         super::check_unique_series(samples.iter().map(|s| &s.labels))
             .map_err(|e| super::shard_error(QueryError::Execution(e)))?;
 
-        aggregate_locally(operation, samples, req.eval_timestamp, &read.deadline)
-            .map_err(super::shard_error)
+        let series_read = samples.len() as u64;
+        let mut response =
+            aggregate_locally(operation, samples, req.eval_timestamp, &read.deadline)
+                .map_err(super::shard_error)?;
+        response.series_read = series_read;
+        Ok(response)
     }
 
     fn generate_request(&self) -> AggregationQuery {
@@ -211,6 +225,7 @@ impl FanoutCommand for AggregationFanoutCommand {
         if self.state.stopped.is_some() {
             return Ok(());
         }
+        self.series_read = self.series_read.saturating_add(resp.series_read);
         let labels = resp.labels.take().unwrap_or_default();
         let mut resolver = symbol_table::EvalLabelResolver::new(&labels);
         let samples = std::mem::take(&mut resp.samples)
@@ -312,6 +327,7 @@ fn partials_response(groups: PartialGroups) -> AggregationQueryResponse {
         partials,
         samples: Vec::new(),
         labels: Some(symbols.finish()),
+        series_read: 0,
     }
 }
 
@@ -335,6 +351,7 @@ fn samples_response(samples: Vec<EvalSample>) -> AggregationQueryResponse {
         partials: Vec::new(),
         samples,
         labels: Some(symbols.finish()),
+        series_read: 0,
     }
 }
 
@@ -609,6 +626,24 @@ mod tests {
         assert_eq!(decode_pushdown_kind(-1), None);
     }
 
+    /// `ts-promql-max-series-per-selector` bounds the cluster's read as a single node's:
+    /// the coordinator adds up what every shard read, which the groups it gets don't show.
+    #[test]
+    fn test_series_read_is_summed_over_the_shards() {
+        for kind in [AggregationKind::Sum, AggregationKind::Topk] {
+            let param = (kind == AggregationKind::Topk).then_some(AggregationParam::Scalar(1.0));
+            let mut cmd = command(request(kind, None, param));
+            for (port, series_read) in [(7000, 2), (7001, 0), (7002, 5)] {
+                let response = AggregationQueryResponse {
+                    series_read,
+                    ..Default::default()
+                };
+                cmd.on_response(response, &node(port)).unwrap();
+            }
+            assert_eq!(cmd.series_read(), 7, "{kind:?}");
+        }
+    }
+
     /// A response that carries the wrong payload shape for the request's
     /// strategy is rejected instead of being counted.
     #[test]
@@ -622,6 +657,7 @@ mod tests {
                 ..Default::default()
             }],
             labels: None,
+            series_read: 0,
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
 
@@ -635,6 +671,7 @@ mod tests {
             partials: vec![GroupPartial::default()],
             samples: Vec::new(),
             labels: None,
+            series_read: 0,
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
     }
@@ -697,6 +734,7 @@ mod tests {
                 names: vec!["job".to_string()],
                 values: vec!["z".to_string()],
             }),
+            series_read: 0,
         };
         for (what, state) in [
             ("no state", None),

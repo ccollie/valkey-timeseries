@@ -506,7 +506,7 @@ do this, and they differ in where the label values come from:
 
 Both are exact: a filter only ever removes series that could not have matched at any
 step. A selector matching more than 50 000 series (or the query's
-`ts-promql-max-response-series`, whichever is lower) is left as written, as is one
+`ts-promql-max-series-per-selector`, whichever is lower) is left as written, as is one
 matching more than four times that many series in total, counting those that stopped
 reporting before the query, and a label with more than 60 distinct values. Either pass
 also stops after a fixed amount of work on one query — a long chain of binary operations
@@ -528,7 +528,8 @@ at startup.
 | `ts-promql-query-cache-max-entries` | 1024 | Parsed queries kept for reuse by later queries with the same text. `0` disables the cache. |
 | `ts-promql-query-cache-max-bytes` | 67108864 (64 MiB) | Estimated memory the parsed-query cache may hold. One query may take at most a sixteenth of it. `0` disables the cache. |
 | `ts-promql-max-query-len` | 4096 bytes | Maximum query string length. |
-| `ts-promql-max-response-series` | 1000 | Maximum returned series, checked on the query's result as well as on each read; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. |
+| `ts-promql-max-response-series` | 1000 | Maximum series in the query's result; `0` means unlimited. Only the result is checked: `sum(x)` over more series than this is one series. |
+| `ts-promql-max-series-per-selector` | 100000 | Maximum series one selector read may return, summed over every shard in a cluster, so the same query is accepted or refused on one node or many, with or without push-down; `0` means unlimited. A read stops as soon as it passes the limit, without opening the rest of the matched series. A series counts if it has a sample in the read's window. |
 | `ts-promql-max-points-per-timeseries` | 0 | Maximum points a range query generates per series, at most 1000000; `0` leaves only that built-in ceiling. |
 | `ts-promql-max-samples-per-query` | 50000000 | Maximum samples one query may load across all its reads (Prometheus' `--query.max-samples`); `0` means unlimited. The count is a running total: samples stay counted after the query drops them, so it bounds the query's work, not its memory at any one moment. A range query's per-step grid counts too: a series costs the larger of its raw samples and the steps it fills, so one sample under a long lookback costs a point per step. In a cluster each shard applies its own value to what it reads. Also caps the points one [subquery grid](#subquery-grids) may hold. |
 | `ts-promql-max-samples-in-flight` | 200000000 | Maximum of the running totals counted under `ts-promql-max-samples-per-query` by all running queries, and by the shard reads this node serves for other nodes' queries, added together; each is released when its query or read ends. A query that would pass it is refused. Like those totals, it counts samples already dropped, so it is a proxy for memory rather than a measure of it. The points [subquery grids](#subquery-grids) hold count too, while they are held; a query's grids may take at most half the room everything else leaves, and a grid without it is not built. `0` means unlimited. |

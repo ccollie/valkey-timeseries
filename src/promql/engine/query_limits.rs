@@ -5,6 +5,8 @@ use crate::promql::{QueryError, QueryResult};
 use crate::series::{RangeSnapshot, TimeSeries};
 
 pub(crate) const MAX_SERIES_ERROR_MSG: &str = error_consts::PROMQL_MAX_SERIES_ERROR;
+pub(crate) const MAX_SELECTOR_SERIES_ERROR_MSG: &str =
+    error_consts::PROMQL_MAX_SELECTOR_SERIES_ERROR;
 pub(crate) const MAX_POINTS_PER_SERIES_ERROR_MSG: &str =
     error_consts::PROMQL_MAX_POINTS_PER_SERIES_ERROR;
 
@@ -19,7 +21,7 @@ pub(in crate::promql) fn instant_lookback_start_ms(
 
 /// Whether `series_count` returned series already exceed `max_series` (0: no limit).
 ///
-/// The count a read returns only grows, so once this holds [`validate_max_series`] will refuse
+/// The count a read returns only grows, so once this holds [`validate_selector_series`] will refuse
 /// the read however many more series it finds: a read stops walking here rather than open and
 /// collect every series the selector matched first. The refusal then reports the count at
 /// which the read stopped, not the total it would have reached.
@@ -27,6 +29,23 @@ pub(in crate::promql) fn exceeds_max_series(series_count: usize, max_series: usi
     max_series > 0 && series_count > max_series
 }
 
+/// `ts-promql-max-series-per-selector`: the series one selector read returns, on one node or
+/// summed over a cluster's shards. It bounds a query's input; [`validate_max_series`] bounds
+/// its result.
+pub(in crate::promql) fn validate_selector_series(
+    series_count: usize,
+    max_series: usize,
+) -> QueryResult<()> {
+    if exceeds_max_series(series_count, max_series) {
+        Err(QueryError::Execution(format!(
+            "{MAX_SELECTOR_SERIES_ERROR_MSG}: {series_count} > {max_series}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// `ts-promql-max-response-series`: the series a query's result holds.
 pub(in crate::promql) fn validate_max_series(
     series_count: usize,
     max_series: usize,

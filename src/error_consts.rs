@@ -215,6 +215,8 @@ pub const READ_CONDITION_VALUE_MUST_BE_A_NUMBER: &str = "TSDB: CONDITION value m
 // the client verbatim instead of as a generic fan-out failure.
 pub const PROMQL_MAX_SERIES_ERROR: &str =
     "the query returns more than the configured max series limit";
+pub const PROMQL_MAX_SELECTOR_SERIES_ERROR: &str =
+    "a selector reads more series than ts-promql-max-series-per-selector allows";
 pub const PROMQL_MAX_POINTS_PER_SERIES_ERROR: &str =
     "the query returns a series with more points than the configured max points per series limit";
 pub const PROMQL_TOO_MANY_SAMPLES_ERROR: &str =

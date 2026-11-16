@@ -56,8 +56,12 @@ pub struct QueryOptions {
     /// and each fan-out is armed with what is left of it. `None` for no limit,
     /// where a fan-out gets the cluster command timeout.
     pub deadline: Option<Timestamp>,
-    /// The maximum number of series to return from instant or range queries. This option allows limiting memory usage.
+    /// The most series the query may return (`ts-promql-max-response-series`); checked
+    /// on the result only. 0 = unlimited.
     pub max_series: usize,
+    /// The most series one selector read may return, summed over every shard
+    /// (`ts-promql-max-series-per-selector`): what bounds the query's input. 0 = unlimited.
+    pub max_selector_series: usize,
     /// The maximum number of data points to return per series for each series. This is to help guard against
     /// OOMs and accidental self-DOS, especially in cluster mode.
     pub max_points_per_series: Option<usize>,
@@ -114,6 +118,7 @@ impl QueryOptions {
             lookback_delta: config.lookback_delta,
             deadline: Some(now_ms.saturating_add(duration_ms(config.max_query_duration))),
             max_series: config.max_response_series,
+            max_selector_series: config.max_series_per_selector,
             max_points_per_series: if config.max_points_per_timeseries > 0
                 && config.max_points_per_timeseries != usize::MAX
             {

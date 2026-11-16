@@ -376,6 +376,7 @@ mod tests {
     use super::*;
     use crate::labels::Label;
     use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
+    use crate::promql::engine::{MAX_SELECTOR_SERIES_ERROR_MSG, MAX_SERIES_ERROR_MSG};
     use std::time::UNIX_EPOCH;
 
     fn create_tsdb() -> PromqlQuerier {
@@ -639,6 +640,70 @@ mod tests {
                 );
             }
             other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    /// `max_series` (`ts-promql-max-response-series`) bounds what a query returns and
+    /// `max_selector_series` (`ts-promql-max-series-per-selector`) what each of its reads
+    /// returns: `sum(wide)` over more series than the result may hold is one series.
+    #[test]
+    fn the_result_cap_bounds_results_and_the_selector_cap_bounds_reads() {
+        let querier = MemorySeriesQuerier::new();
+        for i in 0..50 {
+            let labels = crate::labels::Labels::new(vec![
+                Label {
+                    name: "__name__".to_string(),
+                    value: "wide".to_string(),
+                },
+                Label {
+                    name: "i".to_string(),
+                    value: i.to_string(),
+                },
+            ]);
+            querier.add_sample(&labels, Sample::new(4_000_000, 1.0));
+        }
+        let tsdb = PromqlQuerier::with_query_reader(Arc::new(querier));
+        let time = UNIX_EPOCH + Duration::from_secs(4_000);
+        let limits = |max_series, max_selector_series| QueryOptions {
+            max_series,
+            max_selector_series,
+            ..QueryOptions::default()
+        };
+        let instant = |query: &str, opts: QueryOptions| tsdb.eval_query(query, Some(time), &opts);
+        let range = |query: &str, opts: QueryOptions| {
+            tsdb.eval_query_range(
+                query,
+                time..=time + Duration::from_secs(60),
+                Duration::from_secs(30),
+                &opts,
+            )
+        };
+
+        // Fifty series in, one out: within a result cap of ten.
+        match instant("sum(wide)", limits(10, 0)).unwrap() {
+            QueryValue::Vector(samples) => assert_eq!(samples[0].value, 50.0),
+            other => panic!("expected a vector, got {other:?}"),
+        }
+        assert_eq!(range("count(wide)", limits(10, 0)).unwrap().len(), 1);
+
+        // Fifty series out: past it.
+        for err in [
+            instant("wide", limits(10, 0)).unwrap_err(),
+            range("wide", limits(10, 0)).map(drop).unwrap_err(),
+        ] {
+            assert!(err.to_string().contains(MAX_SERIES_ERROR_MSG), "{err}");
+        }
+
+        // A read of fifty series, whatever the query returns: at the selector cap, and past it.
+        assert!(instant("sum(wide)", limits(0, 50)).is_ok());
+        for err in [
+            instant("sum(wide)", limits(0, 49)).unwrap_err(),
+            range("sum(wide)", limits(0, 49)).map(drop).unwrap_err(),
+        ] {
+            assert!(
+                err.to_string().contains(MAX_SELECTOR_SERIES_ERROR_MSG),
+                "{err}"
+            );
         }
     }
 

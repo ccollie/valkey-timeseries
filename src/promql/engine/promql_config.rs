@@ -42,6 +42,11 @@ pub struct PromqlConfig {
     /// This option allows limiting memory usage
     pub max_response_series: usize,
 
+    /// The most series one selector read may return, summed over every shard it reads
+    /// (`ts-promql-max-series-per-selector`). 0 = unlimited. It bounds a query's input
+    /// where `max_response_series` bounds its result: `sum(x)` over many series is one.
+    pub max_series_per_selector: usize,
+
     /// Default lookback delta
     pub lookback_delta: Duration,
 
@@ -83,6 +88,7 @@ impl Default for PromqlConfig {
             max_reply_bytes: crate::config::PROMQL_MAX_REPLY_BYTES_DEFAULT as usize,
             max_subquery_steps: crate::config::PROMQL_MAX_SUBQUERY_STEPS_DEFAULT as u64,
             max_response_series: DEFAULT_MAX_UNIQUE_TIMESERIES,
+            max_series_per_selector: crate::config::PROMQL_MAX_SERIES_PER_SELECTOR_DEFAULT as usize,
             max_lookback: Duration::from_secs(60 * 60),
             set_lookback_to_step: false,
             max_query_duration: Duration::from_secs(30),

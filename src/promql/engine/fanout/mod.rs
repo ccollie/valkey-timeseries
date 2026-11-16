@@ -183,6 +183,7 @@ mod tests {
     fn other_shard_limits_keep_their_message() {
         for message in [
             format!("{}: 6 > 4", error_consts::PROMQL_MAX_SERIES_ERROR),
+            format!("{}: 7 > 5", error_consts::PROMQL_MAX_SELECTOR_SERIES_ERROR),
             format!(
                 "{}: 9 > 8",
                 error_consts::PROMQL_MAX_POINTS_PER_SERIES_ERROR
