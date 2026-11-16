@@ -558,32 +558,25 @@ clear
 
 # Test comparison operations with floats and histograms.
 load 6m
-  # Skipped (staleness marker not supported): left_floats  1 2 _ _ 3 stale 4  5  NaN Inf -Inf
+  # `stale` written as `_`: the module has no staleness markers, and with samples 6m
+  # apart and the 5m lookback, a gap hides the previous sample exactly as a marker does.
+  left_floats  1 2 _ _ 3 _     4  5  NaN Inf -Inf
   right_floats 4 _ _ 5 3 7     -1 20 NaN Inf -Inf
   # Skipped (native histogram not supported): left_histograms  {{schema:3 sum:4 count:4 buckets:[1 2 1]}} {{schema:3 sum:4.5 count:5 buckets:[1 3 1]}} _                                          _ {{schema:3 sum:4.5 count:5 buckets:[1 3 1]}}
   # Skipped (native histogram not supported): right_histograms {{schema:3 sum:4 count:4 buckets:[1 2 1]}} {{schema:3 sum:4 count:4 buckets:[1 2 1]}}   {{schema:3 sum:4 count:4 buckets:[1 2 1]}} _ _
   right_floats_for_histograms 0 -1 2 3 4
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == right_floats
   expect no_info
   left_floats _ _ _ _ 3 _ _ _ _ Inf -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == bool right_floats
   expect no_info
   {} 0 _ _ _ 1 _ 0 0 0 1 1
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == does_not_match
   expect no_info
   # No results.
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -613,19 +606,13 @@ eval range from 0 to 24m step 6m left_histograms == bool right_floats_for_histog
   # No results.
 resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats != right_floats
   expect no_info
   left_floats 1 _ _ _ _ _ 4 5 NaN _ _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats != bool right_floats
   expect no_info
   {} 1 _ _ _ 0 _ 1 1 1 0 0
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -655,19 +642,13 @@ eval range from 0 to 24m step 6m left_histograms != bool right_floats_for_histog
   # No results.
 resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats > right_floats
   expect no_info
   left_floats _ _ _ _ _ _ 4 _ _ _ _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats > bool right_floats
   expect no_info
   {} 0 _ _ _ 0 _ 1 0 0 0 0
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -697,19 +678,13 @@ eval range from 0 to 24m step 6m left_histograms > bool right_floats_for_histogr
   # No results.
 resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats >= right_floats
   expect no_info
   left_floats _ _ _ _ 3 _ 4 _ _ Inf -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats >= bool right_floats
   expect no_info
   {} 0 _ _ _ 1 _ 1 0 0 1 1
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -739,19 +714,13 @@ eval range from 0 to 24m step 6m left_histograms >= bool right_floats_for_histog
   # No results.
 resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats < right_floats
   expect no_info
   left_floats 1 _ _ _ _ _ _ 5 _ _ _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats < bool right_floats
   expect no_info
   {} 1 _ _ _ 0 _ 0 1 0 0 0
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -781,19 +750,13 @@ eval range from 0 to 24m step 6m left_histograms < bool right_floats_for_histogr
   # No results.
 resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats <= right_floats
   expect no_info
   left_floats 1 _ _ _ 3 _ _ 5 _ Inf -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats <= bool right_floats
   expect no_info
   {} 1 _ _ _ 1 _ 0 1 0 1 1
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -824,82 +787,49 @@ eval range from 0 to 24m step 6m left_histograms <= bool right_floats_for_histog
 resume
 
 # Vector / scalar combinations with scalar on right side
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == 3
   expect no_info
   left_floats _ _ _ _ 3 _ _ _ _ _ _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats != 3
   expect no_info
   left_floats 1 2 _ _ _ _ 4 5 NaN Inf -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats > 3
   expect no_info
   left_floats _ _ _ _ _ _ 4 5 _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats >= 3
   expect no_info
   left_floats _ _ _ _ 3 _ 4 5 _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats < 3
   expect no_info
   left_floats 1 2 _ _ _ _ _ _ _ _ -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats <= 3
   expect no_info
   left_floats 1 2 _ _ 3 _ _ _ _ _ -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == bool 3
   expect no_info
   {} 0 0 _ _ 1 _ 0 0 0 0 0
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == Inf
   expect no_info
   left_floats _ _ _ _ _ _ _ _ _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == bool Inf
   expect no_info
   {} 0 0 _ _ 0 _ 0 0 0 1 0
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == NaN
   expect no_info
   # No results.
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m left_floats == bool NaN
   expect no_info
   {} 0 0 _ _ 0 _ 0 0 0 0 0
-resume
 
 # Skipped: native histogram not supported.
 ignore
@@ -1070,83 +1000,50 @@ eval range from 0 to 24m step 6m left_histograms <= bool 0
 resume
 
 # Vector / scalar combinations with scalar on left side
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 == left_floats
   expect no_info
   left_floats _ _ _ _ 3 _ _ _ _ _ _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 != left_floats
   expect no_info
   left_floats 1 2 _ _ _ _ 4 5 NaN Inf -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 < left_floats
   expect no_info
   left_floats _ _ _ _ _ _ 4 5 _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 <= left_floats
   expect no_info
   left_floats _ _ _ _ 3 _ 4 5 _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 > left_floats
   expect no_info
   left_floats 1 2 _ _ _ _ _ _ _ _ -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 >= left_floats
   expect no_info
   left_floats 1 2 _ _ 3 _ _ _ _ _ -Inf
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m 3 == bool left_floats
   expect no_info
   {} 0 0 _ _ 1 _ 0 0 0 0 0
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m Inf == left_floats
   expect no_info
   left_floats _ _ _ _ _ _ _ _ _ Inf _
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m Inf == bool left_floats
   expect no_info
   {} 0 0 _ _ 0 _ 0 0 0 1 0
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m NaN == left_floats
   expect no_info
   expect no_warn
   # No results.
-resume
 
-# Skipped: staleness marker not supported.
-ignore
 eval range from 0 to 60m step 6m NaN == bool left_floats
   expect no_info
   {} 0 0 _ _ 0 _ 0 0 0 0 0
-resume
 
 # Skipped: native histogram not supported.
 ignore
