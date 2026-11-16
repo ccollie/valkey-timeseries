@@ -194,6 +194,15 @@ different shards are aggregated as two series and not refused, because the coord
 only each shard's per-group partials. Give every key a distinct label set. See
 [Series identity](../topics/promql.md#series-identity).
 
+### Permissions
+
+The query reads with the calling user's ACL permissions, on every shard in a cluster. If any selector
+matches a key the user may not read, the whole query fails with a permission error (see [Errors](#errors)):
+the unreadable series are not silently left out. `TS.MRANGE`, `TS.MGET` and `TS.QUERYLABELS` omit such
+series instead. A partial result could change an aggregate without warning, so a PromQL query fails
+closed. To query a subset of the data, narrow the selectors to keys the user can read, or scope the
+query with `HASHTAG`.
+
 ### Errors
 
 | Condition | Error |
@@ -205,7 +214,7 @@ only each shard's per-group partials. Give every key a distinct label set. See
 | `START` or `END` cannot be parsed | `TSDB: invalid <START\|END> timestamp` |
 | `END` is before `START` | `TSDB: END must not be before START` |
 | `START` is in the future and `END` is omitted | `TSDB: START must not be after the current time (the default END)` |
-| The grid has more than 1,000,000 points | `execution error: PromQL argument error: too many points for the given step=..., start=... and end=...: <n>; cannot exceed 1000000` |
+| The grid has more steps than `ts-promql-max-points-per-timeseries`, or than 1,000,000 | `execution error: PromQL argument error: too many points for the given step=..., start=... and end=...: <n>; cannot exceed <limit>` |
 | All subqueries together would evaluate more than `ts-promql-max-subquery-steps` steps | `execution error: PromQL argument error: subqueries would evaluate more than <limit> steps (ts-promql-max-subquery-steps); ...` |
 | The expression is a range vector or a string | `execution error: range vectors not supported in range query evaluation` (or `string expressions ...`) |
 | The expression does not parse | `TSDB: the query string could not be parsed: <reason>`, where `<reason>` is the parser's message, such as `unclosed left parenthesis` or `unknown function with name 'f'` |
@@ -216,6 +225,14 @@ only each shard's per-group partials. Give every key a distinct label set. See
 | A result with more series than `ts-promql-max-response-series` | `execution error: the query returns more than the configured max series limit: <n> > <limit>` |
 | A selector that reads more series than `ts-promql-max-series-per-selector` | `execution error: a selector reads more series than ts-promql-max-series-per-selector allows: <n> > <limit>`, where `<n>` is the count at which the read stopped, not the total the selector matches |
 | Two keys the query reads carry the same labels (see [Series identity](../topics/promql.md#series-identity)) | `execution error: TSDB: more than one series has the labels <labels>; PromQL identifies a series by its label set` |
+| `ts-promql-max-queued-queries` queries are already waiting for a worker | `TSDB: too many queued PromQL queries (ts-promql-max-queued-queries = <limit>)`; nothing ran, so the query can be retried as it is |
+| The query would load more than `ts-promql-max-samples-per-query` samples | `query processing would load too many samples into memory: <n> > <limit> (ts-promql-max-samples-per-query)` |
+| The expression is nested more than 500 levels deep | `TSDB: query is nested too deeply; the limit is 500 levels` |
+| A regex matcher is invalid, or would compile past the module's size limit | `TSDB: the regex for label '<label>' is invalid or too large` |
+| A selector matches a key the user may not read (see [Permissions](#permissions)) | `execution error: TSDB: current user doesn't have read permission to one or more keys that match the specified filter` |
+| `label_replace` or `label_join` would build a label value longer than 16 KiB | `execution error: <function>(): the value of label "<label>" would be longer than 16384 bytes` |
+| `label_replace` or `label_join` would grow a series' labels past 64 KiB | `execution error: <function>(): writing label "<label>" would make a series' labels longer than 65536 bytes` |
+| In a cluster: slot ownership changed while the query read, such as a slot migration completing | `execution error: A multi-shard command failed because the cluster topology has changed`; the query can be retried as it is |
 | The query ran past its `TIMEOUT` | `query timed out` |
 | The running sample totals of all running queries would together pass `ts-promql-max-samples-in-flight` | `PromQL query refused while the node is overloaded: running PromQL queries would have charged <n> > <limit> samples (ts-promql-max-samples-in-flight)` |
 | Memory use is at or past `ts-promql-max-memory-percent` of `maxmemory` | `PromQL query refused while the node is overloaded: memory use is <n>% of maxmemory, at or past ts-promql-max-memory-percent (<limit>%)` |
