@@ -699,6 +699,9 @@ class TestPromqlQueryQueueConfig(ValkeyTimeSeriesTestCaseBase):
         assert info["ts_promql_queries_running"] == 0
         assert info["ts_promql_queries_queued"] == 0
         assert info["ts_promql_queries_rejected_total"] == 0
+        # Every charge, the replies' included, was given back once its query was answered:
+        # one left behind would count against every later query's in-flight limit.
+        assert info["ts_promql_samples_in_flight"] == 0
 
     def test_info_counts_how_queries_ended(self):
         """Every query a worker took up ends succeeded or failed, and a failure also under

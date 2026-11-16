@@ -4,6 +4,7 @@ use crate::common::context::get_current_db;
 use crate::common::time::current_time_millis;
 use crate::promql::QueryValue;
 use crate::promql::engine::query_workers::submit_evaluation;
+use crate::promql::engine::sample_budget::SampleBudget;
 use crate::promql::engine::{QueryOptions, admission, evaluate_range, promql_config};
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
@@ -55,9 +56,13 @@ pub fn ts_queryrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
             // Before any of it is written: the server buffers a client's reply whatever its size.
             let bytes = admission::estimate_range_reply_bytes(&series);
             admission::check_reply_size(bytes, options.max_reply_bytes)?;
-            Ok(series)
+            // The evaluation's budget is gone, but the result, and the reply built from it,
+            // are held until the reply is written: counted toward the in-flight limit meanwhile.
+            let held = SampleBudget::counted_for(&options, 0);
+            held.charge(admission::range_points(&series))?;
+            Ok((series, held))
         },
-        |ctx, result| {
+        |ctx, (result, _held)| {
             reply_with_query_value(ctx, QueryValue::Matrix(result), current_time_millis());
         },
     )

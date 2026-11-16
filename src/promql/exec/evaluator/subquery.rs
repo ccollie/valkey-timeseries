@@ -255,7 +255,13 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         // charged already, so the cap binds only what the inner expression
         // generates — `vector(1)[1d:1s]` — and counts each batch before it is
         // merged.
-        let materialized = SampleBudget::new(self.options.max_samples);
+        //
+        // It is counted toward `ts-promql-max-samples-in-flight` while held — as many
+        // of these are alive at once as outer steps run in parallel, each up to the
+        // per-query cap — so the gauge and other queries' charges see it. It never
+        // refuses this query itself: how many are alive at once depends on
+        // scheduling, and a limit must not (see `SampleBudget::observed_for`).
+        let materialized = SampleBudget::observed_for(&self.options, self.options.max_samples);
         let mut series_map = SubquerySeriesMap::default();
         // Evaluate in bounded batches. Collecting every inner step before
         // merging makes a long subquery retain one vector per step in addition
