@@ -2,6 +2,7 @@ use crate::common::Timestamp;
 use crate::common::acl::with_acl_user;
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::logging::{log_debug, log_warning};
+use crate::common::replies::CancelToken;
 use crate::common::threads::{
     IntoParRayon, LockGil, MATERIALIZE_POOL, ThreadRole, check_may_block, panic_message,
     run_on_pool_cold, set_thread_role,
@@ -507,6 +508,7 @@ impl SelectorBatchExecutor {
     ) -> QueryResult<SelectorOutput> {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let wait_limit = calculate_timeout(command.options()) + RESULT_WAIT_GRACE;
+        let cancel = command.options().cancel;
         let task = SelectorTask {
             kind: command,
             caller_user,
@@ -525,8 +527,16 @@ impl SelectorBatchExecutor {
         }
 
         match wait_for_result(&result_rx, wait_limit) {
-            // On this thread, not the one that delivered it: see `TaskAnswer`.
-            Ok(answer) => answer.resolve(),
+            // On this thread, not the one that delivered it: see `TaskAnswer`. A read that
+            // failed because its client went away (the fan-out stopped for it) was abandoned,
+            // not failed: the query workers count and answer it as such.
+            Ok(answer) => answer.resolve().map_err(|err| {
+                if cancel.is_cancelled() {
+                    QueryError::Cancelled
+                } else {
+                    err
+                }
+            }),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(QueryError::Timeout),
             Err(e) => {
                 let msg = format!("Failed to receive query response: {}", e);
@@ -677,12 +687,14 @@ fn pushdown_failure(
 /// `answer` turns the command and its result into the selector's output once
 /// every shard has answered, run by the task's caller rather than the fan-out's
 /// completion (see [`TaskAnswer`]); a fan-out that cannot start answers its
-/// error at once. The one shape every `execute_cluster_*` shares.
+/// error at once. The fan-out stops when the query's client disconnects (`cancel`).
+/// The one shape every `execute_cluster_*` shares.
 fn fan_out<C, F>(
     ctx: &Context,
     cmd: C,
     hash_tags: &[String],
     timeout: Duration,
+    cancel: CancelToken,
     responder: Responder,
     answer: F,
 ) where
@@ -691,8 +703,13 @@ fn fan_out<C, F>(
 {
     let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
     let handler = deferring_handler(responder.clone(), answer);
-    if let Err(e) = exec_command(ctx, cmd, targets, Instant::now(), timeout, handler) {
-        deliver_task_result(&responder, Err(e.into()));
+    match exec_command(ctx, cmd, targets, Instant::now(), timeout, handler) {
+        // The query's client disconnecting completes the fan-out, and the remote shares are
+        // told to stop, instead of reading on to their time budget for nobody. Registered
+        // under the GIL, as the disconnect callback runs, so the two cannot interleave.
+        Ok(Some(fanout)) => cancel.on_disconnect(ctx, Box::new(fanout)),
+        Ok(None) => {}
+        Err(e) => deliver_task_result(&responder, Err(e.into())),
     }
 }
 
@@ -722,6 +739,7 @@ fn execute_cluster_vector_selector(
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&iqc.options);
+    let cancel = iqc.options.cancel;
     let cmd = InstantVectorSelectorFanoutCommand::new(InstantVectorParams::of(
         iqc.matchers,
         iqc.timestamp,
@@ -735,6 +753,7 @@ fn execute_cluster_vector_selector(
         cmd,
         hash_tags,
         timeout,
+        cancel,
         responder,
         move |cmd: InstantVectorSelectorFanoutCommand, result: FanoutCommandResult| match result {
             Ok(()) => {
@@ -755,6 +774,7 @@ fn execute_cluster_range_selector(
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&rc.options);
+    let cancel = rc.options.cancel;
     let cmd = RangeVectorSelectorFanoutCommand::new(
         rc.matchers,
         rc.start_timestamp,
@@ -772,6 +792,7 @@ fn execute_cluster_range_selector(
         cmd,
         hash_tags,
         timeout,
+        cancel,
         responder,
         move |cmd: RangeVectorSelectorFanoutCommand, result: FanoutCommandResult| {
             match result {
@@ -826,6 +847,7 @@ fn execute_cluster_aggregation(
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&ac.options);
+    let cancel = ac.options.cancel;
     let vector = InstantVectorParams::of(ac.matchers, ac.timestamp, &ac.options);
     let deadline = Deadline::from_options(&ac.options);
     let cmd = AggregationFanoutCommand::new(vector, ac.aggregation, deadline);
@@ -837,6 +859,7 @@ fn execute_cluster_aggregation(
         cmd,
         hash_tags,
         timeout,
+        cancel,
         responder,
         move |cmd: AggregationFanoutCommand, result: FanoutCommandResult| {
             match result {
@@ -889,6 +912,7 @@ fn execute_cluster_grid(
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&gc.options);
+    let cancel = gc.options.cancel;
     let max_series = gc.options.max_selector_series;
     let max_points_per_series = gc.options.max_points_per_series;
     let max_samples = gc.options.max_samples;
@@ -907,6 +931,7 @@ fn execute_cluster_grid(
         cmd,
         hash_tags,
         timeout,
+        cancel,
         responder,
         move |cmd: GridFanoutCommand, result: FanoutCommandResult| {
             let peer_unsupported = cmd.peer_unsupported();
@@ -970,6 +995,7 @@ fn execute_cluster_label_profile(
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&pc.options);
+    let cancel = pc.options.cancel;
     let cmd = LabelProfileFanoutCommand::new(
         pc.matchers,
         pc.window,
@@ -981,6 +1007,7 @@ fn execute_cluster_label_profile(
         cmd,
         hash_tags,
         timeout,
+        cancel,
         responder,
         move |cmd: LabelProfileFanoutCommand, result: FanoutCommandResult| match result {
             Ok(()) => Ok(SelectorOutput::Profile(cmd.into_result())),
