@@ -1638,6 +1638,88 @@ fn test_malformed_columns_are_rejected() {
     }
 }
 
+/// A shard of a build that does not know `sample_timestamps` answers a request that asked
+/// for them without the column. Defaulting its points to their step times would make
+/// `timestamp()` silently wrong, so the answer is refused.
+#[test]
+fn test_series_without_requested_sample_times_are_refused() {
+    let request = stepped_grid_request();
+    assert!(request.sample_timestamps);
+    let without_lag = ProtoGridSeries {
+        presence: vec![0b11],
+        values: vec![1.0, 2.0],
+        ..Default::default()
+    };
+    let mut cmd = command(request.clone());
+    let err = cmd
+        .on_response(
+            GridQueryResponse {
+                series: vec![without_lag.clone()],
+                ..Default::default()
+            },
+            &node(7000),
+        )
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("without the sample times"),
+        "{err}"
+    );
+
+    // Not asked for, none is expected.
+    let request = GridRequest {
+        sample_timestamps: false,
+        ..request
+    };
+    let mut cmd = command(request);
+    let response = GridQueryResponse {
+        series: vec![without_lag],
+        ..Default::default()
+    };
+    assert!(cmd.on_response(response, &node(7000)).is_ok());
+}
+
+/// A partial state for a step the request's grid does not have: the shard answered for
+/// another grid. Refused, not dropped, so the query fails instead of quietly losing it.
+#[test]
+fn test_a_partial_off_the_grid_is_refused() {
+    use crate::promql::generated::{AggregationPartialState, SymbolTable};
+    let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
+    let off_grid = request.window_ends()[0] + 1;
+    let response = GridQueryResponse {
+        partials: vec![GroupPartial {
+            label_name_refs: vec![0],
+            label_value_refs: vec![0],
+            step_ts: off_grid,
+            state: Some(AggregationPartialState {
+                count: 1,
+                acc1: 5.0,
+                ..Default::default()
+            }),
+        }],
+        labels: Some(SymbolTable {
+            names: vec!["job".to_string()],
+            values: vec!["a".to_string()],
+        }),
+        ..Default::default()
+    };
+    let err = command(request)
+        .on_response(response, &node(7000))
+        .unwrap_err();
+    assert!(err.to_string().contains("not a step of the grid"), "{err}");
+}
+
+/// A rollup this node does not know — a newer coordinator's — is refused as unsupported,
+/// which the coordinator answers by evaluating without the push-down.
+#[test]
+fn test_an_unknown_rollup_is_refused_as_unsupported() {
+    let mut req = command(rollup_grid_request(RollupKind::Rate)).generate_request();
+    decode_request(&req).expect("a rollup of this build decodes");
+    req.rollup.as_mut().expect("a rollup request").kind = 9_999;
+    let err = crate::fanout::FanoutError::from(decode_request(&req).unwrap_err());
+    assert_eq!(err.kind, crate::fanout::ErrorKind::UnsupportedFeatures);
+    assert!(err.is_unsupported_operation());
+}
+
 #[test]
 fn test_request_round_trip() {
     use crate::fanout::serialization::{Deserialized, Serialized};

@@ -164,7 +164,10 @@ impl AggregationFanoutCommand {
             target,
             format_args!("a pushed-down {kind:?} reduction"),
             &self.state.deadline,
-            |_, labels, state| groups.merge(labels, state),
+            |_, labels, state| {
+                groups.merge(labels, state);
+                Ok(())
+            },
         )?;
         Ok(())
     }
@@ -642,6 +645,19 @@ mod tests {
             }
             assert_eq!(cmd.series_read(), 7, "{kind:?}");
         }
+    }
+
+    /// An operator this node cannot push down — a newer coordinator's — is refused as
+    /// unsupported, which the coordinator answers by evaluating without the push-down.
+    #[test]
+    fn test_an_unknown_operator_is_refused_as_unsupported() {
+        let req = command(params(AggregationKind::Sum, None)).generate_request();
+        let mut operation = req.operation.expect("an operator");
+        operation.kind = 9_999;
+        let err = crate::fanout::FanoutError::from(
+            AggregationOperation::try_from(operation).unwrap_err(),
+        );
+        assert_eq!(err.kind, crate::fanout::ErrorKind::UnsupportedFeatures);
     }
 
     /// A response that carries the wrong payload shape for the request's

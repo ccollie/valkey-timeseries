@@ -21,6 +21,20 @@
 // (`Sample` had its two field numbers the other way round) and the selector was
 // a strictly weaker matcher than the one in `filters.proto`, so both sides now
 // share one definition.
+//
+// Nodes of different builds (a rolling upgrade) must never combine into a wrong
+// answer. A field that an older node would skip, and answer as if it were absent,
+// changes the result silently. So:
+// * A new request field like that comes with an envelope `required_features` bit
+//   (`fanout_message::SUPPORTED_MESSAGE_FEATURES`) that the sender sets when it uses
+//   the field. A node without the bit refuses the request as unsupported, and the
+//   coordinator evaluates without the push-down. Today's requests need no bit: every
+//   field here is understood by every node of this build.
+// * A new enum value (a rollup, an aggregation operator) needs nothing more: a node
+//   that does not know it answers `UnsupportedFeatures`, with the same fallback.
+// * A new response field the coordinator relies on is checked for presence, as
+//   `GridSeries.sample_lag` is when the request asked for `sample_timestamps`. An
+//   older shard's answer without it is refused, not read as zero.
 
 syntax = "proto3";
 

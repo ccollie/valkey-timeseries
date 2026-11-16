@@ -504,23 +504,21 @@ impl SteppedPartialGroups {
     }
 
     /// Merge one shard's state for a `(group, step)` pair, returning how many
-    /// states that added: 1 for a pair not seen before, else 0. A state at a
-    /// time that is not one of the grid's window ends is dropped: the grid has
-    /// no step for it, so it could never reach the answer.
+    /// states that added: 1 for a pair not seen before, else 0. `None` for a state
+    /// at a time that is not one of the grid's window ends: the shard answered for
+    /// a grid other than the one asked, which the caller treats as a corrupt (or
+    /// mismatched-build) peer rather than quietly drop.
     pub fn merge(
         &mut self,
         step_ts: Timestamp,
         labels: EvalLabels,
         state: AggregationPartial,
-    ) -> usize {
-        let Some(i) = self.step_index(step_ts, 0) else {
-            self.drop_off_grid(step_ts, "shard state");
-            return 0;
-        };
+    ) -> Option<usize> {
+        let i = self.step_index(step_ts, 0)?;
         let groups = self.step_mut(i);
         let before = groups.groups.len();
         groups.merge(labels, state);
-        groups.groups.len() - before
+        Some(groups.groups.len() - before)
     }
 
     /// The accumulated states, for transport to the coordinator.
@@ -1112,23 +1110,17 @@ mod tests {
     }
 
     /// A shard's state at a time that is not one of the grid's window ends has
-    /// no step to land on: it is dropped, and counts as nothing added — but is
-    /// counted as dropped, the first one logged, so a coordinator and shard
-    /// that disagree on the grid leave a trail.
+    /// no step to land on: `merge` refuses it and adds nothing, so the coordinator
+    /// can fail a shard that answered for a grid other than the one it asked for.
     #[test]
-    fn stepped_merge_drops_a_state_off_the_grid() {
+    fn stepped_merge_refuses_a_state_off_the_grid() {
         let mut groups = SteppedPartialGroups::new(AggregationKind::Sum, Arc::from([10, 20]));
         let mut state = AggregationPartial::empty(AggregationKind::Sum);
         state.update(AggregationKind::Sum, 4.0);
         let labels = EvalLabels::from_pairs(&[("job", "a")]);
-        assert_eq!(groups.merge(15, labels.clone(), state), 0);
-        assert_eq!(groups.off_grid_summary(), None, "only one dropped yet");
-        assert_eq!(groups.merge(25, labels.clone(), state), 0);
-        assert_eq!(groups.off_grid, 2);
-        let summary = groups.off_grid_summary().expect("two dropped");
-        assert!(summary.contains("dropped 2 "), "{summary}");
-        assert_eq!(groups.merge(20, labels, state), 1);
-        assert_eq!(groups.off_grid, 2);
+        assert_eq!(groups.merge(15, labels.clone(), state), None);
+        assert_eq!(groups.merge(25, labels.clone(), state), None);
+        assert_eq!(groups.merge(20, labels, state), Some(1));
         let out = groups.finalize(&Deadline::default()).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].samples, vec![Sample::new(20, 4.0)]);

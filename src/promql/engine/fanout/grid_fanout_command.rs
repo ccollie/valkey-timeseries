@@ -31,6 +31,7 @@
 use super::PushdownState;
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
 use crate::common::Sample;
+use crate::common::logging::log_debug;
 use crate::fanout::{FanoutCommand, FanoutCommandResult, FanoutContext, FanoutError, NodeInfo};
 use crate::promql::deadline::Deadline;
 use crate::promql::engine::fanout::query_utils::{local_grid_windows, shard_read};
@@ -268,7 +269,14 @@ impl FanoutCommand for GridFanoutCommand {
                 target,
                 "a grid query fused with a reduction",
                 &self.state.deadline,
-                |step_ts, labels, state| added += partials.merge(step_ts, labels, state),
+                |step_ts, labels, state| {
+                    added += partials.merge(step_ts, labels, state).ok_or_else(|| {
+                        format!(
+                            "a partial state at {step_ts}, which is not a step of the grid asked"
+                        )
+                    })?;
+                    Ok(())
+                },
             )?;
             if self.state.stopped.is_some() {
                 return Ok(());
@@ -288,6 +296,13 @@ impl FanoutCommand for GridFanoutCommand {
             // ran over it: a selection's candidates are its per-step picks,
             // which the sink reads from either form alike.
             let mut output = self.request.empty_output();
+            // Plain stepped series carry each point's sample time when the request asked
+            // for them (`timestamp()`): a shard that sends none is of a build that does
+            // not know the field, and defaulting its points to their step times would
+            // make `timestamp()` silently wrong.
+            let lag_required = self.request.sample_timestamps
+                && self.request.rollup.is_none()
+                && self.request.aggregation.is_none();
             for mut series in resp.series {
                 let labels = resolver.resolve(&mut series).map_err(malformed)?;
                 let points = decode_columns(&self.window_ends, &series).map_err(|why| {
@@ -296,6 +311,12 @@ impl FanoutCommand for GridFanoutCommand {
                         format_args!("returned a malformed grid series: {why}"),
                     )
                 })?;
+                if lag_required && series.sample_lag.is_empty() && !series.values.is_empty() {
+                    return Err(FanoutError::from_peer(
+                        target,
+                        "returned grid series without the sample times the request asked for",
+                    ));
+                }
                 match &mut output {
                     GridSeries::Rolled(rolled) => rolled.push(RangeSample {
                         labels,
@@ -355,27 +376,33 @@ impl FanoutCommand for GridFanoutCommand {
     }
 }
 
-/// Decode the request this node is asked to evaluate. A rollup or aggregation
-/// it does not know is a corrupt request (every node runs the same build) and
-/// is refused: proto3 decodes an unknown enum to its raw `i32`, which must not
-/// be silently taken for the zero variant.
+/// A grid request this node cannot honour as asked: logged here with the reason,
+/// answered as unsupported (see [`decode_request`]).
+fn unsupported(reason: impl std::fmt::Display) -> ValkeyError {
+    log_debug(format!(
+        "PromQL grid push-down request refused as unsupported: {reason}"
+    ));
+    FanoutError::unsupported_request()
+}
+
+/// Decode the request this node is asked to evaluate. A rollup, an aggregation
+/// or a parameter it does not know — sent by a newer build — is refused as
+/// unsupported ([`FanoutError::unsupported_request`]), so the coordinator
+/// evaluates without the push-down: proto3 decodes an unknown enum to its raw
+/// `i32`, which must not be silently taken for the zero variant.
 fn decode_request(req: &GridQuery) -> ValkeyResult<GridRequest> {
     let rollup = req
         .rollup
         .as_ref()
         .map(|rollup| {
             let kind = ProtoRollupKind::try_from(rollup.kind)
-                .map_err(|_| {
-                    ValkeyError::String(format!(
-                        "TSDB: unknown rollup kind {} in grid push-down request",
-                        rollup.kind
-                    ))
-                })
-                .and_then(RollupKind::try_from)?;
+                .map_err(|_| format!("unknown rollup kind {}", rollup.kind))
+                .and_then(|kind| RollupKind::try_from(kind).map_err(|e| e.to_string()))
+                .map_err(unsupported)?;
             // Parameters no coordinator of this build sends: refused rather than
             // answered, since the answer could not match the local one.
             kind.check_params(rollup.scalar_param, rollup.unit_ms)
-                .map_err(|e| ValkeyError::String(format!("TSDB: grid push-down request: {e}")))?;
+                .map_err(unsupported)?;
             Ok::<_, ValkeyError>(GridRollup {
                 kind,
                 range_ms: rollup.range_ms,
@@ -388,7 +415,8 @@ fn decode_request(req: &GridQuery) -> ValkeyResult<GridRequest> {
         .aggregation
         .clone()
         .map(AggregationOperation::try_from)
-        .transpose()?;
+        .transpose()
+        .map_err(|e| unsupported(e.to_string()))?;
     // The shard walks this grid and materializes its window ends before any
     // series or point limit applies, so the peer's geometry is bounded here.
     let steps = grid_step_count(req.query_start, req.query_end, req.step_ms);

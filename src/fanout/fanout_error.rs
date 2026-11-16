@@ -240,6 +240,15 @@ impl FanoutError {
         ErrorKind::UnsupportedFeatures.into()
     }
 
+    /// The handler error a node answers a request it cannot honour as asked with: one that
+    /// names a rollup, an operator or a parameter a newer build added. It reaches the requester
+    /// as [`ErrorKind::UnsupportedFeatures`], which a push-down treats as "evaluate without
+    /// me" rather than as a failure; any other error would fail the query, and silently
+    /// answering a request it half-understands would make the result wrong.
+    pub fn unsupported_request() -> ValkeyError {
+        ValkeyError::Str(UNSUPPORTED_FEATURES_ERROR)
+    }
+
     #[cfg(test)]
     pub fn invalid_db() -> Self {
         ErrorKind::InvalidDb.into()
@@ -296,7 +305,9 @@ impl FanoutError {
     }
 
     /// Decodes an error reply. A kind this node does not know, from a newer peer,
-    /// is reported as an invalid message and keeps its text.
+    /// is an ordinary failure ([`ErrorKind::Custom`]) that keeps its text. Not an invalid
+    /// message: that reads as "the peer does not support this operation", and a push-down
+    /// would then silently re-run the query without itself instead of reporting the error.
     ///
     /// An empty buffer is valid: it is what `InvalidMessage` with no text encodes to.
     pub fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
@@ -305,7 +316,7 @@ impl FanoutError {
         let kind = u8::try_from(wire.kind)
             .ok()
             .and_then(|kind| ErrorKind::try_from(kind).ok())
-            .unwrap_or(ErrorKind::InvalidMessage);
+            .unwrap_or(ErrorKind::Custom);
         Ok(Self {
             kind,
             message: wire.message,
@@ -651,16 +662,27 @@ mod tests {
         buf
     }
 
-    /// A kind added by a newer peer reaches us as an invalid message with its text
-    /// intact. Values past a u8 must not truncate onto a known kind: 2^32 + 4 is
-    /// not `Permissions`.
+    /// A kind added by a newer peer reaches us as an ordinary failure with its text
+    /// intact — not as "this operation is unsupported", which a push-down would take
+    /// as a reason to silently re-run without itself. Values past a u8 must not
+    /// truncate onto a known kind: 2^32 + 4 is not `Permissions`.
     #[test]
     fn test_unknown_kind_keeps_message() {
         for kind in [15, 151, 254, 256, (1 << 32) + 4, u64::MAX] {
             let error = FanoutError::deserialize(&encode_raw_error(kind, b"text")).unwrap();
-            assert_eq!(error.kind, ErrorKind::InvalidMessage, "kind {kind}");
+            assert_eq!(error.kind, ErrorKind::Custom, "kind {kind}");
             assert_eq!(error.message, "text");
+            assert!(!error.is_unsupported_operation(), "kind {kind}");
         }
+    }
+
+    /// A request a node cannot honour as asked reaches the requester as unsupported,
+    /// through the handler's error text, so a push-down falls back instead of failing.
+    #[test]
+    fn test_an_unsupported_request_round_trips_as_unsupported() {
+        let error = FanoutError::from(FanoutError::unsupported_request());
+        assert_eq!(error.kind, ErrorKind::UnsupportedFeatures);
+        assert!(error.is_unsupported_operation());
     }
 
     /// A newer peer's extra fields are skipped.
