@@ -1,6 +1,7 @@
 use crate::common::logging::log_debug;
 use crate::promql::functions::{PromqlFunctionKind, resolve_function};
 use crate::promql::optimizer::runtime_filters::can_push_down_common_filters;
+use crate::promql::optimizer::utils::unparen;
 use ahash::AHashSet;
 use promql_parser::label::Labels;
 use promql_parser::label::{METRIC_NAME, Matcher, Matchers};
@@ -279,6 +280,23 @@ fn call_filters(fe: &Call, arg_filters: impl FnOnce(usize) -> Vec<Matcher>) -> V
         return vec![];
     };
     let args = &fe.args.args;
+    // `absent` and `absent_over_time` answer one series whose labels are the `=` matchers of
+    // a selector passed to them directly, and nothing else: a regex or negative matcher is not
+    // a fact about that series, and neither is anything an expression argument implies.
+    if matches!(fe.func.name, "absent" | "absent_over_time") {
+        let direct_selector = args.first().is_some_and(|arg| {
+            matches!(
+                unparen(arg),
+                Expr::VectorSelector(_) | Expr::MatrixSelector(_)
+            )
+        });
+        if !direct_selector {
+            return vec![];
+        }
+        let mut filters = arg_filters(0);
+        filters.retain(|m| m.op == promql_parser::label::MatchOp::Equal && m.name != METRIC_NAME);
+        return filters;
+    }
     match func.kind() {
         PromqlFunctionKind::LabelJoin | PromqlFunctionKind::LabelReplace => {
             if args.len() < 2 {

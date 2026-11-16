@@ -16,20 +16,61 @@
 // under the License.
 
 //! Utility functions for expression simplification
-use promql_parser::parser::token::TokenType;
-use promql_parser::parser::{BinaryExpr, Expr, NumberLiteral};
+use promql_parser::parser::token::{T_LAND, TokenType};
+use promql_parser::parser::{BinModifier, BinaryExpr, Expr, NumberLiteral, VectorMatchFillValues};
 
-/// Returns true if `needle` is found in a chain of `search_op`
-/// expressions, such as `(A AND B) AND C`
-pub(super) fn expr_contains(expr: &Expr, needle: &Expr, search_op: TokenType) -> bool {
-    // unwrap parentheses on either side so comparisons succeed whether either side is paren-wrapped
-    match (expr, needle) {
-        (Expr::Paren(pe), _) => expr_contains(&pe.expr, needle, search_op),
-        (_, Expr::Paren(pn)) => expr_contains(expr, &pn.expr, search_op),
-        (Expr::Binary(BinaryExpr { lhs, op, rhs, .. }), _) if *op == search_op => {
-            expr_contains(lhs, needle, search_op) || expr_contains(rhs, needle, search_op)
+/// `expr` without the parentheses around it.
+pub(super) fn unparen(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(p) => unparen(&p.expr),
+        other => other,
+    }
+}
+
+/// Whether a binary operation's `modifier` changes how its operands match: `on`, `ignoring`
+/// or `fill`. A set operator without one matches series on all their labels but `__name__`.
+pub(super) fn has_matching(modifier: &Option<BinModifier>) -> bool {
+    modifier
+        .as_ref()
+        .is_some_and(|m| m.matching.is_some() || m.fill_values != VectorMatchFillValues::default())
+}
+
+/// `expr`'s operands, if it is (through parentheses) the binary operation `op`, and whether it
+/// matches on all labels ([`has_matching`] does not hold for it).
+pub(super) fn operands(expr: &Expr, op: TokenType) -> Option<(&Expr, &Expr, bool)> {
+    match unparen(expr) {
+        Expr::Binary(BinaryExpr {
+            lhs,
+            rhs,
+            op: o,
+            modifier,
+        }) if *o == op => Some((unparen(lhs), unparen(rhs), !has_matching(modifier))),
+        _ => None,
+    }
+}
+
+/// Whether `expr` is `needle`, or a chain of `op` with no matching modifier anywhere in it
+/// that has `needle` as an operand.
+///
+/// For a set operator that is what makes `needle` cover the chain: every series an
+/// unmodified `and` chain returns has its labels in each operand, and an unmodified `or`
+/// chain returns a series with the labels of every one of each operand's.
+pub(super) fn plain_chain_contains(expr: &Expr, needle: &Expr, op: TokenType) -> bool {
+    match operands(expr, op) {
+        Some((lhs, rhs, true)) => {
+            plain_chain_contains(lhs, needle, op) || plain_chain_contains(rhs, needle, op)
         }
-        _ => expr == needle,
+        _ => unparen(expr) == unparen(needle),
+    }
+}
+
+/// The operand an `and` chain takes its series from: its leftmost one, whatever the chain's
+/// modifiers. `and` only ever drops series of its left operand, so every series the chain
+/// returns is one of this one's, with its value.
+pub(super) fn and_chain_source(expr: &Expr) -> &Expr {
+    match operands(expr, TokenType::new(T_LAND)) {
+        Some((lhs, _, _)) => and_chain_source(lhs),
+        None => unparen(expr),
     }
 }
 
@@ -40,35 +81,6 @@ pub(super) fn is_number(s: &Expr) -> bool {
 pub(super) fn is_null(expr: &Expr) -> bool {
     match expr {
         Expr::NumberLiteral(NumberLiteral { val, .. }) => val.is_nan(),
-        _ => false,
-    }
-}
-
-/// returns true if `haystack` looks like `(needle OP X)` or `(X OP needle)`
-pub(super) fn is_op_with(target_op: TokenType, haystack: &Expr, needle: &Expr) -> bool {
-    // unwrap needle if it's paren-wrapped so comparisons succeed
-    if let Expr::Paren(pn) = needle {
-        return is_op_with(target_op, haystack, &pn.expr);
-    }
-
-    match haystack {
-        // unwrap parentheses and inspect inner expression
-        Expr::Paren(p) => is_op_with(target_op, &p.expr, needle),
-        Expr::Binary(BinaryExpr { lhs, op, rhs, .. }) if op == &target_op => {
-            // compare needle with lhs/rhs after unwrapping any Paren wrapper on them
-            let lhs_un = match lhs.as_ref() {
-                Expr::Paren(p) => p.expr.as_ref(),
-                other => other,
-            };
-            let rhs_un = match rhs.as_ref() {
-                Expr::Paren(p) => p.expr.as_ref(),
-                other => other,
-            };
-            if needle == lhs_un || needle == rhs_un {
-                return true;
-            }
-            false
-        }
         _ => false,
     }
 }

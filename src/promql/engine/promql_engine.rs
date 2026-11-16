@@ -486,6 +486,78 @@ mod tests {
         }
     }
 
+    /// The static optimizer's set-operator rewrites and filter push-down must not change a
+    /// result. Each query here was rewritten, before, into one that answered differently:
+    /// values from the other operand, series an `on(job)` let through, or an `absent()`
+    /// whose regex matcher was taken for a label on its output.
+    #[test]
+    fn optimized_set_operators_match_unoptimized_results() {
+        let querier = MemorySeriesQuerier::new();
+        let add = |name: &str, pairs: &[(&str, &str)], value: f64| {
+            let mut labels = vec![Label {
+                name: "__name__".to_string(),
+                value: name.to_string(),
+            }];
+            labels.extend(pairs.iter().map(|(n, v)| Label {
+                name: n.to_string(),
+                value: v.to_string(),
+            }));
+            querier.add_sample(
+                &crate::labels::Labels::new(labels),
+                Sample::new(4_000_000, value),
+            );
+        };
+        add("foo", &[("job", "a"), ("inst", "1")], 1.0);
+        add("foo", &[("job", "a"), ("inst", "2")], 2.0);
+        add("foo", &[("job", "b"), ("inst", "4")], 4.0);
+        add("bar", &[("job", "a"), ("inst", "1")], 10.0);
+        add("bar", &[("job", "a"), ("inst", "3")], 30.0);
+        add("bar", &[("job", "c"), ("inst", "5")], 50.0);
+        add("lonely", &[], 7.0);
+        let tsdb = PromqlQuerier::with_query_reader(Arc::new(querier));
+        let at = Some(UNIX_EPOCH + Duration::from_secs(4_000));
+
+        let answer = |query: &str, optimize_queries: bool| {
+            let opts = QueryOptions {
+                optimize_queries,
+                ..QueryOptions::default()
+            };
+            let QueryValue::Vector(samples) = tsdb.eval_query(query, at, &opts).unwrap() else {
+                panic!("{query}: expected a vector");
+            };
+            let mut rendered: Vec<String> = samples
+                .iter()
+                .map(|s| format!("{:?} {}", s.labels, s.value))
+                .collect();
+            rendered.sort();
+            rendered
+        };
+        for query in [
+            "foo and (bar and foo)",
+            "(bar and foo) or foo",
+            "(bar or foo) and foo",
+            "(bar or on(job) foo) or foo",
+            "foo or (bar and on(job) foo)",
+            "foo and (bar or on(job) foo)",
+            "(foo and bar) or on(job) foo",
+            "foo and (foo and bar)",
+            "(foo and bar) and foo",
+            "(bar and foo) and foo",
+            "foo or (foo and bar)",
+            "foo or (bar and foo)",
+            "(foo and on(job) bar) or foo",
+            "(bar or foo) or foo",
+            "foo and (foo or bar)",
+            "foo and (bar or foo)",
+            "(foo or on(job) bar) and foo",
+            r#"lonely + absent(foo{job=~"x|y"})"#,
+        ] {
+            assert_eq!(answer(query, true), answer(query, false), "{query}");
+        }
+        // The absent() case answers at all: `lonely{}` + `{}` is one series.
+        assert_eq!(answer(r#"lonely + absent(foo{job=~"x|y"})"#, true).len(), 1);
+    }
+
     #[test]
     fn optimized_range_evaluation_matches_unoptimized_results() {
         let querier = MemorySeriesQuerier::new();
