@@ -405,6 +405,14 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         assert self.instant_query('timestamp(stamped)', 30).result[0].value.value == 4
         assert self.instant_query('timestamp(abs(stamped))', 30).result[0].value.value == 30
 
+    def test_a_duration_out_of_range_is_a_parse_error(self):
+        """A numeric duration past what the parser can hold (`[1e20]`) made it panic: the
+        client got an internal error. It is a parse error, and the connection carries on."""
+        for query in ('count_over_time(up[1e20])', 'up offset 1e20'):
+            with pytest.raises(ResponseError, match='could not be parsed'):
+                self.client.execute_command('TS.QUERY', query)
+        assert self.client.ping()
+
     def test_error_on_invalid_time_format(self):
         """Test TS.QUERY with an invalid TIME format."""
         self.setup_simple_series()
