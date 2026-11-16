@@ -269,6 +269,7 @@ class TestTimeSeriesDebug(ValkeyTimeSeriesTestCaseDebugMode):
             'ts-cluster-map-expiration-ms',
             'ts-outliers-max-samples',
             'ts-fanout-rollup-pushdown',
+            'ts-outliers-max-samples',
             'ts-index-persist',
             'debug-mode',
             'ts-promql-set-lookback-to-step',

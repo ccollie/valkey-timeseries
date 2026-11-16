@@ -41,6 +41,7 @@ mod debug;
 pub(crate) mod fanout_codec;
 mod label_search_utils;
 mod outliers_cost;
+mod promql_utils;
 mod ts_add;
 mod ts_addbulk;
 mod ts_alter;
