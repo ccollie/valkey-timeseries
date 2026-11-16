@@ -227,6 +227,93 @@ fn for_each_child<'a>(expr: &'a Expr, mut f: impl FnMut(&'a Expr)) {
 /// `a or b or ...` chain counts one per operand.
 pub const MAX_QUERY_DEPTH: usize = 500;
 
+/// The most binary and unary operators a query may chain at one nesting level:
+/// [`MAX_QUERY_DEPTH`], which a longer chain almost always passes once parsed (only an
+/// unusual mix of operator precedences nests less than one level per operator). At this
+/// limit the slowest query the longest text allows, 128 KiB of 500-operator chains inside
+/// separate calls, parsed in 0.34 s; the 16 KiB chain the old maximum allowed took 1.2 s.
+pub const MAX_OPERATORS_PER_LEVEL: usize = MAX_QUERY_DEPTH;
+
+/// Refuses a query that chains more than [`MAX_OPERATORS_PER_LEVEL`] operators at one
+/// nesting level, before it is parsed: the cheap stand-in for the depth check, run where
+/// the depth check cannot be.
+///
+/// The parser takes time quadratic in such a chain — measured with promql-parser 0.11 in
+/// release, a 16 KiB `u+u+…` took 1.2 s, a 64 KiB `a or b or …` 1.6 s and 256 KiB 22 s —
+/// while brackets, function calls, matchers and long regex alternations parse in
+/// milliseconds at any length the query limit allows. One pass over the text, O(length), so
+/// it runs on the main thread. Strings, label matchers (`{…}`) and comments are skipped;
+/// a level is a pair of `()` or `[]`.
+pub(crate) fn check_operator_chains(query: &str) -> Result<(), String> {
+    let bytes = query.as_bytes();
+    let mut levels: Vec<usize> = vec![0];
+    let mut in_matchers = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let mut operator = false;
+        match b {
+            b'"' | b'\'' | b'`' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b {
+                    if bytes[i] == b'\\' && b != b'`' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'{' => in_matchers = true,
+            b'}' => in_matchers = false,
+            _ if in_matchers => {}
+            b'(' | b'[' => levels.push(0),
+            b')' | b']' => {
+                if levels.len() > 1 {
+                    levels.pop();
+                }
+            }
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'^' => operator = true,
+            b'=' | b'!' | b'<' | b'>' => {
+                operator = true;
+                if bytes.get(i + 1) == Some(&b'=') {
+                    i += 1;
+                }
+            }
+            _ if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = i;
+                while i + 1 < bytes.len()
+                    && (bytes[i + 1].is_ascii_alphanumeric() || matches!(bytes[i + 1], b'_' | b':'))
+                {
+                    i += 1;
+                }
+                let word = &query[start..=i];
+                operator = ["and", "or", "unless", "atan2"]
+                    .iter()
+                    .any(|op| word.eq_ignore_ascii_case(op));
+            }
+            _ => {}
+        }
+        if operator {
+            let count = levels
+                .last_mut()
+                .expect("the outermost level is never popped");
+            *count += 1;
+            if *count > MAX_OPERATORS_PER_LEVEL {
+                return Err(format!(
+                    "TSDB: query has more than {MAX_OPERATORS_PER_LEVEL} operators at one \
+                     nesting level"
+                ));
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 /// Rejects an expression nested deeper than [`MAX_QUERY_DEPTH`].
 ///
 /// Walks the tree with an explicit stack rather than recursion: this runs on
@@ -248,6 +335,51 @@ pub(crate) fn check_query_depth(expr: &Expr) -> Result<(), String> {
 #[cfg(test)]
 mod depth_tests {
     use super::*;
+
+    #[test]
+    fn long_operator_chains_are_refused_before_parsing() {
+        let n = MAX_OPERATORS_PER_LEVEL;
+        for (shape, chain) in [
+            (
+                "binary",
+                (|k: usize| format!("u{}", "+u".repeat(k))) as fn(usize) -> String,
+            ),
+            ("unary", |k| format!("{}u", "-".repeat(k))),
+            ("or", |k| format!("u{}", " or u".repeat(k))),
+            ("comparison", |k| format!("u{}", " >= u".repeat(k))),
+        ] {
+            assert!(
+                check_operator_chains(&chain(n)).is_ok(),
+                "{shape} at the limit"
+            );
+            let err = check_operator_chains(&chain(n + 1)).unwrap_err();
+            assert!(
+                err.contains("operators at one nesting level"),
+                "{shape}: {err}"
+            );
+        }
+        // Each bracket level counts on its own.
+        let half = format!("u{}", "+u".repeat(n));
+        assert!(check_operator_chains(&format!("({half}) + ({half}) + abs({half})")).is_ok());
+    }
+
+    #[test]
+    fn operators_in_strings_matchers_and_comments_do_not_count() {
+        let plus = "+".repeat(3 * MAX_OPERATORS_PER_LEVEL);
+        for query in [
+            format!(r#"up{{job=~"{plus}"}}"#),
+            format!(r#"up{{job!~"a", env="{plus}"}}"#),
+            format!(r#"label_replace(up, "a", "{plus}", "b", "(.*)")"#),
+            format!("up # {plus}\n"),
+            format!("up{{a=\"\\\"{plus}\"}}"),
+        ] {
+            assert!(check_operator_chains(&query).is_ok(), "{query}");
+        }
+        // A long alternation over many hosts: the case a longer query limit is for.
+        let hosts: Vec<String> = (0..5_000).map(|i| format!("host-{i}")).collect();
+        let query = format!(r#"sum(up{{instance=~"{}"}})"#, hosts.join("|"));
+        assert!(check_operator_chains(&query).is_ok());
+    }
 
     fn depth_ok(query: &str) -> Result<(), String> {
         check_query_depth(&promql_parser::parser::parse(query).expect("valid query"))

@@ -167,7 +167,10 @@ impl TryFrom<&str> for CompatibilityMode {
 // construction; these are the values the server registers and `register_config` pushes into
 // `PROMQL_CONFIG` once the startup configuration has been resolved.
 const PROMQL_MAX_QUERY_LEN_MIN: i64 = 1024; // 1 KiB
-const PROMQL_MAX_QUERY_LEN_MAX: i64 = 16 * 1024; // 16 KiB
+// 128 KiB: long label-value alternations (`instance=~"a|b|…"`, as dashboards generate) parse
+// in tens of milliseconds at that size. What made a long query slow to parse, a long operator
+// chain, is refused by its own pre-parse check (`promql::utils::check_operator_chains`).
+const PROMQL_MAX_QUERY_LEN_MAX: i64 = 128 * 1024; // 128 KiB
 const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
 const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
 const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
