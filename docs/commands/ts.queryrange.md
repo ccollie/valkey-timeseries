@@ -228,6 +228,7 @@ query with `HASHTAG`.
 | `ts-promql-max-queued-queries` queries are already waiting for a worker | `TSDB: too many queued PromQL queries (ts-promql-max-queued-queries = <limit>)`; nothing ran, so the query can be retried as it is |
 | The query would load more than `ts-promql-max-samples-per-query` samples | `query processing would load too many samples into memory: <n> > <limit> (ts-promql-max-samples-per-query)` |
 | The expression is nested more than 500 levels deep | `TSDB: query is nested too deeply; the limit is 500 levels` |
+| More than 500 operators are chained at one nesting level (checked before parsing) | `TSDB: query has more than 500 operators at one nesting level` |
 | A regex matcher is invalid, or would compile past the module's size limit | `TSDB: the regex for label '<label>' is invalid or too large` |
 | A selector matches a key the user may not read (see [Permissions](#permissions)) | `execution error: TSDB: current user doesn't have read permission to one or more keys that match the specified filter` |
 | `label_replace` or `label_join` would build a label value longer than 16 KiB | `execution error: <function>(): the value of label "<label>" would be longer than 16384 bytes` |

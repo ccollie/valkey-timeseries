@@ -32,7 +32,7 @@ pub(crate) use exec::{Evaluator, ExprResult, subquery_grid_counts};
 pub(crate) use model::EvalContext;
 pub use model::{InstantSample, QueryValue, RangeSample};
 pub(crate) use time::{MAX_GRID_STEPS, duration_ms};
-pub(crate) use utils::check_query_depth;
+pub(crate) use utils::{check_operator_chains, check_query_depth};
 use valkey_module::ValkeyResult;
 
 pub(crate) use functions::register_parser_functions;

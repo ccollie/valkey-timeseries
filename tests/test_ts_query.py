@@ -610,12 +610,14 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 16384)
         try:
             # Past the measured overflow point (~1,900 vector operators).
+            # Refused before parsing: more operators at one level than the depth allows.
             chain = "u" + "+u" * 2500
-            with pytest.raises(ResponseError, match="nested too deeply"):
+            with pytest.raises(ResponseError, match="operators at one nesting level"):
                 self.client.execute_command('TS.QUERY', chain)
             assert self.client.execute_command('PING')
 
-            deep = "http_requests_total" + " + http_requests_total" * 700
+            # Within that, but nested past the limit once parsed.
+            deep = "abs(" * 600 + "http_requests_total" + ")" * 600
             assert len(deep) <= 16384
             with pytest.raises(ResponseError, match="nested too deeply"):
                 self.client.execute_command('TS.QUERY', deep)
@@ -685,15 +687,41 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError, match='max series limit: 1500 > 1000'):
             self.client.execute_command('TS.QUERY', 'wide', 'TIME', '1')
 
+    def test_a_long_label_alternation_fits_a_raised_query_limit(self):
+        """Dashboards generate long alternations, `instance=~"a|b|..."`, one value per host.
+        `ts-promql-max-query-len` could not go past 16 KiB; it now goes to 128 KiB, and a
+        1,000-host alternation (19 KB) parses in milliseconds."""
+        for i in range(3):
+            self.client.execute_command('TS.ADD', f'alt:{i}', 1000, 1,
+                                        'LABELS', '__name__', 'alt_up', 'instance', f'host-{i:05d}.example')
+        hosts = "|".join(f"host-{i:05d}.example" for i in range(1000))
+        query = f'count(alt_up{{instance=~"{hosts}"}})'
+        assert len(query) > 16384
+        with pytest.raises(ResponseError, match='query too long'):
+            self.client.execute_command('TS.QUERY', query, 'TIME', 1)
+        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 131072)
+        try:
+            result = QueryResult.from_raw(self.client.execute_command('TS.QUERY', query, 'TIME', 1))
+            assert result.result[0].value.value == 3
+            with pytest.raises(ResponseError):
+                self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 131073)
+        finally:
+            self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 4096)
+
     def test_slow_parses_do_not_stall_the_main_thread(self):
-        """Parsing grows faster than the query text: a 16 KiB chain of unary minus signs took
-        about 0.76 s to parse, and the depth check that refuses it runs only afterwards. The
-        command handler used to parse on the main thread, so every client waited for every
-        such query. The text is now parsed on a query worker, and the error still arrives."""
-        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 16384)
+        """Parsing grows faster than the query text: a long operator chain takes time
+        quadratic in its length, and the depth check that refuses it runs only afterwards.
+        The command handler used to parse on the main thread, so every client waited for every
+        such query. Chains past 500 operators are refused before parsing now; the slowest
+        query left, 128 KiB of 500-operator chains in separate calls, parses on a query
+        worker in about a third of a second, and its error still arrives."""
+        self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-query-len", 131072)
         connections = []
         try:
-            deep = "-" * 16000 + "up"
+            chain = "abs(u" + "+u" * 500 + ")"
+            deep = chain
+            while len(deep) + len(chain) + 3 <= 131072:
+                deep += " + " + chain
             for _ in range(4):
                 conn = Connection(host=self.server.bind_ip, port=self.server.port, socket_timeout=30)
                 conn.connect()

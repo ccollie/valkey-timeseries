@@ -17,7 +17,7 @@ use crate::parser::{
     timestamp::parse_timestamp as parse_timestamp_internal, timestamp::timestamp_error,
 };
 use crate::promql::engine::promql_config::PromqlConfig;
-use crate::promql::{check_query_depth, duration_ms};
+use crate::promql::{check_operator_chains, check_query_depth, duration_ms};
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
@@ -1770,6 +1770,8 @@ fn check_promql_query_text(query: &str, config: &PromqlConfig) -> ValkeyResult<(
         let msg = "TSDB: query too long"; // todo: better error
         return Err(ValkeyError::Str(msg));
     }
+    // Before the parser, which takes time quadratic in a long operator chain.
+    check_operator_chains(query).map_err(ValkeyError::String)?;
     Ok(())
 }
 
@@ -2137,13 +2139,18 @@ mod tests {
         assert_eq!(error_text(long), "TSDB: query too long");
         assert!(check_promql_query_text(&"u".repeat(1024), &config).is_ok());
 
-        let deep = format!("{}up", "-".repeat(1000));
+        // Parsed on the worker: the depth check there refuses what is nested too deeply.
+        let deep = format!("{}up", "-".repeat(500));
         for admitted in ["invalid {[}", r#"up{a=~"[a-z]{3000}"}"#, deep.as_str()] {
             assert!(
                 check_promql_query_text(admitted, &config).is_ok(),
                 "{admitted}"
             );
         }
+        // A longer chain is refused here, before the parser spends time quadratic in it.
+        let chain = format!("{}up", "-".repeat(501));
+        let err = check_promql_query_text(&chain, &config).unwrap_err();
+        assert!(error_text(err).contains("operators at one nesting level"));
     }
 
     /// The worker's parse refuses what the handler used to. A parse error carries the
