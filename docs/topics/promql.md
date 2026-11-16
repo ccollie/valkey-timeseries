@@ -523,7 +523,7 @@ at startup.
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| `ts-promql-max-concurrent-queries` | 8 | Evaluations running at once; further queries wait for a free worker. Immutable after startup. |
+| `ts-promql-max-concurrent-queries` | 8 | Evaluations running at once; further queries wait for a free worker. Each worker has its own pool of `ts-num-threads` threads for its evaluation's parallel work, built on its first query, so one query's work never waits behind another's. Immutable after startup. |
 | `ts-promql-max-queued-queries` | 128 | Queries that may wait for a worker; further ones are refused on arrival with an error. `0` means unbounded. |
 | `ts-promql-query-cache-max-entries` | 1024 | Parsed queries kept for reuse by later queries with the same text. `0` disables the cache. |
 | `ts-promql-query-cache-max-bytes` | 67108864 (64 MiB) | Estimated memory the parsed-query cache may hold. One query may take at most a sixteenth of it. `0` disables the cache. |

@@ -7,7 +7,7 @@
 //! | `Main` | the server's main thread: commands, callbacks, the cron | no | holds it |
 //! | `Blocking` | [`BoundedExecutor`] lanes (fan-out, PromQL queries, `TS.OUTLIERS`), the PromQL selector processor, [`spawn_background`] tasks | yes | yes |
 //! | `SharedPool` | orx-parallel's rayon-core pool, sized by `ts-num-threads` ([`init_thread_pool`]) | no | no |
-//! | `BlockingPool` | the pool PromQL evaluations fan out on ([`EVAL_POOL`]) | on the selector executor and, without stealing, an isolated pool ([`run_on_pool_cold`]) | no |
+//! | `BlockingPool` | the pools PromQL evaluations fan out on, one per query worker ([`run_on_eval_pool`]) | on the selector executor and, without stealing, an isolated pool ([`run_on_pool_cold`]) | no |
 //! | `IsolatedPool` | the pool the PromQL selector executor decodes on ([`MATERIALIZE_POOL`]) | no | no |
 //!
 //! The two pinned kinds are stated generically, so that a feature adds a pool, not a rule.
@@ -88,7 +88,8 @@ pub use orx_pool::{
     IntoParRayon, IterIntoParRayon, ModulePool, ParCollectionRayon, ParMutRayon, ParRayon,
     ParWithPool, RayonPool,
 };
-pub(crate) use pools::{EVAL_POOL, MATERIALIZE_POOL};
+pub(crate) use pools::MATERIALIZE_POOL;
+use pools::with_eval_pool;
 pub use role::{ThreadRole, current_role, on_pool_worker, set_thread_role};
 pub use single_flight::{Flight, SingleFlight};
 use std::env;
@@ -249,12 +250,14 @@ where
     });
 }
 
-/// Runs `work` on the evaluation pool and waits for it: the one sanctioned way in, because it
-/// checks R2 first. Every parallel entry point `work` reaches resolves to that pool (R4).
+/// Runs `work` on the calling thread's evaluation pool and waits for it: the one sanctioned
+/// way in, because it checks R2 first. Every parallel entry point `work` reaches resolves to
+/// that pool (R4). Each thread that calls this — a PromQL query worker — has a pool of its own,
+/// so one query's evaluation never runs nested inside another's (see `pools::EVAL_POOL`).
 #[track_caller]
 pub(crate) fn run_on_eval_pool<R: Send>(work: impl FnOnce() -> R + Send) -> R {
     check_may_wait_on_blocking_pool();
-    EVAL_POOL.install(work)
+    with_eval_pool(|pool| pool.install(work))
 }
 
 /// Runs `work` on `pool` and waits for it without running anything else meanwhile.
