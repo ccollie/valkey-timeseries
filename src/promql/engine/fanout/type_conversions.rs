@@ -1,6 +1,7 @@
 use crate::commands::fanout_codec::chunks::{deserialize_chunk, serialize_chunk};
 use crate::commands::fanout_codec::generated::SymbolTable;
 use crate::commands::fanout_codec::symbol_table::{EvalLabelResolver, SymbolTableBuilder};
+use crate::common::logging::log_debug;
 use crate::fanout::{FanoutError, NodeInfo};
 use crate::labels::HasFingerprint;
 use crate::labels::filters::{
@@ -491,14 +492,16 @@ pub(in crate::promql) fn merge_peer_partials(
     target: &NodeInfo,
     query: impl std::fmt::Display + Copy,
     deadline: &Deadline,
-    mut merge: impl FnMut(i64, EvalLabels, AggregationPartial),
+    mut merge: impl FnMut(i64, EvalLabels, AggregationPartial) -> Result<(), String>,
 ) -> Result<Option<QueryError>, FanoutError> {
     for mut partial in partials {
         let labels = resolver.resolve(&mut partial).map_err(|why| {
             FanoutError::from_peer(target, format_args!("returned malformed labels: {why}"))
         })?;
         let state = decode_peer_partial(partial.state, target, query)?;
-        merge(partial.step_ts, labels, state);
+        merge(partial.step_ts, labels, state).map_err(|why| {
+            FanoutError::from_peer(target, format_args!("returned {why} for {query}"))
+        })?;
         if let Err(err) = deadline.checkpoint(SERIES_WORK) {
             return Ok(Some(err));
         }
@@ -549,16 +552,19 @@ impl From<&AggregationOperation> for ProtoAggregationOperation {
 }
 
 /// A peer's operator, refused unless it is one that can be pushed down: a
-/// coordinator of this build sends no other.
+/// coordinator of this build sends no other. Refused as unsupported
+/// ([`FanoutError::unsupported_request`]), so that a newer coordinator's operator
+/// falls back to evaluating without the push-down.
 impl TryFrom<ProtoAggregationOperation> for AggregationOperation {
     type Error = ValkeyError;
 
     fn try_from(operation: ProtoAggregationOperation) -> ValkeyResult<Self> {
         let (kind, _) = decode_pushdown_kind(operation.kind).ok_or_else(|| {
-            ValkeyError::String(format!(
-                "TSDB: aggregation kind {} cannot be pushed down",
+            log_debug(format!(
+                "PromQL push-down: aggregation kind {} cannot be pushed down here; refused as unsupported",
                 operation.kind
-            ))
+            ));
+            FanoutError::unsupported_request()
         })?;
         Ok(Self {
             kind,
