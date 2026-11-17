@@ -558,6 +558,62 @@ mod tests {
         assert_eq!(answer(r#"lonely + absent(foo{job=~"x|y"})"#, true).len(), 1);
     }
 
+    /// `count_values("job", …)` writes each value into `job`, so its input's `job` filters
+    /// are not facts about its output. Taken as facts, they narrowed the other operand of
+    /// `+ on(job)` to the input's jobs, and the match was lost: with the static optimizer on
+    /// an instant query, and in the data-derived push-down on a range query.
+    #[test]
+    fn count_values_labels_are_not_facts_about_its_input() {
+        let querier = MemorySeriesQuerier::new();
+        let add = |name: &str, pairs: &[(&str, &str)], value: f64| {
+            let mut labels = vec![Label {
+                name: "__name__".to_string(),
+                value: name.to_string(),
+            }];
+            labels.extend(pairs.iter().map(|(n, v)| Label {
+                name: n.to_string(),
+                value: v.to_string(),
+            }));
+            for t in [3_940_000, 4_000_000] {
+                querier.add_sample(
+                    &crate::labels::Labels::new(labels.clone()),
+                    Sample::new(t, value),
+                );
+            }
+        };
+        add("up", &[("job", "api"), ("instance", "a")], 6.0);
+        add("info_metric", &[("job", "6")], 1.0);
+        add("info_metric", &[("job", "api")], 100.0);
+        let tsdb = PromqlQuerier::with_query_reader(Arc::new(querier));
+        let query = r#"count_values without(instance)("job", up{job="api"}) + on(job) info_metric"#;
+        let at = UNIX_EPOCH + Duration::from_secs(4_000);
+
+        for optimize_queries in [false, true] {
+            let opts = QueryOptions {
+                optimize_queries,
+                ..QueryOptions::default()
+            };
+            let QueryValue::Vector(v) = tsdb.eval_query(query, Some(at), &opts).unwrap() else {
+                panic!("expected a vector");
+            };
+            assert_eq!(v.len(), 1, "optimize {optimize_queries}: {v:?}");
+            assert_eq!(v[0].value, 2.0);
+            let range = tsdb
+                .eval_query_range(
+                    query,
+                    at - Duration::from_secs(60)..=at,
+                    Duration::from_secs(60),
+                    &opts,
+                )
+                .unwrap();
+            assert_eq!(
+                range.len(),
+                1,
+                "range, optimize {optimize_queries}: {range:?}"
+            );
+        }
+    }
+
     #[test]
     fn optimized_range_evaluation_matches_unoptimized_results() {
         let querier = MemorySeriesQuerier::new();

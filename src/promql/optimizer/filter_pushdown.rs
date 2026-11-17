@@ -320,6 +320,13 @@ fn call_filters(fe: &Call, arg_filters: impl FnOnce(usize) -> Vec<Matcher>) -> V
 /// The common filters of an aggregation's result, given those of its input:
 /// the ones on labels its grouping keeps.
 fn aggregate_filters(agg: &AggregateExpr, mut filters: Vec<Matcher>) -> Vec<Matcher> {
+    // `count_values` writes each sample's value into its label: a filter its input had on
+    // that label says nothing about its output.
+    if agg.op.id() == T_COUNT_VALUES
+        && let Some(label_name) = agg.param.as_deref()
+    {
+        filters = drop_label_filters_for_label_name(&filters, label_name);
+    }
     trim_filters_by_aggr_modifier(&mut filters, agg);
     filters
 }
