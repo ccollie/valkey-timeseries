@@ -817,8 +817,6 @@ eval instant at 50m histogram_quantiles(testhistogram3, "q", 0, 0.25, 0.5, 0.75,
 	{q="1.0", start="negative"} -0.1
 resume
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(testhistogram3_bucket, "q", 0, 0.25, 0.5, 0.75, 1)
 	expect no_warn
 	{q="0.0", start="positive"} 0
@@ -831,7 +829,6 @@ eval instant at 50m histogram_quantiles(testhistogram3_bucket, "q", 0, 0.25, 0.5
 	{q="0.75", start="negative"} -0.15
 	{q="1.0", start="positive"} 1
 	{q="1.0", start="negative"} -0.1
-resume
 
 # Break label set uniqueness.
 
@@ -841,11 +838,8 @@ eval instant at 50m histogram_quantiles(testhistogram3, "start", 0, 0.25, 0.5, 0
     expect fail
 resume
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(testhistogram3_bucket, "start", 0, 0.25, 0.5, 0.75, 1)
     expect fail
-resume
 
 # Quantile too low.
 
@@ -874,13 +868,10 @@ eval instant at 50m histogram_quantiles(testhistogram, "q", -0.1)
 	{q="-0.1", start="negative"} -Inf
 resume
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(testhistogram_bucket, "q", -0.1)
 	expect warn
 	{q="-0.1", start="positive"} -Inf
 	{q="-0.1", start="negative"} -Inf
-resume
 
 # Quantile too high.
 
@@ -909,13 +900,10 @@ eval instant at 50m histogram_quantiles(testhistogram, "q", 1.01)
 	{q="1.01", start="negative"} +Inf
 resume
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(testhistogram_bucket, "q", 1.01)
 	expect warn
 	{q="1.01", start="positive"} +Inf
 	{q="1.01", start="negative"} +Inf
-resume
 
 # Quantile invalid.
 
@@ -944,24 +932,18 @@ eval instant at 50m histogram_quantiles(testhistogram, "q", NaN)
 	{q="NaN", start="negative"} NaN
 resume
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(testhistogram_bucket, "q", NaN)
 	expect warn
 	{q="NaN", start="positive"} NaN
 	{q="NaN", start="negative"} NaN
-resume
 
 eval instant at 50m histogram_quantile(NaN, non_existent)
   expect warn regex: PromQL warning: quantile value should be between 0 and 1, got NaN \([0-9]+:[0-9]+\)
 
 eval instant at 50m histogram_quantiles(non_existent, "q", NaN)
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(non_existent, "q", NaN)
   expect warn regex: PromQL warning: quantile value should be between 0 and 1, got NaN \([0-9]+:[0-9]+\)
-resume
 
 # Quantile value in lowest bucket.
 
@@ -1388,14 +1370,11 @@ eval instant at 50m histogram_quantiles(nonmonotonic_bucket, "q", 0.01, 0.5, 0.9
     {q="0.5"} 8.5
     {q="0.99"} 979.75
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 50m histogram_quantiles(nonmonotonic_bucket, "q", 0.01, 0.5, 0.99)
     expect info regex: PromQL info: input to histogram_quantile needed to be fixed for monotonicity .* \(1:21\)
     {q="0.01"} 0.0045
     {q="0.5"} 8.5
     {q="0.99"} 979.75
-resume
 
 # Buckets with different representations of the same upper bound.
 eval instant at 50m histogram_quantile(0.5, rate(mixed_bucket[10m]))
@@ -1594,13 +1573,10 @@ eval instant at 0 histogram_quantile(0.8, series)
 	expect warn msg: PromQL warning: bucket label "le" is missing or has a malformed value of "" for metric name "series" (1:25)
 	# Should return no results.
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 0 histogram_quantiles(series, "q", 0.1, 0.2)
 	expect no_info
 	expect warn msg: PromQL warning: bucket label "le" is missing or has a malformed value of "" for metric name "series" (1:21)
 	# Should return no results.
-resume
 
 eval instant at 0 histogram_fraction(-Inf, 1, series)
 	expect no_info
@@ -1618,13 +1594,10 @@ eval instant at 0 histogram_quantile(0.8, series)
 	expect warn msg: PromQL warning: bucket label "le" is missing or has a malformed value of "Hello World" for metric name "series" (1:25)
 	# Should return no results.
 
-# Skipped: histogram_quantiles() is not implemented.
-ignore
 eval instant at 0 histogram_quantiles(series, "q", 0.1, 0.2)
 	expect no_info
 	expect warn msg: PromQL warning: bucket label "le" is missing or has a malformed value of "Hello World" for metric name "series" (1:21)
 	# Should return no results.
-resume
 
 eval instant at 0 histogram_fraction(-Inf, 1, series)
 	expect no_info

@@ -176,13 +176,10 @@ eval instant at 0s sum_over_time(sum_over_time(sum_over_time(metric{job="1"}[20s
 
 
 
-# ignoring minute function
-ignore
 # minute is counted on the value of the sample.
 eval instant at 10s minute(metric @ 1500)
   {job="1"} 2
   {job="2"} 5
-resume
 
 # timestamp() takes the time of the sample and not the evaluation time.
 eval instant at 10m timestamp(metric{job="1"} @ 10)
@@ -244,8 +241,6 @@ clear
 load 10s
   up 1 2 3
 
-# ignoring various functions (quantile_over_time, predict_linear, deriv, changes, resets, first_over_time, last_over_time)
-ignore
 
 # Functions that should return empty results when @ modifier points to timestamp with no data.
 # These were panicking before the fix.
@@ -263,7 +258,6 @@ eval instant at 1111111s resets({__name__="up"}[1h:1m] @ 1111111)
 eval instant at 1111111s first_over_time({__name__="up"}[1h:1m] @ 1111111)
 
 eval instant at 1111111s last_over_time({__name__="up"}[1h:1m] @ 1111111)
-resume
 
 
 eval instant at 1111111s sum_over_time({__name__="up"}[1h:1m] @ 1111111)
@@ -280,9 +274,7 @@ eval instant at 1111111s stddev_over_time({__name__="up"}[1h:1m] @ 1111111)
 
 eval instant at 1111111s stdvar_over_time({__name__="up"}[1h:1m] @ 1111111)
 
-ignore
 eval instant at 1111111s mad_over_time({__name__="up"}[1h:1m] @ 1111111)
-resume
 
 
 clear
