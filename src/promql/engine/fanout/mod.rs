@@ -114,6 +114,13 @@ impl From<FanoutError> for QueryError {
                         .then(|| QueryError::Overloaded(value.message.clone()))
                 })
                 .unwrap_or_else(|| QueryError::Execution(value.to_string())),
+            // A node with no room for a share (its own, a shard's, or the decode of a shard's
+            // answer) is refusing for load: the query ends, as for any other overload, rather
+            // than falling back to per-step reads that would each ask the same node again.
+            ErrorKind::Busy => QueryError::Overloaded(format!(
+                "{}: {value}",
+                error_consts::PROMQL_OVERLOADED_ERROR
+            )),
             _ => QueryError::Execution(value.to_string()),
         }
     }
@@ -177,6 +184,27 @@ mod tests {
             err.to_string(),
             too_many_samples(12_345, 10_000).to_string()
         );
+    }
+
+    /// A busy node, here or on a shard, is an overload: the query ends with a text that
+    /// names the overload and says to retry.
+    #[test]
+    fn a_busy_node_is_an_overload() {
+        for err in [
+            QueryError::from(FanoutError::busy()),
+            across_the_fanout(FanoutError::busy()),
+        ] {
+            assert!(matches!(err, QueryError::Overloaded(_)), "{err:?}");
+            assert!(err.ends_query());
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{}: A multi-shard command failed because a node has too many fanout \
+                     requests queued; retry later",
+                    error_consts::PROMQL_OVERLOADED_ERROR
+                )
+            );
+        }
     }
 
     #[test]
