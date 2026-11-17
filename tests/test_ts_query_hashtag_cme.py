@@ -133,9 +133,6 @@ class TestPromQLHashTagCluster(ValkeyTimeSeriesClusterTestCase):
         return QueryResult.from_raw(client.execute_command(*args))
 
     def range_query(self, query: str, tags=None, start=T0, end=T1, step='60s') -> QueryResult:
-        # TIME reads a bare integer as Unix *seconds* (the Prometheus HTTP
-        # API convention); START/END read one as milliseconds (the TS.*
-        # convention). RFC3339 sidesteps the difference.
         args = ['TS.QUERYRANGE', query, 'STEP', step,
                 'START', _rfc3339(start), 'END', _rfc3339(end)]
         if tags is not None:

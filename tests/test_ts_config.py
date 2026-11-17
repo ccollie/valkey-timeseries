@@ -690,7 +690,7 @@ class TestPromqlQueryQueueConfig(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command("TS.ADD", "q:cpu", 1000, 1.0, "LABELS", "__name__", "cpu")
         for _ in range(5):
             self.client.execute_command("TS.QUERY", "cpu", "TIME", 1000)
-            self.client.execute_command("TS.QUERYRANGE", "cpu", "START", 0, "END", 2000, "STEP", "1s")
+            self.client.execute_command("TS.QUERYRANGE", "cpu", "START", 0, "END", 2, "STEP", "1s")
         info = self._promql_info()
         assert set(info) >= {"ts_promql_queries_running", "ts_promql_queries_queued",
                              "ts_promql_queries_rejected_total"}
@@ -724,7 +724,7 @@ class TestPromqlQueryQueueConfig(ValkeyTimeSeriesTestCaseBase):
 
         before = counts()
         self.client.execute_command("TS.QUERY", "sum(w)", "TIME", 1)
-        self.client.execute_command("TS.QUERYRANGE", "w", "START", 0, "END", 2000, "STEP", "1s")
+        self.client.execute_command("TS.QUERYRANGE", "w", "START", 0, "END", 2, "STEP", "1s")
         fails("TS.QUERY", "sum(w", "TIME", 1)
         fails("TS.QUERY", 'label_replace(vector(1), "a", "b", "", "") + on() w', "TIME", 1)
         self.client.execute_command("CONFIG", "SET", "ts.ts-promql-max-response-series", 2)

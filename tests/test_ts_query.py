@@ -161,7 +161,7 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         self.setup_simple_series()
         commands = [
             ("TS.QUERY", "http_requests"),
-            ("TS.QUERYRANGE", "http_requests", "STEP", "1000", "START", "1000", "END", "5000"),
+            ("TS.QUERYRANGE", "http_requests", "STEP", "1000", "START", "1", "END", "5"),
         ]
         for command in commands:
             pipe = self.client.pipeline(transaction=True)
@@ -657,7 +657,7 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
             assert refused_at('TS.QUERY', 'wide', 'TIME', '1') == 11
             assert refused_at('TS.QUERY', 'sum(wide)', 'TIME', '1') == 11
             assert 10 < refused_at('TS.QUERY', 'wide[1m]', 'TIME', '1') < 1500
-            assert 10 < refused_at('TS.QUERYRANGE', 'wide', 'START', '1000', 'END', '61000',
+            assert 10 < refused_at('TS.QUERYRANGE', 'wide', 'START', '1', 'END', '61',
                                    'STEP', '30s') < 1500
 
             # Under the limit, the same read still sees every series.
@@ -684,7 +684,7 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
                 self.client.execute_command('TS.QUERY', query, 'TIME', '1'))
             assert result.result[0].value.value == 1500, query
         result = QueryResult.from_raw(self.client.execute_command(
-            'TS.QUERYRANGE', 'sum(wide)', 'START', '1000', 'END', '61000', 'STEP', '30s'))
+            'TS.QUERYRANGE', 'sum(wide)', 'START', '1', 'END', '61', 'STEP', '30s'))
         assert [p.value for p in result.result[0].values] == [1500, 1500, 1500]
 
         with pytest.raises(ResponseError, match='max series limit: 1500 > 1000'):
@@ -1008,8 +1008,8 @@ class TestQueryAdmission(ValkeyTimeSeriesTestCaseBase):
             # One series is well under it.
             assert self.client.execute_command('TS.QUERY', 'adm{i="7"}', 'TIME', '1')
             with pytest.raises(ResponseError, match='ts-promql-max-reply-bytes'):
-                self.client.execute_command('TS.QUERYRANGE', 'adm', 'START', '1000',
-                                            'END', '1000', 'STEP', '1s')
+                self.client.execute_command('TS.QUERYRANGE', 'adm', 'START', '1',
+                                            'END', '1', 'STEP', '1s')
         finally:
             self._set('ts.ts-promql-max-reply-bytes', '268435456')
 
@@ -1078,7 +1078,7 @@ class TestQueryCache(ValkeyTimeSeriesTestCaseBase):
         for _ in range(2):
             self.client.execute_command('TS.QUERY', text, 'TIME', '2')
         before = self._cache()
-        self.client.execute_command('TS.QUERYRANGE', text, 'START', '1000', 'END', '2000',
+        self.client.execute_command('TS.QUERYRANGE', text, 'START', '1', 'END', '2',
                                     'STEP', '1s')
         after = self._cache()
         assert after['hits'] - before['hits'] == 1
@@ -1117,11 +1117,11 @@ class TestQueryCache(ValkeyTimeSeriesTestCaseBase):
             return sorted(series.metric['host'] for series in QueryResult.from_raw(raw).result)
 
         # The second request caches the text, the third reuses it.
-        assert hosts(1000, 5000) == ['a']
-        assert hosts(100000, 105000) == ['b']
+        assert hosts(1, 5) == ['a']
+        assert hosts(100, 105) == ['b']
         before = self._cache()
-        assert hosts(1000, 5000) == ['a']
-        assert hosts(100000, 105000) == ['b']
+        assert hosts(1, 5) == ['a']
+        assert hosts(100, 105) == ['b']
         assert self._cache()['hits'] - before['hits'] == 2
 
     def test_a_failed_query_is_not_cached(self):

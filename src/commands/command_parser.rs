@@ -158,46 +158,19 @@ pub fn parse_timestamp_arg(arg: &str, name: &str) -> Result<TimestampValue, Valk
     })
 }
 
-/// Parse a PromQL-style timestamp argument where plain integers are treated as Unix seconds
-/// (following the Prometheus HTTP API convention: `/query?time=<unix_time_in_seconds>`).
+/// Parse a PromQL timestamp argument (`TS.QUERY TIME`, `TS.QUERYRANGE START`/`END`).
 ///
-/// A plain integer `N` is multiplied by 1000 to produce milliseconds, so `TIME 2` means
-/// 2 seconds from the Unix epoch (= 2000 ms).  RFC 3339 strings and special tokens
-/// (`*`, `+`, `-`) are handled the same as `parse_timestamp_arg`.
+/// A plain integer's unit is judged by its magnitude ([`scale_integer_timestamp`]), so the
+/// Prometheus HTTP API's seconds (`TIME 1672531200`) and this module's milliseconds
+/// (`TIME 1672531200000`) name the same instant; below 2^32 it is seconds, so `TIME 2` is
+/// 2000 ms. Everything else is read as by [`parse_timestamp_arg`]: a number with a fraction
+/// or exponent is seconds, and RFC 3339 strings, `*`, `+`, `-` and offsets with a unit
+/// (`-1h`) are accepted. A signed integer is not an offset: `+5000` is `5000`, and `-5000`
+/// is refused as negative.
 pub(super) fn parse_promql_time_arg(arg: &str, name: &str) -> Result<TimestampValue, ValkeyError> {
-    // Delegate special tokens and RFC-3339 dates to the existing parser.
-    match arg {
-        "-" => return Ok(TimestampValue::Earliest),
-        "+" => return Ok(TimestampValue::Latest),
-        "*" => return Ok(TimestampValue::Now),
-        _ => {}
-    }
-
-    // Relative durations like "+5m" or "-1h"
-    if let Some(ch) = arg.chars().next()
-        && (ch == '-' || ch == '+')
-        && arg.len() > 1
-    {
-        return parse_timestamp_range_value(arg).map_err(|_| {
-            let msg = format!("TSDB: invalid {name} timestamp");
-            ValkeyError::String(msg)
-        });
-    }
-
-    // Plain integers are scaled by magnitude, so small ones are Unix seconds.
-    let parsed = match arg.parse::<i64>() {
-        Ok(ts) => Ok(scale_integer_timestamp(ts)),
-        Err(_) => parse_timestamp_internal(arg),
-    };
-    match parsed {
-        Ok(ms) if ms >= 0 => Ok(TimestampValue::Specific(ms)),
-        _ => {
-            // Fall back to the RFC-3339 / full parser for date strings.
-            parse_timestamp_range_value(arg).map_err(|_| {
-                let msg = format!("TSDB: invalid {name} timestamp");
-                ValkeyError::String(msg)
-            })
-        }
+    match arg.parse::<i64>() {
+        Ok(ts) if ts >= 0 => Ok(TimestampValue::Specific(scale_integer_timestamp(ts))),
+        _ => parse_timestamp_arg(arg, name),
     }
 }
 
@@ -1888,13 +1861,15 @@ pub(super) fn parse_query_range_command_args(
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
+            // Same unit rule as `TS.QUERY TIME`, so a bound copied from one names the same
+            // instant in the other.
             CommandArgToken::Start => {
                 let next = args.next_str()?;
-                start_value = Some(parse_timestamp_arg(next, token.as_str())?);
+                start_value = Some(parse_promql_time_arg(next, token.as_str())?);
             }
             CommandArgToken::End => {
                 let next = args.next_str()?;
-                end_value = Some(parse_timestamp_arg(next, token.as_str())?);
+                end_value = Some(parse_promql_time_arg(next, token.as_str())?);
             }
             CommandArgToken::Step => {
                 step = Some(parse_duration_internal(args.next(), token.as_str())?);
@@ -2263,6 +2238,43 @@ mod tests {
                 two_minutes
             );
         }
+    }
+
+    fn promql_time_ms(arg: &str) -> Result<Timestamp, String> {
+        parse_promql_time_arg(arg, "START")
+            .map(|value| value.as_timestamp(Some(1_000_000)))
+            .map_err(error_text)
+    }
+
+    /// `TIME`, `START` and `END` read a bare integer's unit from its magnitude, so seconds
+    /// (the Prometheus HTTP API), milliseconds, microseconds and nanoseconds name one instant.
+    #[test]
+    fn a_promql_timestamp_unit_is_judged_by_magnitude() {
+        const MS: Timestamp = 1_672_531_200_000; // 2023-01-01T00:00:00Z
+        for arg in [
+            "1672531200",
+            "+1672531200",
+            "1672531200000",
+            "1672531200000000",
+            "1672531200000000000",
+            "1672531200.0",
+            "2023-01-01T00:00:00Z",
+        ] {
+            assert_eq!(promql_time_ms(arg), Ok(MS), "{arg}");
+        }
+        // Below 2^32 an integer is seconds; at 2^32 it is milliseconds.
+        assert_eq!(promql_time_ms("0"), Ok(0));
+        assert_eq!(promql_time_ms("2"), Ok(2_000));
+        assert_eq!(promql_time_ms("4294967295"), Ok(4_294_967_295_000));
+        assert_eq!(promql_time_ms("4294967296"), Ok(4_294_967_296));
+        assert_eq!(promql_time_ms("1.5"), Ok(1_500));
+        // Offsets from now (1_000_000 here) still need a unit; a signed integer is absolute.
+        assert_eq!(promql_time_ms("-1s"), Ok(999_000));
+        assert_eq!(promql_time_ms("+1m"), Ok(1_060_000));
+        assert_eq!(
+            promql_time_ms("-5"),
+            Err("TSDB: invalid START timestamp".into())
+        );
     }
 
     #[test]

@@ -104,10 +104,10 @@ class TestTimeSeriesReplication(ReplicationTestCase):
         ("TS.QUERY", "req", "TIME", "60"),
         ("TS.QUERY", "sum by (job) (rate(req[1m]))", "TIME", "60"),
         ("TS.QUERY", 'req{job="web"} > 0', "TIME", "60"),
-        ("TS.QUERYRANGE", "req", "START", "0", "END", "60000", "STEP", "10s"),
-        ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30000", "END", "60000",
+        ("TS.QUERYRANGE", "req", "START", "0", "END", "60", "STEP", "10s"),
+        ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30", "END", "60",
          "STEP", "10s"),
-        ("TS.QUERYRANGE", "max_over_time(req[1m:10s])", "START", "30000", "END", "60000",
+        ("TS.QUERYRANGE", "max_over_time(req[1m:10s])", "START", "30", "END", "60",
          "STEP", "15s"),
     ]
 

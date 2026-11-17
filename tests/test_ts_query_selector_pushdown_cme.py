@@ -125,8 +125,6 @@ class SelectorPushdownClusterBase(ValkeyTimeSeriesClusterTestCase):
         return self.new_client_for_primary(0)
 
     def range_query(self, query: str, start=T0, end=END, step='60s') -> QueryResult:
-        # START/END go over as RFC 3339: TS.QUERYRANGE reads a bare integer as
-        # milliseconds, TS.QUERY's TIME reads it as seconds.
         raw = self.coordinator().execute_command(
             'TS.QUERYRANGE', query, 'STEP', step,
             'START', _rfc3339(start), 'END', _rfc3339(end))
