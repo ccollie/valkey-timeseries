@@ -52,10 +52,18 @@ pub fn client_allows_replica_fanout(context: &Context) -> bool {
 }
 
 pub fn compute_query_fanout_target(context: &Context) -> FanoutTarget {
-    if client_allows_replica_fanout(context) {
-        FanoutTarget::Random
-    } else {
-        FanoutTarget::Primary
+    scoped_fanout_target(&[], client_allows_replica_fanout(context))
+}
+
+/// [`compute_hash_tag_fanout_target`] from a decision already taken: `allows_replicas` is
+/// [`client_allows_replica_fanout`] for the command's client, read on the command's own
+/// thread. For work that starts its fan-outs later, on another thread, whose context is
+/// not the client's and cannot tell whether it sent `READONLY`.
+pub fn scoped_fanout_target(tags: &[String], allows_replicas: bool) -> FanoutTarget {
+    match (tags.is_empty(), allows_replicas) {
+        (true, true) => FanoutTarget::Random,
+        (true, false) => FanoutTarget::Primary,
+        (false, _) => hash_tag_fanout_target(tags, allows_replicas),
     }
 }
 
@@ -116,6 +124,29 @@ fn get_hash_tag(key: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The target a command's reads take, from its client's `READONLY` decided up front:
+    /// primaries unless replica reads are allowed, the owning shards for `HASHTAG`.
+    #[test]
+    fn scoped_target_follows_the_replica_decision() {
+        assert!(matches!(
+            scoped_fanout_target(&[], false),
+            FanoutTarget::Primary
+        ));
+        assert!(matches!(
+            scoped_fanout_target(&[], true),
+            FanoutTarget::Random
+        ));
+        let tags = vec!["a".to_string()];
+        assert!(matches!(
+            scoped_fanout_target(&tags, false),
+            FanoutTarget::HashTagsPrimary(ref t) if *t == tags
+        ));
+        assert!(matches!(
+            scoped_fanout_target(&tags, true),
+            FanoutTarget::HashTags(ref t) if *t == tags
+        ));
+    }
 
     #[test]
     fn hash_tag_target_reads_replicas_when_the_client_allows_it() {

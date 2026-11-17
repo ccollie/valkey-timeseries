@@ -6,7 +6,7 @@ use crate::promql::engine::memory_series_querier::MemorySeriesQuerier;
 use crate::promql::engine::query_reader::{
     AggregationOutcome, AggregationRequest, GridOutcome, GridRequest, raw_grid_read,
 };
-use crate::promql::engine::selector_batch_executor::SelectorBatchExecutor;
+use crate::promql::engine::selector_batch_executor::{FanoutScope, SelectorBatchExecutor};
 use crate::promql::{InstantSample, QueryOptions, QueryResult, RangeSample};
 use promql_parser::label::{METRIC_NAME, MatchOp, Matcher, Matchers};
 use promql_parser::parser::VectorSelector;
@@ -28,7 +28,7 @@ pub struct ValkeySeriesQuerier {
     /// reads must use the same scope, so it is held here — on the reader that
     /// serves the whole command — rather than passed per call. `Arc<[String]>`
     /// so the selectors share the immutable list instead of cloning it.
-    hash_tags: Arc<[String]>,
+    scope: FanoutScope,
     /// Whether the server runs in cluster mode, read once on the command
     /// thread: the cluster-only pushdown toggles apply to a fanout, not to the
     /// same request answered locally.
@@ -94,7 +94,7 @@ impl QueryReader for ValkeySeriesQuerier {
             timestamp,
             options,
             self.caller_user.clone(),
-            self.hash_tags.clone(),
+            self.scope.clone(),
         )
     }
 
@@ -112,7 +112,7 @@ impl QueryReader for ValkeySeriesQuerier {
             end_ms,
             options,
             self.caller_user.clone(),
-            self.hash_tags.clone(),
+            self.scope.clone(),
         )
     }
 
@@ -142,7 +142,7 @@ impl QueryReader for ValkeySeriesQuerier {
             aggregation.clone(),
             options,
             self.caller_user.clone(),
-            self.hash_tags.clone(),
+            self.scope.clone(),
         )
     }
 
@@ -167,7 +167,7 @@ impl QueryReader for ValkeySeriesQuerier {
             request.clone(),
             options,
             self.caller_user.clone(),
-            self.hash_tags.clone(),
+            self.scope.clone(),
         )
     }
 
@@ -189,7 +189,7 @@ impl QueryReader for ValkeySeriesQuerier {
             window,
             options,
             self.caller_user.clone(),
-            self.hash_tags.clone(),
+            self.scope.clone(),
         )
     }
 }
@@ -258,7 +258,16 @@ pub(crate) fn series_querier(_ctx: &Context, _hash_tags: Arc<[String]>) -> Arc<d
             let user = _ctx.get_current_user().to_string();
             Arc::new(ValkeySeriesQuerier {
                 caller_user: (!user.is_empty()).then(|| Arc::from(user)),
-                hash_tags: _hash_tags,
+                // On the command's thread: only its context is the client's (see `FanoutScope`).
+                // Asked only where the query can fan out: a standalone server reads locally,
+                // and a context that cannot block (MULTI, a script) is refused before any
+                // read — and its client, the server's fake one, has no client info to ask.
+                scope: FanoutScope {
+                    hash_tags: _hash_tags,
+                    replicas: crate::fanout::is_clustered(_ctx)
+                        && !crate::common::context::is_blocking_denied(_ctx)
+                        && crate::fanout::client_allows_replica_fanout(_ctx),
+                },
                 clustered: crate::fanout::is_clustered(_ctx),
                 normalized: NormalizedSelectors::default(),
             })

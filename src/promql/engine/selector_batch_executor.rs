@@ -11,7 +11,7 @@ use crate::common::time::current_time_millis;
 use crate::fanout::{
     FanoutCommand, FanoutCommandResult, FanoutError, exec_command, get_cluster_command_timeout,
 };
-use crate::fanout::{compute_hash_tag_fanout_target, is_clustered};
+use crate::fanout::{is_clustered, scoped_fanout_target};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::EvalLabels;
 use crate::promql::deadline::Deadline;
@@ -238,6 +238,16 @@ impl TaskAnswer {
 /// Where a selector task's [`TaskAnswer`] goes.
 type Responder = mpsc::SyncSender<TaskAnswer>;
 
+/// Where one command's cluster reads go, decided on the command's own thread: the shards
+/// its `HASHTAG` names (every shard when empty), and whether a replica may answer for its
+/// shard. Selector fan-outs start later, on the processor thread, whose context is not the
+/// client's: asked there, `READONLY` read as unknown and every query could read replicas.
+#[derive(Debug, Clone, Default)]
+pub struct FanoutScope {
+    pub hash_tags: Arc<[String]>,
+    pub replicas: bool,
+}
+
 /// A single batched request for a `SelectorBatchExecutor`.
 struct SelectorTask {
     kind: SelectorTaskKind,
@@ -249,7 +259,7 @@ struct SelectorTask {
     /// A field on the task rather than on each kind: every selector in one
     /// expression shares the same scope regardless of which task kind carries
     /// it, and the local execution path ignores it entirely.
-    hash_tags: Arc<[String]>,
+    scope: FanoutScope,
     /// responder receives the processed result (Ok) or the error (Err)
     responder: Responder,
 }
@@ -442,14 +452,14 @@ impl SelectorBatchExecutor {
         timestamp: Timestamp,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<Vec<InstantSample<EvalLabels>>> {
         let command = SelectorTaskKind::Vector(InstantVectorSelectorCommand {
             matchers,
             timestamp,
             options,
         });
-        self.submit_selector_task(command, caller_user, hash_tags)?
+        self.submit_selector_task(command, caller_user, scope)?
             .into_vector()
     }
 
@@ -460,7 +470,7 @@ impl SelectorBatchExecutor {
         end: Timestamp,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<Vec<RangeSample<EvalLabels>>> {
         let command = SelectorTaskKind::Range(RangeSelectorCommand {
             matchers,
@@ -468,7 +478,7 @@ impl SelectorBatchExecutor {
             end_timestamp: end,
             options,
         });
-        self.submit_selector_task(command, caller_user, hash_tags)?
+        self.submit_selector_task(command, caller_user, scope)?
             .into_matrix()
     }
 
@@ -487,7 +497,7 @@ impl SelectorBatchExecutor {
         aggregation: AggregationRequest,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<AggregationOutcome> {
         let command = SelectorTaskKind::Aggregation(AggregationSelectorCommand {
             matchers,
@@ -495,7 +505,7 @@ impl SelectorBatchExecutor {
             aggregation,
             options,
         });
-        self.submit_selector_task(command, caller_user, hash_tags)?
+        self.submit_selector_task(command, caller_user, scope)?
             .into_aggregation()
     }
 
@@ -512,14 +522,14 @@ impl SelectorBatchExecutor {
         request: GridRequest,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<GridOutcome> {
         let command = SelectorTaskKind::Grid(GridSelectorCommand {
             matchers,
             request,
             options,
         });
-        self.submit_selector_task(command, caller_user, hash_tags)?
+        self.submit_selector_task(command, caller_user, scope)?
             .into_grid()
     }
 
@@ -534,14 +544,14 @@ impl SelectorBatchExecutor {
         window: Option<ProfileWindow>,
         options: QueryOptions,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<Option<LabelProfile>> {
         let command = SelectorTaskKind::Profile(ProfileSelectorCommand {
             matchers,
             window,
             options,
         });
-        self.submit_selector_task(command, caller_user, hash_tags)?
+        self.submit_selector_task(command, caller_user, scope)?
             .into_profile()
     }
 
@@ -549,7 +559,7 @@ impl SelectorBatchExecutor {
         &self,
         command: SelectorTaskKind,
         caller_user: Option<Arc<str>>,
-        hash_tags: Arc<[String]>,
+        scope: FanoutScope,
     ) -> QueryResult<SelectorOutput> {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let wait_limit = calculate_timeout(command.options()) + RESULT_WAIT_GRACE;
@@ -557,7 +567,7 @@ impl SelectorBatchExecutor {
         let task = SelectorTask {
             kind: command,
             caller_user,
-            hash_tags,
+            scope,
             responder: result_tx,
         };
 
@@ -620,7 +630,7 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
     let SelectorTask {
         kind,
         caller_user,
-        hash_tags,
+        scope,
         responder,
     } = task;
     let restore = RestoreDb::new(ctx);
@@ -633,7 +643,7 @@ fn execute_selector_task(ctx: &Context, task: SelectorTask) {
     // The fanout command captures the authenticated user while this scope is
     // active and propagates it to every shard.
     let result = with_acl_user(ctx, caller_user.as_deref(), |ctx| {
-        execute_selector_task_cluster(ctx, kind, &hash_tags, responder);
+        execute_selector_task_cluster(ctx, kind, &scope, responder);
         Ok(())
     });
 
@@ -723,7 +733,7 @@ fn pushdown_failure(
     Ok(unsupported)
 }
 
-/// Start the cluster fan-out of `cmd` over the shards `hash_tags` route to.
+/// Start the cluster fan-out of `cmd` over the shards `scope` route to.
 /// `answer` turns the command and its result into the selector's output once
 /// every shard has answered, run by the task's caller rather than the fan-out's
 /// completion (see [`TaskAnswer`]); a fan-out that cannot start answers its
@@ -732,7 +742,7 @@ fn pushdown_failure(
 fn fan_out<C, F>(
     ctx: &Context,
     cmd: C,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     timeout: Duration,
     cancel: CancelToken,
     responder: Responder,
@@ -741,7 +751,7 @@ fn fan_out<C, F>(
     C: FanoutCommand,
     F: FnOnce(C, FanoutCommandResult) -> QueryResult<SelectorOutput> + Send + 'static,
 {
-    let targets = compute_hash_tag_fanout_target(ctx, hash_tags);
+    let targets = scoped_fanout_target(&scope.hash_tags, scope.replicas);
     let handler = deferring_handler(responder.clone(), answer);
     match exec_command(ctx, cmd, targets, Instant::now(), timeout, handler) {
         // The query's client disconnecting completes the fan-out, and the remote shares are
@@ -775,7 +785,7 @@ where
 fn execute_cluster_vector_selector(
     ctx: &Context,
     iqc: InstantVectorSelectorCommand,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&iqc.options);
@@ -791,7 +801,7 @@ fn execute_cluster_vector_selector(
     fan_out(
         ctx,
         cmd,
-        hash_tags,
+        scope,
         timeout,
         cancel,
         responder,
@@ -810,7 +820,7 @@ fn execute_cluster_vector_selector(
 fn execute_cluster_range_selector(
     ctx: &Context,
     rc: RangeSelectorCommand,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&rc.options);
@@ -830,7 +840,7 @@ fn execute_cluster_range_selector(
     fan_out(
         ctx,
         cmd,
-        hash_tags,
+        scope,
         timeout,
         cancel,
         responder,
@@ -882,7 +892,7 @@ fn execute_cluster_range_selector(
 fn execute_cluster_aggregation(
     ctx: &Context,
     ac: AggregationSelectorCommand,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&ac.options);
@@ -896,7 +906,7 @@ fn execute_cluster_aggregation(
     fan_out(
         ctx,
         cmd,
-        hash_tags,
+        scope,
         timeout,
         cancel,
         responder,
@@ -947,7 +957,7 @@ fn execute_cluster_aggregation(
 fn execute_cluster_grid(
     ctx: &Context,
     gc: GridSelectorCommand,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&gc.options);
@@ -968,7 +978,7 @@ fn execute_cluster_grid(
     fan_out(
         ctx,
         cmd,
-        hash_tags,
+        scope,
         timeout,
         cancel,
         responder,
@@ -1015,7 +1025,7 @@ fn execute_cluster_grid(
 fn execute_cluster_label_profile(
     ctx: &Context,
     pc: ProfileSelectorCommand,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     let timeout = calculate_timeout(&pc.options);
@@ -1029,7 +1039,7 @@ fn execute_cluster_label_profile(
     fan_out(
         ctx,
         cmd,
-        hash_tags,
+        scope,
         timeout,
         cancel,
         responder,
@@ -1043,7 +1053,7 @@ fn execute_cluster_label_profile(
 fn execute_selector_task_cluster(
     ctx: &Context,
     kind: SelectorTaskKind,
-    hash_tags: &[String],
+    scope: &FanoutScope,
     responder: Responder,
 ) {
     // Every path below routes through the same scope, including the push-down
@@ -1051,19 +1061,19 @@ fn execute_selector_task_cluster(
     // selector read on the same reader, which carries these same tags.
     match kind {
         SelectorTaskKind::Vector(iqc) => {
-            execute_cluster_vector_selector(ctx, iqc, hash_tags, responder);
+            execute_cluster_vector_selector(ctx, iqc, scope, responder);
         }
         SelectorTaskKind::Range(rc) => {
-            execute_cluster_range_selector(ctx, rc, hash_tags, responder);
+            execute_cluster_range_selector(ctx, rc, scope, responder);
         }
         SelectorTaskKind::Aggregation(ac) => {
-            execute_cluster_aggregation(ctx, ac, hash_tags, responder);
+            execute_cluster_aggregation(ctx, ac, scope, responder);
         }
         SelectorTaskKind::Grid(gc) => {
-            execute_cluster_grid(ctx, gc, hash_tags, responder);
+            execute_cluster_grid(ctx, gc, scope, responder);
         }
         SelectorTaskKind::Profile(pc) => {
-            execute_cluster_label_profile(ctx, pc, hash_tags, responder);
+            execute_cluster_label_profile(ctx, pc, scope, responder);
         }
     }
 }
@@ -1246,7 +1256,7 @@ impl LocalRead {
         let SelectorTask {
             kind,
             caller_user,
-            hash_tags: _,
+            scope: _,
             responder,
         } = task;
         let db = kind.db();
