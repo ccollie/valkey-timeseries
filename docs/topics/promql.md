@@ -404,6 +404,16 @@ The following differences are intentional or are limitations of the current impl
   stricter rule would make the same query fail or succeed depending on the data and the
   push-down settings. A comparison over an ambiguous *matched* key errors as in
   Prometheus, even where the comparison would have filtered the pair out.
+- **`__name__` is dropped late, as in Prometheus' `promql-delayed-name-removal` mode.** A
+  function or operator that drops the metric name marks it to be dropped, and it is removed
+  only when the result leaves the query or an aggregation groups it, rather than at once as
+  default Prometheus does. Results differ from default Prometheus in a few corner cases. For
+  example, `sum by (__name__) (rate(m[5m]))` over two metrics is an error here (the names are
+  still there to group by, then dropped, leaving two series with the same labels), and
+  `histogram_quantile` over buckets of two metrics with otherwise equal labels computes two
+  histograms whose results then have the same labels, which is an error, where default
+  Prometheus merges the buckets into one. Prometheus with that feature flag enabled
+  answers as Valkey TimeSeries does.
 - **There are no staleness markers.** Prometheus writes a marker when a scrape target goes
   away or a series stops being exported, and a series disappears from query results at that
   marker. Valkey TimeSeries stores only the samples it is sent, so a series that stops
