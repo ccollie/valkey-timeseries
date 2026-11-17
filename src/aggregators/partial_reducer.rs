@@ -653,6 +653,11 @@ mod tests {
             (&[&[max], &[max]], max),
             (&[&[max, max, max, max], &[]], max),
             (&[&[max, max], &[-max]], max / 3.0),
+            // Shards whose sums overflow in opposite directions: merged, the sums are
+            // `+inf + -inf` = NaN, and the shadows cancel to the true mean.
+            (&[&[1e308, 1e308], &[-1e308, -1e308]], 0.0),
+            (&[&[max, max], &[-max], &[-max]], 0.0),
+            (&[&[1e308, -1e308, 1e308], &[-1e308]], 0.0),
             // One side already scaled, the other not.
             (&[&[max, max], &[1.0, 1.0]], max / 2.0),
             (&[&[-max, -max], &[-max, -max]], -max),
