@@ -141,6 +141,45 @@ fn sample_budget_covers_a_subquerys_reads() {
     try_range(reader, "max_over_time(a[2m:1m])", 0).expect("unlimited");
 }
 
+/// One sample fills every step of a subquery within the lookback after it, so
+/// a fine-stepped subquery over a few samples is far larger than its read. Its
+/// points are counted and refused before any is built.
+#[test]
+fn a_fine_subquery_over_sparse_series_is_refused_before_it_is_built() {
+    let querier = MemorySeriesQuerier::new();
+    for i in 0..100 {
+        let labels = Labels::new(vec![
+            crate::labels::Label::new("__name__", "probe"),
+            crate::labels::Label::new("instance", &i.to_string()),
+        ]);
+        querier.add_sample(&labels, Sample::new(RANGE_END_MS - 20_000, 1.0));
+    }
+    let reader: Arc<dyn QueryReader> = Arc::new(querier);
+    let instant = |max_samples| {
+        let expr = promql_parser::parser::parse("sum(count_over_time(probe[20s:1ms]))")
+            .expect("valid test query");
+        let stmt = EvalStmt {
+            expr,
+            start: ms(RANGE_END_MS),
+            end: ms(RANGE_END_MS),
+            interval: Duration::ZERO,
+            lookback_delta: options().lookback_delta,
+        };
+        let opts = QueryOptions {
+            max_samples,
+            ..options()
+        };
+        evaluate_instant(reader.clone(), stmt, ms(RANGE_END_MS), opts)
+    };
+    // 100 series × 20,000 steps.
+    let err = instant(1_000).expect_err("two million points are over the budget");
+    assert!(err.to_string().contains("2000000"), "{err}");
+    match instant(0).expect("unlimited") {
+        crate::promql::QueryValue::Vector(v) => assert_eq!(v[0].value, 2_000_000.0),
+        other => panic!("expected a vector, got {other:?}"),
+    }
+}
+
 #[test]
 fn oversized_subquery_is_rejected() {
     // `a[100y:1ms]` is ~3.15e12 steps; no configuration limits a subquery's grid.

@@ -309,7 +309,7 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
         step_ms: i64,
         lookback_delta_ms: i64,
     ) -> EvalResult<ExprResult> {
-        let result = read_subquery_vector_selector(
+        read_subquery_vector_selector(
             self.reader,
             vector_selector,
             subquery_start_ms,
@@ -317,9 +317,8 @@ impl<'reader, R: QueryReader + ?Sized> Evaluator<'reader, R> {
             step_ms,
             lookback_delta_ms,
             self.options,
-        )?;
-        self.charge_result(&result)?;
-        Ok(result)
+            |points| self.charge_samples(points),
+        )
     }
 
     /// Evaluate the subquery's inner expression at one of its steps.

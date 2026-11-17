@@ -7,7 +7,7 @@ use crate::common::threads::{IntoParRayon, request_par_threads};
 use crate::common::{Sample, Timestamp};
 use crate::promql::engine::QueryReader;
 use crate::promql::exec::types::EvalLabels;
-use crate::promql::time::{grid_step_count, step_times};
+use crate::promql::time::grid_step_count;
 use crate::promql::{EvalResult, EvalSample, EvalSamples, ExprResult, QueryOptions, RangeSample};
 use orx_parallel::Par;
 use promql_parser::parser::VectorSelector;
@@ -66,6 +66,12 @@ pub(crate) fn read_matrix<R: QueryReader + ?Sized>(
 /// The read reaches back by `lookback_delta_ms` before the first step so that
 /// step has data; each series still carries the subquery's own range, not
 /// the extended read's.
+///
+/// `charge` is given the number of points the result will hold before any of
+/// it is built: one sample can fill every step within the lookback after it,
+/// so the result can be far larger than the read (a sample under a 1 ms step
+/// fills 300,000 steps of the default 5 m lookback).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_subquery_vector_selector<R: QueryReader + ?Sized>(
     reader: &R,
     selector: &VectorSelector,
@@ -74,6 +80,7 @@ pub(crate) fn read_subquery_vector_selector<R: QueryReader + ?Sized>(
     step_ms: Timestamp,
     lookback_delta_ms: Timestamp,
     options: QueryOptions,
+    charge: impl FnOnce(usize) -> EvalResult<()>,
 ) -> EvalResult<ExprResult> {
     let steps = SubquerySteps {
         aligned_start_ms: align_subquery_start(start_ms, step_ms),
@@ -84,8 +91,13 @@ pub(crate) fn read_subquery_vector_selector<R: QueryReader + ?Sized>(
     };
     let read_start_ms = steps.aligned_start_ms.saturating_sub(lookback_delta_ms);
     let series = read_left_open(reader, selector, read_start_ms, end_ms, options)?;
+    let points: Vec<usize> = series
+        .iter()
+        .map(|s| subquery_point_count(&s.samples, &steps))
+        .collect();
+    charge(points.iter().fold(0usize, |sum, n| sum.saturating_add(*n)))?;
     Ok(ExprResult::RangeVector(shape_subquery_results(
-        series, &steps,
+        series, points, &steps,
     )))
 }
 
@@ -159,48 +171,121 @@ pub(crate) fn for_each_step_sample<I, F>(
     }
 }
 
+impl SubquerySteps {
+    /// How many steps the grid has: those of
+    /// [`step_times`](crate::promql::time::step_times), which yields
+    /// only the start for a step that is not positive.
+    fn len(&self) -> i128 {
+        if self.step_ms > 0 {
+            i128::from(grid_step_count(
+                self.aligned_start_ms,
+                self.end_ms,
+                self.step_ms,
+            ))
+        } else {
+            i128::from(self.aligned_start_ms <= self.end_ms)
+        }
+    }
+
+    /// The step at `index`, one of [`Self::len`].
+    fn at(&self, index: i128) -> Timestamp {
+        (i128::from(self.aligned_start_ms) + index * i128::from(self.step_ms.max(1))) as Timestamp
+    }
+
+    /// The indices of the steps in `[lo, hi)`.
+    fn indices_within(&self, lo: i128, hi: i128) -> std::ops::Range<i128> {
+        let step = i128::from(self.step_ms.max(1));
+        let start = i128::from(self.aligned_start_ms);
+        let first_at_or_after = |t: i128| {
+            let offset = t - start;
+            offset.div_euclid(step) + i128::from(offset.rem_euclid(step) != 0)
+        };
+        let len = self.len();
+        first_at_or_after(lo).clamp(0, len)..first_at_or_after(hi).clamp(0, len)
+    }
+}
+
+/// Call `on_sample` with each sample of `samples` (ascending by timestamp)
+/// that is the latest within the lookback at some step, and the indices of
+/// those steps — in order, together covering every step that has a sample.
+///
+/// The steps a sample answers are those from its own timestamp up to the next
+/// sample's, and short of its timestamp plus the lookback: the same answer as
+/// [`for_each_step_sample`] gives, found in time proportional to the samples
+/// and the steps they answer rather than to the whole grid. A sample at
+/// `i64::MIN` answers none, as there: its lookback bound saturates onto it.
+fn for_each_answered_step_range(
+    samples: &[Sample],
+    steps: &SubquerySteps,
+    mut on_sample: impl FnMut(&Sample, std::ops::Range<i128>),
+) {
+    let lookback = i128::from(steps.lookback_delta_ms);
+    for (i, sample) in samples.iter().enumerate() {
+        if sample.timestamp == Timestamp::MIN {
+            continue;
+        }
+        let from = i128::from(sample.timestamp);
+        let mut until = from + lookback;
+        if let Some(next) = samples.get(i + 1) {
+            until = until.min(i128::from(next.timestamp));
+        }
+        let indices = steps.indices_within(from, until);
+        if !indices.is_empty() {
+            on_sample(sample, indices);
+        }
+    }
+}
+
+/// How many points [`shape_subquery_results`] gives `samples`.
+fn subquery_point_count(samples: &[Sample], steps: &SubquerySteps) -> usize {
+    let mut points = 0usize;
+    for_each_answered_step_range(samples, steps, |_, indices| {
+        let n = usize::try_from(indices.end - indices.start).unwrap_or(usize::MAX);
+        points = points.saturating_add(n);
+    });
+    points
+}
+
 /// Reduce each series to its latest sample at every step of `steps`, within
 /// the lookback window, dropping series left with no step.
+///
+/// `points` is each series' [`subquery_point_count`], counted (and charged)
+/// before any of the output is built.
 ///
 /// Series are independent; a few short ones are shaped on the caller's
 /// thread, since a pool round trip would cost more than the work.
 fn shape_subquery_results(
     series_data: Vec<RangeSample<EvalLabels>>,
+    points: Vec<usize>,
     steps: &SubquerySteps,
 ) -> Vec<EvalSamples> {
-    let expected_steps =
-        grid_step_count(steps.aligned_start_ms, steps.end_ms, steps.step_ms) as usize;
-    let work = series_data.iter().map(|s| s.samples.len()).sum::<usize>()
-        + expected_steps * series_data.len();
+    debug_assert_eq!(series_data.len(), points.len());
+    let work =
+        series_data.iter().map(|s| s.samples.len()).sum::<usize>() + points.iter().sum::<usize>();
     let threads = request_par_threads(series_data.len(), work);
     series_data
+        .into_iter()
+        .zip(points)
+        .filter(|(_, points)| *points > 0)
+        .collect::<Vec<_>>()
         .into_par_rayon()
         .num_threads(threads)
-        .filter_map(|series| {
-            if series.samples.is_empty() {
-                return None;
-            }
-            let mut step_samples = Vec::with_capacity(expected_steps);
-            for_each_step_sample(
-                &series.samples,
-                step_times(steps.aligned_start_ms, steps.end_ms, steps.step_ms),
-                steps.lookback_delta_ms,
-                |step_ts, latest| {
-                    if let Some(latest) = latest {
-                        step_samples.push(Sample {
-                            timestamp: step_ts,
-                            value: latest.value,
-                        });
-                    }
-                },
-            );
-            (!step_samples.is_empty()).then(|| EvalSamples {
+        .map(|(series, points)| {
+            let mut step_samples = Vec::with_capacity(points);
+            for_each_answered_step_range(&series.samples, steps, |latest, indices| {
+                step_samples.extend(indices.map(|index| Sample {
+                    timestamp: steps.at(index),
+                    value: latest.value,
+                }));
+            });
+            debug_assert_eq!(step_samples.len(), points);
+            EvalSamples {
                 values: step_samples.into(),
                 labels: series.labels,
                 range_ms: steps.range_ms,
                 range_end_ms: steps.end_ms,
                 drop_name: false,
-            })
+            }
         })
         .collect()
 }
@@ -258,7 +343,11 @@ mod tests {
             range_ms: 30,
         };
 
-        let results = shape_subquery_results(bucket_data, &steps);
+        let points = bucket_data
+            .iter()
+            .map(|s| subquery_point_count(&s.samples, &steps))
+            .collect();
+        let results = shape_subquery_results(bucket_data, points, &steps);
         assert_eq!(results.len(), 1);
         let values = &results[0].values;
         assert_eq!(values.len(), 3);
@@ -362,6 +451,10 @@ mod tests {
             20,
             15,
             QueryOptions::default(),
+            |points| {
+                assert_eq!(points, 3);
+                Ok(())
+            },
         )
         .unwrap();
         let ExprResult::RangeVector(series) = &got else {
@@ -376,5 +469,121 @@ mod tests {
             by_series(got),
             vec![("a".to_string(), vec![(60, 60.0), (80, 80.0), (100, 100.0)])]
         );
+    }
+
+    /// The budget hears of the result before it is built: a refusal there
+    /// returns the error without shaping anything.
+    #[test]
+    fn a_subquery_read_is_charged_before_it_is_shaped() {
+        let refused = read_subquery_vector_selector(
+            &reader(),
+            &selector("m"),
+            40,
+            100,
+            20,
+            15,
+            QueryOptions::default(),
+            |points| {
+                Err(crate::promql::EvaluationError::InternalError(format!(
+                    "refused {points}"
+                )))
+            },
+        );
+        assert!(matches!(refused, Err(e) if e.to_string().contains("refused 3")));
+    }
+
+    /// Each step's latest sample within the lookback, walking the whole grid.
+    fn shape_by_steps(samples: &[Sample], steps: &SubquerySteps) -> Vec<(i64, f64)> {
+        let mut out = vec![];
+        for_each_step_sample(
+            samples,
+            crate::promql::time::step_times(steps.aligned_start_ms, steps.end_ms, steps.step_ms),
+            steps.lookback_delta_ms,
+            |ts, latest| {
+                if let Some(latest) = latest {
+                    out.push((ts, latest.value));
+                }
+            },
+        );
+        out
+    }
+
+    fn shaped(samples: Vec<Sample>, steps: &SubquerySteps) -> Vec<(i64, f64)> {
+        let points = vec![subquery_point_count(&samples, steps)];
+        let series = vec![make_loaded(vec![label("__name__", "m")], samples)];
+        let shaped = shape_subquery_results(series, points.clone(), steps);
+        let got: Vec<(i64, f64)> = shaped
+            .iter()
+            .flat_map(|s| s.values.iter().map(|p| (p.timestamp, p.value)))
+            .collect();
+        assert_eq!(
+            got.len(),
+            points[0],
+            "counted points differ from shaped ones"
+        );
+        got
+    }
+
+    fn steps(start: i64, end: i64, step: i64, lookback: i64) -> SubquerySteps {
+        SubquerySteps {
+            aligned_start_ms: start,
+            end_ms: end,
+            step_ms: step,
+            lookback_delta_ms: lookback,
+            range_ms: 0,
+        }
+    }
+
+    /// Walking only the steps each sample answers gives what walking every
+    /// step does, at the ends of the timestamp range too.
+    #[test]
+    fn answered_step_ranges_match_the_step_walk_at_the_extremes() {
+        let cases = [
+            (
+                vec![i64::MIN, i64::MIN + 5],
+                steps(i64::MIN, i64::MIN + 40, 3, 10),
+            ),
+            (
+                vec![i64::MAX - 7, i64::MAX],
+                steps(i64::MAX - 30, i64::MAX, 4, 50),
+            ),
+            (vec![0, 0, 0, 10], steps(-5, 30, 5, 7)),
+            (vec![3], steps(0, 10, 0, 100)),
+            (vec![3], steps(10, 0, 1, 100)),
+            (vec![3, 4], steps(0, 10, 1, 0)),
+            (vec![3, 4], steps(0, 10, 1, i64::MAX)),
+        ];
+        for (timestamps, grid) in cases {
+            let samples: Vec<Sample> = timestamps
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| sample(t, i as f64))
+                .collect();
+            assert_eq!(
+                shaped(samples.clone(), &grid),
+                shape_by_steps(&samples, &grid),
+                "{timestamps:?}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn answered_step_ranges_match_the_step_walk(
+            mut timestamps in proptest::collection::vec(-200i64..200, 0..20),
+            start in -250i64..250,
+            len in 0i64..400,
+            step in 1i64..40,
+            lookback in 0i64..120,
+        ) {
+            timestamps.sort_unstable();
+            let samples: Vec<Sample> = timestamps
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| sample(t, i as f64))
+                .collect();
+            let grid = steps(start, start + len, step, lookback);
+            proptest::prop_assert_eq!(shaped(samples.clone(), &grid), shape_by_steps(&samples, &grid));
+        }
     }
 }
