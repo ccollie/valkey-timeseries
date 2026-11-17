@@ -1,6 +1,6 @@
 use super::raw_replies::{
     IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_bulk_string,
-    reply_with_sample, reply_with_simple_string,
+    reply_with_sample,
 };
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -106,11 +106,6 @@ impl<'a> ReplyContext<'a> {
     /// Reply with a bulk string.
     pub fn reply_with_string(&self, value: &str) -> Status {
         reply_with_bulk_string(self.ctx.ctx, value)
-    }
-
-    /// Reply with a simple string; `\r`, `\n` and NUL become spaces.
-    pub fn reply_with_simple_string(&self, value: &str) -> Status {
-        reply_with_simple_string(self.ctx.ctx, value)
     }
 
     /// Reply with a `[timestamp, value]` pair.
