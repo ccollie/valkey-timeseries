@@ -174,6 +174,31 @@ mod tests {
         assert_eq!(result[3].value, -1.2);
     }
 
+    /// Prometheus rounds through the signed inverse of `to_nearest`: 0 gives NaN, and a
+    /// negative value breaks ties the other way. They were the input unchanged, and the
+    /// absolute value.
+    #[test]
+    fn should_round_like_prometheus_for_zero_and_negative_to_nearest() {
+        let round = |value: f64, to_nearest: f64| {
+            call_apply_args(
+                "round",
+                vec![
+                    PromQLArg::InstantVector(vec![create_sample(value)]),
+                    PromQLArg::Scalar(to_nearest),
+                ],
+                1000,
+            )[0]
+            .value
+        };
+        for value in [1.5, 0.0, -2.0] {
+            assert!(round(value, 0.0).is_nan(), "round({value}, 0)");
+        }
+        assert_eq!(round(2.5, 1.0), 3.0);
+        assert_eq!(round(2.5, -1.0), 2.0);
+        assert_eq!(round(-1.5, 1.0), -1.0);
+        assert_eq!(round(-1.5, -1.0), -2.0);
+    }
+
     #[test]
     fn should_apply_round_when_optional_argument_is_omitted() {
         let result = call_apply_args(
