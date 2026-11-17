@@ -16,6 +16,7 @@ except ImportError:
     HAVE_HYPOTHESIS = False
 
 from common import SERVER_PATH, get_module_path, parse_info_response
+from query_result import QueryResult
 from valkeytestframework.conftest import resource_port_tracker
 from valkeytestframework.util.waiters import wait_for_true
 from valkeytestframework.valkey_test_case import ReplicationTestCase
@@ -98,6 +99,56 @@ class TestTimeSeriesReplication(ReplicationTestCase):
         # writes; WAIT blocks until the replica acknowledges the primary's current offset.
         assert self.client.execute_command("WAIT", 1, 5000) == 1, \
             "replica did not acknowledge the primary's offset within 5 s"
+
+    PROMQL_QUERIES = [
+        ("TS.QUERY", "req", "TIME", "60"),
+        ("TS.QUERY", "sum by (job) (rate(req[1m]))", "TIME", "60"),
+        ("TS.QUERY", 'req{job="web"} > 0', "TIME", "60"),
+        ("TS.QUERYRANGE", "req", "START", "0", "END", "60000", "STEP", "10s"),
+        ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30000", "END", "60000",
+         "STEP", "10s"),
+        ("TS.QUERYRANGE", "max_over_time(req[1m:10s])", "START", "30000", "END", "60000",
+         "STEP", "15s"),
+    ]
+
+    def _promql_answers(self, client):
+        answers = []
+        for command in self.PROMQL_QUERIES:
+            result = QueryResult.from_raw(client.execute_command(*command))
+            if result.is_vector():
+                answers.append(sorted((sorted(s.metric.items()), s.value.value)
+                                      for s in result.result))
+            else:
+                answers.append(sorted((sorted(s.metric.items()), [(p.timestamp, p.value)
+                                                                   for p in s.values])
+                                      for s in result.result))
+        return answers
+
+    def test_promql_queries_answer_alike_on_the_replica(self):
+        """A replica answers TS.QUERY and TS.QUERYRANGE from its own copy of the series and
+        its own label index, kept by the replicated writes: the same answers as the primary,
+        before and after a range delete and a label change reach it."""
+        for job, instances in (("web", 3), ("api", 2)):
+            for i in range(instances):
+                key = f"req:{job}:{i}"
+                self.client.execute_command("TS.CREATE", key, "LABELS", "__name__", "req",
+                                            "job", job, "instance", str(i))
+                for t in range(0, 61, 5):
+                    self.client.execute_command("TS.ADD", key, t * 1000, t * (i + 1))
+        self.wait_for_replication()
+        replica = self.replicas[0].client
+        primary_answers = self._promql_answers(self.client)
+        assert all(primary_answers), primary_answers
+        assert self._promql_answers(replica) == primary_answers
+
+        # A deletion and a relabelling reach the replica's samples and its index.
+        self.client.execute_command("TS.DEL", "req:web:0", 20_000, 40_000)
+        self.client.execute_command("TS.ALTER", "req:api:1", "LABELS", "__name__", "req",
+                                    "job", "web", "instance", "9")
+        self.wait_for_replication()
+        changed = self._promql_answers(self.client)
+        assert changed != primary_answers
+        assert self._promql_answers(replica) == changed
 
     def test_basic_replication(self):
         """Test that basic time series operations replicate to replicas"""
