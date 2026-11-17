@@ -857,7 +857,10 @@ fn execute_cluster_range_selector(
                                 .collect::<QueryResult<Vec<_>>>()?;
                             let series = || responses.iter().flat_map(|r| r.series());
                             validate_max_samples(
-                                series().map(|s| s.chunk.len()).sum(),
+                                // Counts peers sent: saturating, so a corrupt one cannot
+                                // wrap past the budget.
+                                series()
+                                    .fold(0usize, |total, s| total.saturating_add(s.chunk.len())),
                                 max_samples,
                             )?;
                             // Still packed: the requester resolves and decodes them
