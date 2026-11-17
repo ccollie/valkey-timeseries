@@ -17,6 +17,8 @@ pub mod promql_config;
 pub mod promql_engine;
 mod querier;
 pub(crate) mod query_cache;
+#[cfg(test)]
+mod query_fuzz_tests;
 mod query_limits;
 #[cfg(test)]
 mod query_limits_tests;
