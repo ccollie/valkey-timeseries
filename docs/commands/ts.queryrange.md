@@ -237,6 +237,7 @@ query with `HASHTAG`.
 | The query ran past its `TIMEOUT` | `query timed out` |
 | The running sample totals of all running queries would together pass `ts-promql-max-samples-in-flight` | `PromQL query refused while the node is overloaded: running PromQL queries would have charged <n> > <limit> samples (ts-promql-max-samples-in-flight)` |
 | Memory use is at or past `ts-promql-max-memory-percent` of `maxmemory` | `PromQL query refused while the node is overloaded: memory use is <n>% of maxmemory, at or past ts-promql-max-memory-percent (<limit>%)` |
+| A node the query reads from has no room for its share, or for decoding a shard's answer (cluster) | `PromQL query refused while the node is overloaded: A multi-shard command failed because a node has too many fanout requests queued; retry later` |
 | The reply would be larger than `ts-promql-max-reply-bytes` | `the query's reply would be too large: about <n> bytes > <limit> (ts-promql-max-reply-bytes)` |
 
 ---

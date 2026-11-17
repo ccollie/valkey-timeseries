@@ -49,12 +49,14 @@ fn try_range(
 const SAMPLES_PER_SELECTOR: usize =
     3 * ((RANGE_END_MS - (RANGE_START_MS - 300_000)) / INTERVAL_MS) as usize;
 
-/// Refuses, as a shard over its own per-read limit would, any grid
-/// request spanning more than `max_span_ms`: the union of a subquery's
-/// windows is refused while each outer step's own window is answered.
+/// Refuses with `refusal`, as a shard over its own per-read limit (or out of
+/// room) would, any grid request spanning more than `max_span_ms`: the union
+/// of a subquery's windows is refused while each outer step's own window is
+/// answered.
 struct RefusesWideGrids {
     inner: Arc<dyn QueryReader>,
     max_span_ms: i64,
+    refusal: fn() -> crate::promql::QueryError,
 }
 
 impl QueryReader for RefusesWideGrids {
@@ -95,7 +97,7 @@ impl QueryReader for RefusesWideGrids {
         options: QueryOptions,
     ) -> QueryResult<GridOutcome> {
         if request.query_end - request.query_start > self.max_span_ms {
-            return Err(crate::promql::engine::sample_budget::too_many_samples(1, 1));
+            return Err((self.refusal)());
         }
         self.inner.query_grid(selector, request, options)
     }
@@ -214,10 +216,30 @@ fn a_refused_subquery_union_fails_the_query() {
     let reader: Arc<dyn QueryReader> = Arc::new(RefusesWideGrids {
         inner: build_data(),
         max_span_ms: 300_000,
+        refusal: || crate::promql::engine::sample_budget::too_many_samples(1, 1),
     });
     let err = try_range(reader, "max_over_time((a)[4m:1m])", 0)
         .expect_err("the union read was refused for too many samples");
     assert!(err.to_string().contains("too many samples"), "{err}");
+}
+
+/// A shard with no room for the union read is overloaded, and the query ends
+/// there: falling back to a read per outer step would ask the same busy node
+/// once per step.
+#[test]
+fn a_busy_refusal_of_the_subquery_union_fails_the_query() {
+    let reader: Arc<dyn QueryReader> = Arc::new(RefusesWideGrids {
+        inner: build_data(),
+        max_span_ms: 300_000,
+        refusal: || crate::fanout::FanoutError::busy().into(),
+    });
+    let err = try_range(reader, "max_over_time((a)[4m:1m])", 0)
+        .expect_err("the union read was refused as busy");
+    assert!(
+        matches!(err, crate::promql::QueryError::Overloaded(_)),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("retry later"), "{err}");
 }
 
 #[test]
