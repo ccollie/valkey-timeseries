@@ -380,8 +380,18 @@ where
                 if defer_response(lane, Arc::clone(&state), buf, *target, deadline).is_ok() {
                     return FanoutProgress::Pending;
                 }
-                // The lane is full: decode here, as before, rather than fail the fan-out.
-                deliver_response(&state, buf, target);
+                metrics::FANOUT_DECODE_BUSY.incr();
+                if OP::cancellable() {
+                    // The lane is full: the node is past the load its workers can take, and
+                    // decoding here would take the main thread from every other client for
+                    // as long as the decode lasts. A read fails as busy, as it does when a
+                    // shard has no room for its share; the rest of its shares are cancelled.
+                    state.on_error(FanoutError::busy(), target);
+                } else {
+                    // A write has already been applied on the shard that answered: decode
+                    // its (small) answer here rather than report a write as not done.
+                    deliver_response(&state, buf, target);
+                }
             }
             Ok(buf) => deliver_response(&state, buf, target),
         }
@@ -1313,13 +1323,13 @@ mod deferred_decode_tests {
 
     const WAIT: Duration = Duration::from_secs(5);
 
-    /// Counts the responses it was handed.
+    /// Counts the responses it was handed; an operation that writes when `WRITES`.
     #[derive(Default)]
-    struct Counting {
+    struct Counting<const WRITES: bool = false> {
         responses: usize,
     }
 
-    impl FanoutCommand for Counting {
+    impl<const WRITES: bool> FanoutCommand for Counting<WRITES> {
         type Request = LabelProfileQuery;
         type Response = LabelProfileQuery;
 
@@ -1332,6 +1342,10 @@ mod deferred_decode_tests {
             _req: LabelProfileQuery,
         ) -> ValkeyResult<LabelProfileQuery> {
             unreachable!("no local share in these tests")
+        }
+
+        fn cancellable() -> bool {
+            !WRITES
         }
 
         fn generate_request(&self) -> LabelProfileQuery {
@@ -1348,15 +1362,23 @@ mod deferred_decode_tests {
     /// it failed.
     type Outcome = (usize, Option<ErrorKind>);
 
-    type Completion = Box<dyn FnOnce(Counting, FanoutCommandResult) + Send>;
+    type Completion<const WRITES: bool = false> =
+        Box<dyn FnOnce(Counting<WRITES>, FanoutCommandResult) + Send>;
 
     /// A one-shard fan-out whose completion is sent to the returned receiver.
     fn fanout() -> (
         Arc<FanoutState<Counting, Completion>>,
         mpsc::Receiver<Outcome>,
     ) {
+        fanout_of()
+    }
+
+    fn fanout_of<const WRITES: bool>() -> (
+        Arc<FanoutState<Counting<WRITES>, Completion<WRITES>>>,
+        mpsc::Receiver<Outcome>,
+    ) {
         let (tx, rx) = mpsc::channel();
-        let completion: Completion = Box::new(move |op, res| {
+        let completion: Completion<WRITES> = Box::new(move |op, res| {
             let _ = tx.send((op.responses, res.err().map(|e| e.kind)));
         });
         (
@@ -1491,13 +1513,34 @@ mod deferred_decode_tests {
         assert_eq!(done.recv_timeout(WAIT), Ok((0, Some(ErrorKind::Timeout))));
     }
 
+    /// With the lane's queue full, a large answer to a read is not decoded on the main
+    /// thread: the fan-out fails as busy, and the lane is left as it was.
     #[test]
-    fn a_full_lane_decodes_inline() {
+    fn a_full_lane_fails_a_read_as_busy() {
         static LANE: BoundedExecutor =
             BoundedExecutor::new("test-fanout-full", one, Capacity::Fixed(1));
         let release = occupy(&LANE);
         LANE.try_spawn(|| {}).unwrap();
         let (state, done) = fanout();
+        let handler = rpc_response_handler(state, &LANE, Instant::now() + WAIT);
+
+        assert_eq!(
+            handler(Ok(&large_response()), &target()),
+            FanoutProgress::Done
+        );
+        assert_eq!(done.try_recv(), Ok((0, Some(ErrorKind::Busy))));
+        assert_eq!(LANE.stats().queued, 1, "nothing was queued for the answer");
+        drop(release);
+    }
+
+    /// A write's answer is still decoded when the lane is full: the shard has applied it.
+    #[test]
+    fn a_full_lane_decodes_a_write_inline() {
+        static LANE: BoundedExecutor =
+            BoundedExecutor::new("test-fanout-full-write", one, Capacity::Fixed(1));
+        let release = occupy(&LANE);
+        LANE.try_spawn(|| {}).unwrap();
+        let (state, done) = fanout_of::<true>();
         let handler = rpc_response_handler(state, &LANE, Instant::now() + WAIT);
 
         assert_eq!(

@@ -289,6 +289,7 @@ As coordinator:
 | `fanout_blocking_denied_total` | counter | Commands refused because the client could not be blocked (MULTI, a script, a module call) |
 | `fanout_send_failures_total` | counter | Requests the cluster bus refused to send |
 | `fanout_local_share_busy_total` | counter | Local shares refused because the fan-out lane's queue was full |
+| `fanout_decode_busy_total` | counter | Large shard answers that found the fan-out lane's queue full: a read fails as busy, a write's answer is decoded on the main thread |
 | `fanout_local_share_expired_total` | counter | Local shares that waited in the queue past the deadline |
 | `fanout_reply_expired_total` | counter | Replies the `ts-fanout-reply` lane did not build because the client's deadline had passed (left to the main thread, which skips a client already timed out) |
 | `fanout_reply_disconnected_total` | counter | Replies not built because the client had disconnected: when the operation completed (whether or not the disconnect ended it), or while the reply waited on the `ts-fanout-reply` lane |
