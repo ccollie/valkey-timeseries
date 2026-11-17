@@ -9,7 +9,7 @@ import math
 import pytest
 from datetime import datetime, timezone, timedelta
 from time import sleep
-from valkey import Connection, ResponseError
+from valkey import Connection, ResponseError, Valkey
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase, ValkeyTimeSeriesTestCaseDebugMode
@@ -276,15 +276,18 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError):
             self.client.execute_command('TS.QUERY', 'invalid {[}')
 
-    def test_query_string_result_stays_on_one_line(self):
-        """A string result is sent as a simple string, which a newline would end early and
-        leave the connection out of step; the newline arrives as a space instead."""
-        result = self.client.execute_command('TS.QUERY', '"a\\nb"')
-        qr = QueryResult.from_raw(result)
-        assert qr.is_string(), "expected a string result"
-        assert qr.result.value == 'a b'
-        # The connection is still in step.
-        assert self.client.execute_command('PING')
+    def test_query_string_result_keeps_its_value(self):
+        """A string result is a bulk string: line breaks, NUL and non-ASCII text arrive as the
+        query wrote them, in both protocols, and the connection stays in step."""
+        query = '"a\\nb\\rc\\x00d é"'
+        expected = 'a\nb\rc\x00d é'
+        for protocol in (2, 3):
+            client = Valkey(host=self.server.bind_ip, port=self.server.port, protocol=protocol)
+            result = client.execute_command('TS.QUERY', query)
+            qr = QueryResult.from_raw(result)
+            assert qr.is_string(), f"expected a string result (RESP{protocol})"
+            assert qr.result.value == expected, f"RESP{protocol}: {qr.result.value!r}"
+            assert client.execute_command('PING')
 
     def test_query_error_keeps_non_ascii_text(self):
         """An evaluation error echoing non-ASCII input arrives as valid UTF-8, on one line."""

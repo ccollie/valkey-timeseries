@@ -110,10 +110,12 @@ pub fn reply_with_instant_sample(
     Status::Ok
 }
 
+/// A string result: a bulk string, so the value arrives as the query wrote it, line
+/// breaks and NUL included, where a simple string would have to replace them.
 fn reply_with_string_value(ctx: &ReplyContext, timestamp: Timestamp, value: &str) -> Status {
     ctx.reply_with_array(2);
     ctx.reply_with_integer(timestamp);
-    ctx.reply_with_simple_string(value);
+    ctx.reply_with_string(value);
     Status::Ok
 }
 

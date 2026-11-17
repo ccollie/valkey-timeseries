@@ -149,7 +149,7 @@ the raw samples inside the window, with their own timestamps.
 
 **`scalar`** (such as `1 + 2` or `scalar(...)`) — a single `[timestamp, value]` pair.
 
-**`string`** (a string literal) — a `[timestamp, string]` pair; the string is sent as a simple string.
+**`string`** (a string literal) — a `[timestamp, string]` pair; the string is sent as a bulk string, exactly as the query wrote it.
 
 ### Blocking and limits
 
@@ -416,7 +416,7 @@ timestamp. The sample at exactly `00:07:00` falls on the open edge and is exclud
 2) "string"
 3) "result"
 4) 1) (integer) 1767226200000
-   2) hello
+   2) "hello"
 ```
 
 ### Staleness and LOOKBACK_DELTA
