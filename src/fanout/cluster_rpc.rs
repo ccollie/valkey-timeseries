@@ -6,7 +6,7 @@ use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::acl::caller_user_name;
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::common::logging::{log_debug, log_error, log_warning};
+use crate::common::logging::{log_debug, log_warning};
 use crate::common::metrics::clustermap as clustermap_metrics;
 use crate::common::metrics::fanout::{self as metrics, WireCounters};
 use crate::common::pool::get_pooled_buffer;
@@ -136,7 +136,7 @@ impl InFlightRequest {
             (self.response_handler)(resp, target_node)
         }));
         let still_waiting = handled.unwrap_or_else(|_| {
-            log_error(format!(
+            log_warning(format!(
                 "cluster rpc: processing the answer to {} request {} from {sender} panicked",
                 self.command, self.id
             ));
@@ -1122,7 +1122,7 @@ fn error_received(
 /// so a panic is logged and the callback returns instead.
 fn guard_callback(what: &str, body: impl FnOnce()) {
     if panic::catch_unwind(AssertUnwindSafe(body)).is_err() {
-        log_error(format!("cluster rpc: {what} panicked"));
+        log_warning(format!("cluster rpc: {what} panicked"));
     }
 }
 

@@ -40,10 +40,6 @@ pub fn log_warning<T: AsRef<str>>(message: T) {
     log(ValkeyLogLevel::Warning, message.as_ref());
 }
 
-pub fn log_error<T: AsRef<str>>(message: T) {
-    log(ValkeyLogLevel::Warning, message.as_ref());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

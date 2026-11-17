@@ -1,4 +1,4 @@
-use crate::common::logging::log_error;
+use crate::common::logging::log_warning;
 use crate::common::metrics::fanout as metrics;
 use crate::common::replies::{DisconnectHook, DisconnectWatch, ReplyContext};
 use crate::fanout::fanout_error::TIMEOUT_ERROR;
@@ -174,7 +174,7 @@ where
             // As in [`reply_callback`]: `reply` is the command's own code, so a panic in it
             // becomes this client's error reply rather than a lost one.
             if panic::catch_unwind(AssertUnwindSafe(|| op.reply(&reply_ctx))).is_err() {
-                log_error(format!("fanout: replying to '{}' panicked", T::name()));
+                log_warning(format!("fanout: replying to '{}' panicked", T::name()));
                 reply_ctx.reply_error_string(&format!(
                     "Internal error in fanout operation '{}'",
                     T::name()
@@ -271,7 +271,7 @@ extern "C" fn reply_callback<T: FanoutClientCommand>(
         match panic::catch_unwind(AssertUnwindSafe(|| response_ctx.reply(&ctx))) {
             Ok(status) => status as c_int,
             Err(_) => {
-                log_error(format!("fanout: replying to '{}' panicked", T::name()));
+                log_warning(format!("fanout: replying to '{}' panicked", T::name()));
                 ctx.reply_error_string(&format!(
                     "Internal error in fanout operation '{}'",
                     T::name()
@@ -306,7 +306,7 @@ extern "C" fn free_callback<T: FanoutClientCommand>(
     let data = unsafe { Box::from_raw(privdata.cast::<BlockedClientPrivateData<T>>()) };
     // The command's own `Drop` runs here, called from C.
     if panic::catch_unwind(AssertUnwindSafe(|| drop(data))).is_err() {
-        log_error(format!(
+        log_warning(format!(
             "fanout: freeing the result of '{}' panicked",
             T::name()
         ));

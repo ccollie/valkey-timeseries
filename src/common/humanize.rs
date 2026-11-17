@@ -3,36 +3,6 @@ use crate::common::constants::{
 };
 use std::time::Duration;
 
-/// humanize converts a given number to a human-readable format
-/// by adding metric prefixes https://en.wikipedia.org/wiki/Metric_prefix
-pub fn humanize(v: f64) -> String {
-    let mut v = v;
-    if v == 0f64 || v.is_nan() || v.is_infinite() {
-        return format!("{v:.4}");
-    }
-    let mut prefix: &str;
-    if v.abs() >= 1.0 {
-        prefix = "";
-        for p in ["k", "M", "G", "T", "P", "E", "Z", "Y"] {
-            if v.abs() < 1000.0 {
-                break;
-            }
-            prefix = p;
-            v /= 1000.0;
-        }
-        return format!("{v:.4}{prefix}");
-    }
-    prefix = "";
-    for p in ["m", "u", "n", "p", "f", "a", "z", "y"] {
-        if v.abs() >= 1.0 {
-            break;
-        }
-        prefix = p;
-        v *= 1000.0;
-    }
-    format!("{v:.4}{prefix}")
-}
-
 /// Units used when rendering a duration, largest first.
 ///
 /// Every suffix is one the duration parser accepts. Weeks are deliberately omitted even though

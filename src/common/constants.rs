@@ -1,4 +1,5 @@
-/// Mon Dec 31 4192 06:13:20 GMT+0000
+/// The largest representable timestamp: `i64::MAX` milliseconds, about 292 million years
+/// after the Unix epoch.
 pub const MAX_TIMESTAMP: i64 = i64::MAX;
 pub const METRIC_NAME_LABEL: &str = "__name__";
 

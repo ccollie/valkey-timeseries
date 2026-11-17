@@ -1,7 +1,5 @@
 use crate::common::Timestamp;
 use crate::common::rounding::RoundingStrategy;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
 
@@ -40,16 +38,6 @@ pub(crate) fn rdb_save_optional_marker(rdb: *mut RedisModuleIO, is_some: bool) {
         raw::save_unsigned(rdb, OPTIONAL_MARKER_PRESENT);
     } else {
         raw::save_unsigned(rdb, OPTIONAL_MARKER_ABSENT);
-    }
-}
-
-/// WARNING!: internal and *ONLY* for ints < 64 bits! We used a signed integer with value.abs() if a value
-/// is present, and -1 otherwise
-pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>) {
-    if let Some(value) = value {
-        raw::save_signed(rdb, value as i64);
-    } else {
-        raw::save_signed(rdb, -1);
     }
 }
 
@@ -130,10 +118,6 @@ pub fn rdb_load_len(rdb: *mut RedisModuleIO, max: usize) -> ValkeyResult<usize> 
     Ok(len)
 }
 
-pub fn rdb_save_optional_usize(rdb: *mut RedisModuleIO, value: Option<usize>) {
-    save_optional_unsigned(rdb, value.map(|x| x as u64));
-}
-
 #[inline]
 pub(crate) fn rdb_save_timestamp(rdb: *mut RedisModuleIO, value: Timestamp) {
     raw::save_signed(rdb, value)
@@ -150,24 +134,6 @@ pub fn rdb_save_u8(rdb: *mut RedisModuleIO, value: u8) {
 
 pub fn rdb_load_u8(rdb: *mut RedisModuleIO) -> ValkeyResult<u8> {
     narrow(raw::load_unsigned(rdb)?, "u8")
-}
-
-pub fn rdb_save_i8(rdb: *mut RedisModuleIO, value: i8) {
-    raw::save_signed(rdb, value as i64)
-}
-
-pub fn rdb_load_i8(rdb: *mut RedisModuleIO) -> ValkeyResult<i8> {
-    narrow(raw::load_signed(rdb)?, "i8")
-}
-
-#[inline]
-pub fn rdb_save_i32(rdb: *mut RedisModuleIO, value: i32) {
-    raw::save_signed(rdb, value as i64)
-}
-
-#[inline]
-pub fn rdb_load_i32(rdb: *mut RedisModuleIO) -> ValkeyResult<i32> {
-    narrow(raw::load_signed(rdb)?, "i32")
 }
 
 #[inline]
@@ -216,34 +182,6 @@ pub fn rdb_load_optional_bool(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<bo
             "Invalid bool marker: {marker}"
         ))),
     }
-}
-
-pub fn rdb_save_string_hashmap(rdb: *mut RedisModuleIO, map: &HashMap<String, String>) {
-    rdb_save_usize(rdb, map.len());
-    for (key, val) in map.iter() {
-        rdb_save_string(rdb, key);
-        rdb_save_string(rdb, val);
-    }
-}
-
-pub fn rdb_load_string_hashmap(rdb: *mut RedisModuleIO) -> ValkeyResult<HashMap<String, String>> {
-    let len = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
-    let mut map = HashMap::with_capacity(len);
-    for _ in 0..len {
-        let key = rdb_load_string(rdb)?;
-        let val = rdb_load_string(rdb)?;
-        map.insert(key, val);
-    }
-    Ok(map)
-}
-
-pub fn save_atomic_u64(rdb: *mut RedisModuleIO, value: &AtomicU64) {
-    raw::save_unsigned(rdb, value.load(std::sync::atomic::Ordering::Relaxed))
-}
-
-pub fn load_atomic_u64(rdb: *mut RedisModuleIO) -> ValkeyResult<AtomicU64> {
-    let value = raw::load_unsigned(rdb)?;
-    Ok(AtomicU64::new(value))
 }
 
 pub(crate) fn rdb_save_rounding(rdb: *mut RedisModuleIO, rounding: &RoundingStrategy) {

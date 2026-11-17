@@ -2,20 +2,21 @@ use get_size2::GetSize;
 use std::fmt::Display;
 use valkey_module::ValkeyError;
 
-/// eq returns true if left == right.
+/// Returns true if `left == right`, treating NaN as equal to NaN.
+///
+/// This departs from IEEE 754 on purpose: the callers are value filters and aggregator
+/// conditions, where a NaN filter value should match NaN samples. It is not PromQL comparison.
 #[inline]
 pub(crate) const fn op_eq(left: f64, right: f64) -> bool {
-    // Special handling for nan == nan.
     if left.is_nan() {
         return right.is_nan();
     }
     left == right
 }
 
-/// neq returns true if left != right.
+/// Returns true if `left != right`; the exact negation of [`op_eq`], so `NaN != NaN` is false.
 #[inline]
 pub(crate) const fn op_neq(left: f64, right: f64) -> bool {
-    // Special handling for comparison with nan.
     if left.is_nan() {
         return !right.is_nan();
     }
@@ -23,18 +24,6 @@ pub(crate) const fn op_neq(left: f64, right: f64) -> bool {
         return true;
     }
     left != right
-}
-
-/// Gte returns true if left >= right
-#[inline]
-pub(crate) const fn op_gte(left: f64, right: f64) -> bool {
-    left >= right
-}
-
-/// Lte returns true if left <= right
-#[inline]
-pub(crate) const fn op_lte(left: f64, right: f64) -> bool {
-    left <= right
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, GetSize)]
@@ -54,9 +43,9 @@ impl ComparisonOperator {
             ComparisonOperator::Equal => op_eq(a, b),
             ComparisonOperator::NotEqual => op_neq(a, b),
             ComparisonOperator::GreaterThan => a > b,
-            ComparisonOperator::GreaterThanOrEqual => op_gte(a, b),
+            ComparisonOperator::GreaterThanOrEqual => a >= b,
             ComparisonOperator::LessThan => a < b,
-            ComparisonOperator::LessThanOrEqual => op_lte(a, b),
+            ComparisonOperator::LessThanOrEqual => a <= b,
         }
     }
 }
@@ -113,13 +102,6 @@ impl TryFrom<u8> for ComparisonOperator {
 
 impl From<ComparisonOperator> for u8 {
     fn from(value: ComparisonOperator) -> Self {
-        match value {
-            ComparisonOperator::Equal => 0,
-            ComparisonOperator::NotEqual => 1,
-            ComparisonOperator::GreaterThan => 2,
-            ComparisonOperator::GreaterThanOrEqual => 3,
-            ComparisonOperator::LessThan => 4,
-            ComparisonOperator::LessThanOrEqual => 5,
-        }
+        value as u8
     }
 }

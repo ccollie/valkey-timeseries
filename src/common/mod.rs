@@ -1,6 +1,5 @@
 pub mod acl;
 pub mod alloc;
-pub mod binary_search;
 pub mod binop;
 pub mod block_on_keys;
 pub mod constants;
@@ -22,6 +21,5 @@ pub mod sync;
 pub mod threads;
 pub mod time;
 mod types;
-pub mod unit_vec;
 
 pub use types::*;
