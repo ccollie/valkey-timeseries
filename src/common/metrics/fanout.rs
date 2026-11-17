@@ -29,6 +29,9 @@ pub static FANOUT_LOCAL_ONLY: AtomicU64 = AtomicU64::new(0);
 pub static FANOUT_SETUP_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Local shares refused because the fanout lane's queue was full.
 pub static FANOUT_LOCAL_SHARE_BUSY: AtomicU64 = AtomicU64::new(0);
+/// Large shard answers that found the decode lane's queue full: a read then fails as busy,
+/// a write's answer is decoded on the main thread.
+pub static FANOUT_DECODE_BUSY: AtomicU64 = AtomicU64::new(0);
 /// Local shares that waited in the queue past the deadline and were answered with a timeout.
 pub static FANOUT_LOCAL_SHARE_EXPIRED: AtomicU64 = AtomicU64::new(0);
 /// Replies the reply lane left to the main thread because the client's deadline had passed.
@@ -186,6 +189,11 @@ static COUNTERS: &[(&str, &AtomicU64, &str)] = &[
         "local_share_busy",
         &FANOUT_LOCAL_SHARE_BUSY,
         "Local fanout shares refused because the fanout lane's queue was full",
+    ),
+    (
+        "decode_busy",
+        &FANOUT_DECODE_BUSY,
+        "Large shard answers that found the fanout lane's queue full",
     ),
     (
         "local_share_expired",
