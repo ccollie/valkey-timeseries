@@ -9,7 +9,6 @@ use crate::promql::engine::{QueryOptions, admission, evaluate_range, promql_conf
 use std::ops::Deref;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
-// todo: limit number - limit the number of returned series
 acl_categories!(TS_QUERYRANGE, "ts.queryrange", "read timeseries");
 ///
 /// TS.QUERYRANGE <query>

@@ -18,14 +18,13 @@ use crate::promql::time::duration_ms;
 use crate::promql::time::{grid_step_count, step_times};
 use crate::promql::utils::{check_subquery_cost, validate_max_points_per_timeseries};
 use crate::promql::{Evaluator, ExprResult, QueryResult};
-use promql_parser::parser::EvalStmt;
+use promql_parser::parser::value::ValueType;
+use promql_parser::parser::{EvalStmt, Expr};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 #[cfg(test)]
 use crate::promql::utils::range_bounds_to_system_time;
-#[cfg(test)]
-use promql_parser::parser::Expr;
 #[cfg(test)]
 use std::ops::RangeBounds;
 #[cfg(test)]
@@ -61,6 +60,24 @@ const STEP_MERGE_CHUNK_SIZE: usize = 64;
 
 // ── Shared evaluation free functions ────────────────────────────────
 
+/// Whether `expr`'s outermost operation orders its result, which an instant query then
+/// answers in as it is: the `sort` functions, and `topk`/`bottomk`/`limitk`/`limit_ratio`
+/// (Prometheus answers `topk` by value). Any other result is sorted by labels.
+fn orders_its_result(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(p) => orders_its_result(&p.expr),
+        Expr::Call(call) => matches!(
+            call.func.name,
+            "sort" | "sort_desc" | "sort_by_label" | "sort_by_label_desc"
+        ),
+        Expr::Aggregate(agg) => matches!(
+            agg.op.to_string().as_str(),
+            "topk" | "bottomk" | "limitk" | "limit_ratio"
+        ),
+        _ => false,
+    }
+}
+
 /// Evaluate an instant PromQL query against the given reader.
 pub fn evaluate_instant(
     reader: Arc<dyn QueryReader>,
@@ -74,6 +91,7 @@ pub fn evaluate_instant(
     check_subquery_cost(&stmt.expr, 1, opts.max_subquery_steps).map_err(QueryError::from)?;
     let deadline = Deadline::from_options(&opts);
     let evaluator = Evaluator::new(reader.as_ref(), opts);
+    let keep_order = orders_its_result(&stmt.expr);
 
     // Before and after the evaluation: the deadline, the client, and memory.
     deadline.check()?;
@@ -95,33 +113,44 @@ pub fn evaluate_instant(
         // Every sample is stamped with the evaluation time, as Prometheus does: a
         // selector's sample keeps its own time while it is evaluated (`timestamp()`
         // reads it), but the query's answer is the vector *at* the evaluation time.
-        ExprResult::InstantVector(samples) => Ok(QueryValue::Vector(
-            samples
+        ExprResult::InstantVector(samples) => {
+            let mut samples: Vec<InstantSample> = samples
                 .into_iter()
                 .map(|s| InstantSample {
                     labels: s.labels.into_labels(),
                     timestamp_ms,
                     value: s.value,
                 })
-                .collect(),
-        )),
+                .collect();
+            // In label order, as a range result is, so the same query answers in the same
+            // order on every node and after a restart; unless the query set an order itself.
+            if !keep_order {
+                par_sort_unstable_by(&mut samples, &|a: &InstantSample, b: &InstantSample| {
+                    a.labels.cmp(&b.labels)
+                });
+            }
+            Ok(QueryValue::Vector(samples))
+        }
         // __name__ drops were already materialized by cleanup_metric_labels
         // inside evaluate_with_context.
-        ExprResult::RangeVector(samples) => Ok(QueryValue::Matrix(
-            samples
+        ExprResult::RangeVector(samples) => {
+            let mut series: Vec<RangeSample> = samples
                 .into_iter()
                 .map(|s| RangeSample {
                     labels: s.labels.into_labels(),
                     samples: s.values.into_vec(),
                 })
-                .collect(),
-        )),
+                .collect();
+            par_sort_unstable_by(&mut series, &|a: &RangeSample, b: &RangeSample| {
+                a.labels.cmp(&b.labels)
+            });
+            Ok(QueryValue::Matrix(series))
+        }
         ExprResult::String(s) => Ok(QueryValue::String(s)),
     }
 }
 
 /// Evaluate a range PromQL query against the given reader.
-/// Returns the result and the EvalStats for metrics publishing.
 pub fn evaluate_range(
     reader: Arc<dyn QueryReader>,
     mut stmt: EvalStmt,
@@ -129,6 +158,22 @@ pub fn evaluate_range(
 ) -> QueryResult<Vec<RangeSample>> {
     #[cfg(test)]
     let opts = crate::promql::exec::with_test_grid_switch(opts);
+    // A range query answers a scalar or an instant vector at every step. Known from the
+    // expression alone, so refused before the rewrites and the preload rather than at the
+    // first step, after every read.
+    match stmt.expr.value_type() {
+        ValueType::Matrix => {
+            return Err(QueryError::Execution(
+                "range vectors not supported in range query evaluation".to_string(),
+            ));
+        }
+        ValueType::String => {
+            return Err(QueryError::Execution(
+                "string expressions not supported in range query evaluation".to_string(),
+            ));
+        }
+        ValueType::Scalar | ValueType::Vector => {}
+    }
     optimize_statement(&mut stmt, &opts, !opts.derived_filter_pushdown);
     let start = stmt.start;
     let end = stmt.end;
@@ -612,6 +657,46 @@ mod tests {
                 "range, optimize {optimize_queries}: {range:?}"
             );
         }
+    }
+
+    /// An instant vector answers in label order, as a range result does, so the same query
+    /// answers alike on every node and after a restart; a query that orders its own result
+    /// (`sort_desc`, `topk`) keeps that order.
+    #[test]
+    fn instant_vectors_answer_in_label_order_unless_the_query_orders_them() {
+        let querier = MemorySeriesQuerier::new();
+        for (i, value) in [(3, 1.0), (1, 3.0), (2, 2.0), (5, 5.0), (4, 4.0)] {
+            let labels = crate::labels::Labels::new(vec![
+                Label {
+                    name: "__name__".to_string(),
+                    value: "o".to_string(),
+                },
+                Label {
+                    name: "i".to_string(),
+                    value: i.to_string(),
+                },
+            ]);
+            querier.add_sample(&labels, Sample::new(4_000_000, value));
+        }
+        let tsdb = PromqlQuerier::with_query_reader(Arc::new(querier));
+        let at = Some(UNIX_EPOCH + Duration::from_secs(4_000));
+        let order = |query: &str| -> Vec<String> {
+            let QueryValue::Vector(v) = tsdb
+                .eval_query(query, at, &QueryOptions::default())
+                .unwrap()
+            else {
+                panic!("expected a vector");
+            };
+            v.iter()
+                .map(|s| s.labels.get("i").unwrap().to_string())
+                .collect()
+        };
+        for query in ["o", "o * 2", "abs(o)"] {
+            assert_eq!(order(query), ["1", "2", "3", "4", "5"], "{query}");
+        }
+        assert_eq!(order("sort_desc(o)"), ["5", "4", "1", "2", "3"]);
+        assert_eq!(order("sort(o)"), ["3", "2", "1", "4", "5"]);
+        assert_eq!(order("topk(2, o)").len(), 2);
     }
 
     #[test]

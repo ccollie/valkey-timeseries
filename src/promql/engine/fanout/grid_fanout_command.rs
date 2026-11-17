@@ -359,11 +359,14 @@ impl FanoutCommand for GridFanoutCommand {
                 })
             })
             .collect::<Result<Vec<_>, FanoutError>>()?;
-        let raw_samples: usize = packed.iter().map(|(_, chunk)| chunk.len()).sum();
+        // Counts a peer sent: saturating, so a corrupt one cannot wrap past the budget.
+        let raw_samples = packed.iter().fold(0usize, |total, (_, chunk)| {
+            total.saturating_add(chunk.len())
+        });
 
         // Charged as each response arrives rather than once every shard has
         // answered: past the limit, the rest are dropped unread.
-        if let Err(err) = self.budget.charge(added + raw_samples) {
+        if let Err(err) = self.budget.charge(added.saturating_add(raw_samples)) {
             self.state.stopped = Some(err);
             return Ok(());
         }
