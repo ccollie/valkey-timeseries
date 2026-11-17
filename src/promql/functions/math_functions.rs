@@ -103,10 +103,10 @@ impl PromQLFunction for PiFunction {
 pub(in crate::promql) struct RoundFunction;
 
 impl RoundFunction {
+    /// Prometheus' formula as it stands, sign and zero included: `to_nearest` 0 makes the
+    /// inverse infinite and every result NaN, and a negative one rounds through its negative
+    /// inverse (so ties go the other way), rather than taking its absolute value.
     fn round_to_nearest(value: f64, to_nearest: f64) -> f64 {
-        if to_nearest == 0.0 {
-            return value;
-        }
         let inv = 1.0 / to_nearest;
         (value * inv + 0.5).floor() / inv
     }
@@ -135,7 +135,7 @@ impl PromQLFunction for RoundFunction {
                         "round accepts at most two arguments".to_string(),
                     ));
                 }
-                second_arg.into_scalar()?.abs()
+                second_arg.into_scalar()?
             }
         };
 
