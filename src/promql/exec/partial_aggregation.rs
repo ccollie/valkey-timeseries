@@ -88,8 +88,10 @@ impl AggregationPartial {
                 (self.acc1, self.acc1_c) = kahan_inc(value, self.acc1, self.acc1_c);
                 // Carried alongside the sum so an overflowing sum can still
                 // finalize to a representable mean, mirroring the hybrid
-                // strategy of `kahan_avg`.
-                self.acc2 += (value - self.acc2) / self.count as f64;
+                // strategy of `kahan_avg`, and in its overflow-free form:
+                // `(value - mean)` overflows for opposite-signed huge values.
+                let n = self.count as f64;
+                self.acc2 = self.acc2 * ((n - 1.0) / n) + value / n;
             }
             AggregationKind::Min => self.acc1 = min_ignore_nan(self.acc1, value),
             AggregationKind::Max => self.acc1 = max_ignore_nan(self.acc1, value),
@@ -126,7 +128,9 @@ impl AggregationPartial {
             AggregationKind::Avg => {
                 (self.acc1, self.acc1_c) =
                     merge_kahan_sums((self.acc1, self.acc1_c), (other.acc1, other.acc1_c));
-                self.acc2 += (other.acc2 - self.acc2) * (n_b / n);
+                // Each mean weighted before they are added: their difference
+                // overflows when they are huge and of opposite signs.
+                self.acc2 = self.acc2 * (n_a / n) + other.acc2 * (n_b / n);
             }
             AggregationKind::Min => self.acc1 = min_ignore_nan(self.acc1, other.acc1),
             AggregationKind::Max => self.acc1 = max_ignore_nan(self.acc1, other.acc1),
@@ -165,16 +169,12 @@ impl AggregationPartial {
                 let sum = self.sum();
                 if sum.is_finite() {
                     sum / n
-                } else if sum.is_nan() {
-                    f64::NAN
-                } else if self.acc2.is_finite() {
-                    // The sum overflowed to ±Inf but the mean is representable:
-                    // fall back to the incrementally maintained mean, as
-                    // `kahan_avg` does when its running sum overflows.
-                    self.acc2
                 } else {
-                    // Genuinely infinite input: ±Inf is the answer.
-                    sum
+                    // The sum overflowed — to ±Inf, or to NaN where shards' sums
+                    // overflowed in opposite directions — so the incrementally
+                    // maintained mean answers, as `kahan_avg` falls back to it.
+                    // It is itself NaN or ±Inf exactly when the inputs were.
+                    self.acc2
                 }
             }
             AggregationKind::Min | AggregationKind::Max => self.acc1,
@@ -1016,6 +1016,46 @@ mod tests {
         let value = pushed_down(AggregationKind::Avg, None, &shards)[0].1;
         assert!(value.is_finite(), "avg overflowed to {value}");
         assert!((value - big).abs() / big < 1e-12, "avg was {value}");
+    }
+
+    /// Shards whose sums overflow in opposite directions merged to NaN (`+Inf + -Inf`),
+    /// and their means' difference overflowed too, where a single node's `kahan_avg`
+    /// answers about 0. Genuinely infinite or NaN input still answers as on one node.
+    #[test]
+    fn test_avg_survives_opposite_overflows_across_shards() {
+        let a = |v: f64| sample(&[("job", "a")], v);
+        for shards in [
+            vec![vec![a(1e308), a(1e308)], vec![a(-1e308), a(-1e308)]],
+            vec![
+                vec![a(f64::MAX), a(f64::MAX)],
+                vec![a(-f64::MAX)],
+                vec![a(-f64::MAX)],
+            ],
+            vec![vec![a(1e308), a(-1e308), a(1e308)], vec![a(-1e308)]],
+        ] {
+            let all: Vec<EvalSample> = shards.iter().flatten().cloned().collect();
+            let want = single_node(AggregationKind::Avg, None, all)[0].1;
+            let got = pushed_down(AggregationKind::Avg, None, &shards)[0].1;
+            assert!(got.is_finite(), "avg was {got}");
+            assert!(
+                (got - want).abs() <= 1e-9 * 1e308,
+                "pushed {got}, single node {want}"
+            );
+        }
+        for (shards, check) in [
+            (
+                vec![vec![a(f64::INFINITY)], vec![a(1.0)]],
+                (|v: f64| v == f64::INFINITY) as fn(f64) -> bool,
+            ),
+            (
+                vec![vec![a(f64::INFINITY)], vec![a(f64::NEG_INFINITY)]],
+                |v| v.is_nan(),
+            ),
+            (vec![vec![a(f64::NAN)], vec![a(1.0)]], |v| v.is_nan()),
+        ] {
+            let got = pushed_down(AggregationKind::Avg, None, &shards)[0].1;
+            assert!(check(got), "{shards:?}: {got}");
+        }
     }
 
     /// count_values counts are summed across shards by output label set.
