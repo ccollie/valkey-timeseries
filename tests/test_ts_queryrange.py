@@ -102,14 +102,14 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         client.execute_command("TS.ADD", "db1_metric", 2000, 20)
 
         client.select(0)
-        db0_raw = self.range_query("db_scoped_range", "1000", start=1000, end=2000)
+        db0_raw = self.range_query("db_scoped_range", "1000", start=1, end=2)
         db0_result = QueryResult.from_raw(db0_raw)
         assert db0_result.is_matrix()
         assert len(db0_result.result) == 1
         assert db0_result.result[0].metric["db"] == "0"
 
         client.select(1)
-        db1_raw = self.range_query("db_scoped_range", "1000", start=1000, end=2000)
+        db1_raw = self.range_query("db_scoped_range", "1000", start=1, end=2)
         db1_result = QueryResult.from_raw(db1_raw)
         assert db1_result.is_matrix()
         assert len(db1_result.result) == 1
@@ -133,11 +133,11 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         try:
             limited.execute_command("AUTH", "promql_range_reader", "pw")
             assert limited.execute_command(
-                "TS.QUERYRANGE", "allowed_range_metric", "STEP", 1000, "START", 1000, "END", 2000
+                "TS.QUERYRANGE", "allowed_range_metric", "STEP", 1000, "START", 1, "END", 2
             )
             with pytest.raises(ResponseError, match="permission"):
                 limited.execute_command(
-                    "TS.QUERYRANGE", "denied_range_metric", "STEP", 1000, "START", 1000, "END", 2000
+                    "TS.QUERYRANGE", "denied_range_metric", "STEP", 1000, "START", 1, "END", 2
                 )
         finally:
             self.client.execute_command("ACL", "DELUSER", "promql_range_reader")
@@ -145,7 +145,7 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
     def test_queryrange_returns_matrix_for_metric(self):
         self.setup_simple_series()
 
-        raw = self.range_query("http_requests", "1000", start=1000, end=5000)
+        raw = self.range_query("http_requests", "1000", start=1, end=5)
         qr = QueryResult.from_raw(raw)
 
         assert qr.is_matrix(), "expected matrix result type"
@@ -160,6 +160,26 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         qr = QueryResult.from_raw(raw)
 
         assert qr.is_matrix(), "expected matrix result type"
+        # Below 2^32 a bare integer is seconds, as in the Prometheus HTTP API.
+        assert [p.timestamp for p in qr.result[0].values] == [2000, 3000, 4000, 5000]
+
+    def test_queryrange_bound_units_are_judged_by_magnitude(self):
+        """START and END read a bare integer's unit from its magnitude, as TIME does:
+        seconds, milliseconds, microseconds and nanoseconds name the same instant, and
+        each bound is judged on its own."""
+        base_s = 1_700_000_000  # 2023-11-14T22:13:20Z
+        for i in range(5):
+            self.client.execute_command("TS.ADD", "units", (base_s + i) * 1000, i,
+                                        "LABELS", "__name__", "units")
+        expected = [(base_s + i) * 1000 for i in (1, 2, 3)]
+
+        def bounds(s):
+            return [str(s), str(s * 1000), str(s * 10 ** 6), str(s * 10 ** 9), f"{s}.0",
+                    datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")]
+
+        for start, end in zip(bounds(base_s + 1), reversed(bounds(base_s + 3))):
+            qr = QueryResult.from_raw(self.range_query("units", "1s", start=start, end=end))
+            assert [p.timestamp for p in qr.result[0].values] == expected, (start, end)
 
     def test_queryrange_with_rfc3339_timestamps(self):
         self.setup_simple_series()
@@ -198,7 +218,7 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         for i in range(3):
             self.client.execute_command('TS.ADD', f'sparse:{i}', 0, 1,
                                         'LABELS', '__name__', 'sparse', 'i', str(i))
-        query = ('TS.QUERYRANGE', 'sparse', 'START', '1000', 'END', '3000000',
+        query = ('TS.QUERYRANGE', 'sparse', 'START', '1', 'END', '3000',
                  'STEP', '1s', 'LOOKBACK_DELTA', '1h')
         try:
             self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-samples-per-query', '8999')
@@ -218,7 +238,7 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
                 self.client.execute_command('TS.ADD', f'{metric}:{i}', 1000, i,
                                             'LABELS', '__name__', metric, 'i', str(i))
         query = ('TS.QUERYRANGE', 'left or label_replace(right, "side", "r", "", "")',
-                 'START', '1000', 'END', '3000', 'STEP', '1s')
+                 'START', '1', 'END', '3', 'STEP', '1s')
         try:
             self.client.execute_command('CONFIG', 'SET', 'ts.ts-promql-max-response-series', '3')
             with pytest.raises(ResponseError, match='max series limit: 4 > 3'):
@@ -232,7 +252,7 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         """LOOKBACK_DELTA past ts-promql-max-lookback (1h by default) is refused. A lookback
         no longer than STEP is allowed past it: it reads at most one step further back."""
         self.setup_simple_series()
-        base = ("TS.QUERYRANGE", "http_requests", "START", "1000", "END", "5000")
+        base = ("TS.QUERYRANGE", "http_requests", "START", "1", "END", "5")
 
         with pytest.raises(ResponseError, match="exceeds the 1h allowed by ts-promql-max-lookback"):
             self.client.execute_command(*base, "STEP", "1m", "LOOKBACK_DELTA", "2h")
@@ -263,17 +283,17 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         self.setup_simple_series()
 
         with pytest.raises(ResponseError, match="END must not be before START"):
-            self.range_query("http_requests", "1000", start=4000, end=2000)
+            self.range_query("http_requests", "1000", start=4, end=2)
         # Without END the end is the current time.
         with pytest.raises(ResponseError, match="START must not be after the current time"):
-            self.range_query("http_requests", "1000", start=10 ** 13)
+            self.range_query("http_requests", "1000", start=4_000_000_000_000)
 
     def test_queryrange_start_equal_to_end_is_one_step(self):
         """As in Prometheus, START == END is a range query with a single step. It was
         rejected, with a message about the current time."""
         self.setup_simple_series()
 
-        result = QueryResult.from_raw(self.range_query("http_requests", "1000", start=3000, end=3000))
+        result = QueryResult.from_raw(self.range_query("http_requests", "1000", start=3, end=3))
         assert result.is_matrix(), f"expected a matrix, got {result.result_type}"
         assert len(result.result) == 1
         assert [p.timestamp for p in result.result[0].values] == [3000]
@@ -311,8 +331,8 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         raw = self.range_query(
             "sum by (instance) (node_memory_Active_bytes) / sum by (instance) (node_memory_MemTotal_bytes)",
             "1000",
-            start=1000,
-            end=4000
+            start=1,
+            end=4
         )
         qr = QueryResult.from_raw(raw)
 
@@ -335,8 +355,8 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         raw = self.range_query(
             "rate(http_requests_total[2000s])",
             "1000",
-            start=2000,
-            end=4000
+            start=2,
+            end=4
         )
         qr = QueryResult.from_raw(raw)
         assert qr.is_matrix()
@@ -349,8 +369,8 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         raw = self.range_query(
             "sum by (status) (http_requests_total)",
             "1000",
-            start=1000,
-            end=4000
+            start=1,
+            end=4
         )
         qr = QueryResult.from_raw(raw)
 
@@ -375,8 +395,8 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         raw = self.range_query(
             'http_requests_total{status="500", instance="app1"}',
             "1000",
-            start=1000,
-            end=4000
+            start=1,
+            end=4
         )
         qr = QueryResult.from_raw(raw)
 
@@ -402,20 +422,20 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         base = ("TS.QUERYRANGE", query, "STEP", "1000")
         # The fixture is at timestamps 1000..4000, so every case pins the
         # window explicitly; the default window is relative to now.
-        window = ("START", "1000", "END", "4000")
+        window = ("START", "1", "END", "4")
 
         for args in (
             ("HASHTAG", "anything") + window,
             ("HASHTAG", "a,b,c") + window,
             ("HASHTAG", "{braced}") + window,
             ("hashtag", "lowercase") + window,
-            ("HASHTAG", "x", "START", "1000", "END", "4000"),
-            ("START", "1000", "HASHTAG", "x", "END", "4000"),
-            ("START", "1000", "END", "4000", "HASHTAG", "x"),
-            ("START", "1000", "END", "4000", "LOOKBACK_DELTA", "5m", "HASHTAG", "x"),
-            ("HASHTAG", "x", "LOOKBACK_DELTA", "5m", "START", "1000", "END", "4000"),
-            ("START", "1000", "END", "4000", "TIMEOUT", "5s", "HASHTAG", "x"),
-            ("HASHTAG", "x", "TIMEOUT", "5s", "START", "1000", "END", "4000"),
+            ("HASHTAG", "x", "START", "1", "END", "4"),
+            ("START", "1", "HASHTAG", "x", "END", "4"),
+            ("START", "1", "END", "4", "HASHTAG", "x"),
+            ("START", "1", "END", "4", "LOOKBACK_DELTA", "5m", "HASHTAG", "x"),
+            ("HASHTAG", "x", "LOOKBACK_DELTA", "5m", "START", "1", "END", "4"),
+            ("START", "1", "END", "4", "TIMEOUT", "5s", "HASHTAG", "x"),
+            ("HASHTAG", "x", "TIMEOUT", "5s", "START", "1", "END", "4"),
         ):
             qr = QueryResult.from_raw(self.client.execute_command(*base, *args))
             assert qr.is_matrix(), args
@@ -430,7 +450,7 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
 
         qr = QueryResult.from_raw(self.client.execute_command(
             "TS.QUERYRANGE", 'http_requests_total{status="200"}', "STEP", "1000",
-            "HASHTAG", "first", "START", "1000", "END", "4000",
+            "HASHTAG", "first", "START", "1", "END", "4",
             "HASHTAG", "second,third"))
 
         assert qr.is_matrix()
@@ -442,10 +462,10 @@ class TestTsQueryRange(ValkeyTimeSeriesTestCaseBase):
         query = 'http_requests_total{status="200"}'
 
         scoped = QueryResult.from_raw(self.client.execute_command(
-            "TS.QUERYRANGE", query, "STEP", "1000", "START", "1000", "END", "4000",
+            "TS.QUERYRANGE", query, "STEP", "1000", "START", "1", "END", "4",
             "HASHTAG", "tenant-a,tenant-b"))
         unscoped = QueryResult.from_raw(
-            self.range_query(query, "1000", start=1000, end=4000))
+            self.range_query(query, "1000", start=1, end=4))
 
         def by_instance(qr):
             return {s.metric["instance"]: [v.value for v in s.values] for s in qr.result}

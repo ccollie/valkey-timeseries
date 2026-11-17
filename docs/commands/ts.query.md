@@ -51,9 +51,9 @@ The evaluation timestamp for the instant query. Accepts:
   bounds, **not** the earliest or latest sample in the database, so an instant query at either one normally
   returns an empty vector.
 
-> **Note:** this differs from `START`/`END` on [TS.QUERYRANGE](ts.queryrange.md),
-> where a bare integer is *always* milliseconds. A value like `1672531200` means
-> 2023 here and 1970 there.
+> **Note:** `START`/`END` on [TS.QUERYRANGE](ts.queryrange.md) follow the same
+> rules. The `TS.RANGE` family does not: there a bare integer is always
+> milliseconds.
 
 **Default:** the current time.
 

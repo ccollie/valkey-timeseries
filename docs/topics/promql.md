@@ -89,8 +89,12 @@ TS.QUERYRANGE "rate(http_requests_total[5m])" \
 ```
 
 The result is a matrix: each returned series has its labels and its samples for the
-evaluation grid. `START` and `END` use milliseconds for bare integer timestamps; use an
-RFC3339 timestamp or a decimal number when the unit should be unambiguous.
+evaluation grid.
+
+`TIME`, `START` and `END` read a bare integer's unit from its magnitude, so Unix seconds
+(as in the Prometheus HTTP API), milliseconds, microseconds and nanoseconds all name the
+same instant: `1672531200` and `1672531200000` are both 2023-01-01. Below 2^32 an integer
+is seconds. A decimal number is always seconds.
 
 Both commands accept `LOOKBACK_DELTA`, `TIMEOUT`, and `HASHTAG` overrides. See the command
 pages for the complete timestamp and argument rules.

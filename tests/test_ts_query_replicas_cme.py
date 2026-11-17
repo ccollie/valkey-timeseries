@@ -14,7 +14,7 @@ from valkeytestframework.conftest import resource_port_tracker
 QUERIES = [
     ("TS.QUERY", "sum by (job) (req)", "TIME", "60"),
     ("TS.QUERY", "req", "TIME", "60"),
-    ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30000", "END", "60000",
+    ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30", "END", "60",
      "STEP", "10s"),
 ]
 

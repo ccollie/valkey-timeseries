@@ -178,10 +178,6 @@ class TestPromQLRollupPushdownCluster(ValkeyTimeSeriesClusterTestCase):
         return QueryResult.from_raw(self.coordinator().execute_command(*args))
 
     def range_query(self, query: str, start=T0, end=EVAL, step='60s') -> QueryResult:
-        # START/END go over as RFC 3339. A bare integer is not portable between
-        # the two commands: TS.QUERY's TIME reads it as Unix *seconds* (the
-        # Prometheus HTTP API convention) while TS.QUERYRANGE's START/END read
-        # it as milliseconds (the TS.* convention).
         raw = self.coordinator().execute_command(
             'TS.QUERYRANGE', query, 'STEP', step,
             'START', _rfc3339(start), 'END', _rfc3339(end))

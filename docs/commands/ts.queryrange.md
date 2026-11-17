@@ -55,10 +55,12 @@ lower. A `STEP` too small for the range is rejected before any data is read.
 
 The first evaluation timestamp. Accepts:
 
-- Numeric timestamp in **milliseconds** — a bare integer is always milliseconds,
-  with no magnitude detection
-- Numeric timestamp with a decimal point or exponent — **seconds**
-  (`1672531200.5`)
+- Numeric timestamp, unit detected from its magnitude: seconds, milliseconds,
+  microseconds or nanoseconds. Values below 2^32 are read as **seconds**, which
+  is what makes `START 1672531200` (the Prometheus HTTP API convention) and
+  `START 1672531200000` name the same instant.
+- Numeric timestamp with a decimal point or exponent — always **seconds**, with
+  the fraction kept (`1672531200.5`)
 - RFC3339 formatted date string (`2023-01-01T00:00:00Z`)
 - `*` for the current time
 - Duration relative to the current time (e.g., `-1h` for 1 hour ago)
@@ -66,11 +68,12 @@ The first evaluation timestamp. Accepts:
   bounds, **not** the earliest or latest sample in the database; a range that starts at `-` or ends at `+`
   almost always exceeds the 1,000,000-point grid limit.
 
-> **Note:** `1672531200` and `1672531200.0` are 53 years apart here — the first
-> is milliseconds (1970), the second seconds (2023). And unlike `TIME` on
-> [TS.QUERY](ts.query.md), a bare integer is never interpreted as seconds. Pass
-> an RFC3339 string when the unit matters; a range that lands entirely outside
-> the data returns an empty matrix rather than an error.
+> **Note:** these are the same rules as `TIME` on [TS.QUERY](ts.query.md), so a
+> timestamp copied from one command names the same instant in the other. They
+> differ from the `TS.RANGE` family, where a bare integer is always milliseconds:
+> a millisecond value below 2^32 (the first 49.7 days of 1970) is read here as
+> seconds. Each bound is judged on its own, so `START` in seconds and `END` in
+> milliseconds is fine.
 
 **Default:** `END` minus the lookback delta (see `LOOKBACK_DELTA`).
 
@@ -78,7 +81,7 @@ The first evaluation timestamp. Accepts:
 
 <details open><summary><code>END timestamp</code></summary>
 
-The last evaluation timestamp. Accepts the same forms as `START`, with the same millisecond-by-default rule.
+The last evaluation timestamp. Accepts the same forms as `START`, with the same magnitude rule.
 
 `END` must not be before `START`. When they are equal the query has a single step, as in Prometheus. The last
 point of the grid is the largest `START + n×STEP` that does not exceed `END`.

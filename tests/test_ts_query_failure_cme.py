@@ -20,7 +20,7 @@ from valkeytestframework.util.waiters import wait_for_true
 
 QUERIES = [
     ("TS.QUERY", "sum by (job) (req)", "TIME", "60"),
-    ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30000", "END", "60000",
+    ("TS.QUERYRANGE", "sum by (job) (rate(req[30s]))", "START", "30", "END", "60",
      "STEP", "10s"),
 ]
 

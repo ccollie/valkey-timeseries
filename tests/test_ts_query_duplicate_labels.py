@@ -23,7 +23,7 @@ class TestTsQueryDuplicateLabels(ValkeyTimeSeriesTestCaseBase):
 
     def range_query(self, query: str):
         return self.client.execute_command(
-            "TS.QUERYRANGE", query, "STEP", "1000", "START", 3000, "END", 5000
+            "TS.QUERYRANGE", query, "STEP", "1000", "START", 3, "END", 5
         )
 
     @pytest.mark.parametrize(

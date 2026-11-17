@@ -28,7 +28,7 @@ class TestQueryFailureStillReplies(ValkeyTimeSeriesTestCaseDebugMode):
 
     @pytest.mark.parametrize("command", [
         ("TS.QUERY", "m", "TIME", "3000"),
-        ("TS.QUERYRANGE", "m", "START", "1000", "END", "3000", "STEP", "1s"),
+        ("TS.QUERYRANGE", "m", "START", "1", "END", "3", "STEP", "1s"),
     ])
     def test_panicking_evaluation_answers_with_an_error(self, command):
         client = self._client()
@@ -59,7 +59,7 @@ class TestSelectorExecutorSurvivesAPanic(ValkeyTimeSeriesTestCaseDebugMode):
 
     @pytest.mark.parametrize("command", [
         ("TS.QUERY", "m", "TIME", "3000"),
-        ("TS.QUERYRANGE", "m", "START", "1000", "END", "3000", "STEP", "1s"),
+        ("TS.QUERYRANGE", "m", "START", "1", "END", "3", "STEP", "1s"),
     ])
     def test_a_panicking_batch_fails_its_query_and_the_next_one_runs(self, command):
         client = self._client()

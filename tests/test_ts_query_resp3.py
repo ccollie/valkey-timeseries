@@ -23,9 +23,9 @@ INSTANT = [
     ("TS.QUERY", "\"text\"", "TIME", "3"),
 ]
 RANGE = [
-    ("TS.QUERYRANGE", "m", "START", "1000", "END", "3000", "STEP", "1s"),
-    ("TS.QUERYRANGE", "sum(m{kind=\"plain\"})", "START", "1000", "END", "3000", "STEP", "1s"),
-    ("TS.QUERYRANGE", "time()", "START", "1000", "END", "3000", "STEP", "1s"),
+    ("TS.QUERYRANGE", "m", "START", "1", "END", "3", "STEP", "1s"),
+    ("TS.QUERYRANGE", "sum(m{kind=\"plain\"})", "START", "1", "END", "3", "STEP", "1s"),
+    ("TS.QUERYRANGE", "time()", "START", "1", "END", "3", "STEP", "1s"),
 ]
 
 
@@ -83,7 +83,7 @@ class TestQueryResp3(ValkeyTimeSeriesTestCaseBase):
             assert timestamp == 3000
             assert isinstance(value, float), (entry, type(value))
 
-        matrix = client.execute_command("TS.QUERYRANGE", "m", "START", "1000", "END", "3000",
+        matrix = client.execute_command("TS.QUERYRANGE", "m", "START", "1", "END", "3",
                                         "STEP", "1s")
         assert _key(matrix[b"resultType"]) == "matrix"
         for entry in matrix[b"result"]:
@@ -117,8 +117,8 @@ class TestQueryResp3(ValkeyTimeSeriesTestCaseBase):
 
     @pytest.mark.parametrize("command", [
         ("TS.QUERY", "sum(", "TIME", "3"),
-        ("TS.QUERYRANGE", "m", "START", "1000", "END", "3000", "STEP", "0"),
-        ("TS.QUERYRANGE", "m[1m]", "START", "1000", "END", "3000", "STEP", "1s"),
+        ("TS.QUERYRANGE", "m", "START", "1", "END", "3", "STEP", "0"),
+        ("TS.QUERYRANGE", "m[1m]", "START", "1", "END", "3", "STEP", "1s"),
     ], ids=["parse", "zero-step", "range-root"])
     def test_errors_are_the_same_in_both_protocols(self, command):
         self.setup_data()
