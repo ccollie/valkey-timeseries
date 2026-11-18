@@ -1,6 +1,7 @@
 use crate::labels::Label;
+use std::hash::Hasher;
 use std::sync::LazyLock;
-use twox_hash::xxhash3_128::{self, DEFAULT_SECRET_LENGTH, RawHasher, SecretBuffer};
+use xxhash_rust::xxh3::{Xxh3, Xxh3Default, xxh3_128};
 
 /// Series fingerprint (hash of a label set)
 pub(crate) type SeriesFingerprint = u128;
@@ -15,38 +16,37 @@ impl HasFingerprint for Vec<Label> {
     }
 }
 
-const HASH_SEED: u64 = 0xa4d3f1c2b7e98d5f;
-
-/// The streaming xxhash3 hasher every label hash in the crate uses.
+/// The streaming XXH3-128 hasher label fingerprints use, on XXH3's default secret.
 ///
-/// `xxhash3_128::Hasher` boxes a 192-byte secret on every construction —
-/// one heap allocation per fingerprint, which on a fan-out coordinator is one
-/// per series per query. A `RawHasher` over a `&'static` secret keeps the
-/// same state, and so the same hash values, without touching the heap.
-pub(crate) type LabelHasher = RawHasher<&'static [u8; DEFAULT_SECRET_LENGTH]>;
+/// Fingerprints key in-process maps (grouping, partial aggregation, dedup, the selector
+/// caches); nothing sends or persists them, so the default secret, the cheapest, is enough:
+/// `Xxh3Default` reads the built-in secret instead of carrying its own copy, so a fresh
+/// hasher is a 384-byte init with nothing to copy. The one hash that reaches query results
+/// is [`create_selection_hasher`]'s. Feed `Xxh3*` with `update`: they implement both `Hasher`
+/// and `io::Write`, so `write` is ambiguous wherever both traits are in scope.
+pub(crate) type LabelHasher = Xxh3Default;
 
-/// `xxhash3_128::Hasher::with_seed(HASH_SEED)` derives this from the default
-/// secret on every call; derive it once.
-static SEEDED_SECRET: LazyLock<[u8; DEFAULT_SECRET_LENGTH]> = LazyLock::new(|| {
-    SecretBuffer::with_seed(HASH_SEED, [0u8; DEFAULT_SECRET_LENGTH])
-        .unwrap_or_else(|_| unreachable!("the default secret length satisfies with_seed"))
-        .into_secret()
-});
-
-/// A hasher seeded with [`HASH_SEED`]; hashes equal `Hasher::with_seed(HASH_SEED)`.
+/// A fresh label hasher.
 #[inline]
 pub(crate) fn create_hasher() -> LabelHasher {
-    let secret: &'static [u8; DEFAULT_SECRET_LENGTH] = &SEEDED_SECRET;
-    RawHasher::new(
-        SecretBuffer::new(HASH_SEED, secret)
-            .unwrap_or_else(|_| unreachable!("the default secret length satisfies new")),
-    )
+    Xxh3Default::new()
 }
 
-/// An unseeded hasher; hashes equal `Hasher::new()`.
+/// Seed of [`create_selection_hasher`]: part of query results, so it must not change.
+const SELECTION_SEED: u64 = 0xa4d3f1c2b7e98d5f;
+
+/// `Xxh3::with_seed` derives a 192-byte secret on every call; derive it once and clone.
+static SELECTION_HASHER: LazyLock<Xxh3> = LazyLock::new(|| Xxh3::with_seed(SELECTION_SEED));
+
+/// The hasher `limitk` and `limit_ratio` select and order series by.
+///
+/// Unlike a fingerprint, its values are visible: they decide which series those operators
+/// return and in what order. They must also agree across builds, because a shard selects
+/// under its build's hash and the coordinator re-applies the selection under its own, so a
+/// rolling upgrade that changed them would return the wrong series. Pinned by the tests below.
 #[inline]
-pub(crate) fn create_unseeded_hasher() -> LabelHasher {
-    RawHasher::new(SecretBuffer::default())
+pub(crate) fn create_selection_hasher() -> Xxh3 {
+    SELECTION_HASHER.clone()
 }
 
 /// Written after every label name and every label value.
@@ -65,7 +65,7 @@ const INLINE_LABEL_LEN: usize = 128;
 /// fits is framed in a stack buffer and written once: four writes per label, two
 /// of them a single byte, cost a join's match keys about 15 %.
 #[inline]
-pub(crate) fn hash_key_value(hasher: &mut LabelHasher, key: &str, value: &str) {
+pub(crate) fn hash_key_value<H: Hasher>(hasher: &mut H, key: &str, value: &str) {
     let len = key.len() + value.len() + 2;
     if len <= INLINE_LABEL_LEN {
         let mut buf = [0u8; INLINE_LABEL_LEN];
@@ -84,7 +84,7 @@ pub(crate) fn hash_key_value(hasher: &mut LabelHasher, key: &str, value: &str) {
 
 impl HasFingerprint for &str {
     fn fingerprint(&self) -> SeriesFingerprint {
-        xxhash3_128::Hasher::oneshot(self.as_bytes())
+        xxh3_128(self.as_bytes())
     }
 }
 
@@ -100,15 +100,14 @@ mod tests {
 
     /// A label framed in the stack buffer hashes exactly as its four separate
     /// writes do, on both sides of the inline limit and across a long sequence
-    /// that crosses the hash's internal block boundaries: fingerprints are
-    /// compared between shards, so they must not change.
+    /// that crosses the hash's internal block boundaries.
     #[test]
     fn inline_label_write_matches_separate_writes() {
         let separate = |hasher: &mut LabelHasher, key: &str, value: &str| {
-            hasher.write(key.as_bytes());
-            hasher.write(&[LABEL_SEP]);
-            hasher.write(value.as_bytes());
-            hasher.write(&[LABEL_SEP]);
+            hasher.update(key.as_bytes());
+            hasher.update(&[LABEL_SEP]);
+            hasher.update(value.as_bytes());
+            hasher.update(&[LABEL_SEP]);
         };
         let fits = "x".repeat(INLINE_LABEL_LEN - 3);
         let over = "x".repeat(INLINE_LABEL_LEN - 2);
@@ -129,18 +128,17 @@ mod tests {
             let (mut one, mut four) = (create_hasher(), create_hasher());
             hash_key_value(&mut one, key, value);
             separate(&mut four, key, value);
-            assert_eq!(one.finish_128(), four.finish_128(), "{key}={value}");
+            assert_eq!(one.digest128(), four.digest128(), "{key}={value}");
         }
 
-        let (mut one, mut four) = (create_unseeded_hasher(), create_unseeded_hasher());
+        let (mut one, mut four) = (create_hasher(), create_hasher());
         for (key, value) in &labels {
             hash_key_value(&mut one, key, value);
             separate(&mut four, key, value);
         }
-        assert_eq!(one.finish_128(), four.finish_128());
+        assert_eq!(one.digest128(), four.digest128());
     }
 
-    /// The borrowed-secret hashers must produce exactly what the allocating
     /// Label boundaries must survive hashing: the separator used to be the
     /// four ASCII bytes `0xfe`, with nothing after a value, so a value
     /// containing that text (or an empty value) could stand in for a label
@@ -169,38 +167,68 @@ mod tests {
         assert_ne!(two, std_hash(&[("a", "xb"), ("", "y")]));
     }
 
-    /// `xxhash3_128::Hasher` constructors produce: fingerprints are compared
-    /// across shards and used as map keys, so they cannot drift.
+    /// XXH3-128 reference values (computed with `twox-hash`, an independent implementation),
+    /// on both sides of the 240-byte short-input path, so a dependency bump that changed the
+    /// output, or a framing change in `fingerprint_labels`, shows up here.
     #[test]
-    fn raw_hashers_match_allocating_hashers() {
-        let inputs: [&[u8]; 4] = [
-            b"",
-            b"host",
-            b"__name__=cpu,host=h1,region=us",
-            &[7u8; 1024],
+    fn hasher_produces_pinned_xxh3_values() {
+        let cases: [(&[u8], u128); 4] = [
+            (b"", 0x99aa06d3014798d86001c324468d497f),
+            (b"host", 0x539fc971e1a39d162f1d49ce83ae3d88),
+            (
+                b"__name__=cpu,host=h1,region=us",
+                0xb555043a1c6c512a8f24acd9f77353b5,
+            ),
+            (&[7u8; 1024], 0x30c217e3c4356cdbc8e98c406ca2eda1),
         ];
-        for input in inputs {
-            let mut seeded = create_hasher();
-            seeded.write(input);
-            let mut boxed = xxhash3_128::Hasher::with_seed(HASH_SEED);
-            boxed.write(input);
-            assert_eq!(
-                seeded.finish_128(),
-                boxed.finish_128(),
-                "seeded, {} bytes",
-                input.len()
-            );
-
-            let mut unseeded = create_unseeded_hasher();
-            unseeded.write(input);
-            let mut boxed = xxhash3_128::Hasher::new();
-            boxed.write(input);
-            assert_eq!(
-                unseeded.finish_128(),
-                boxed.finish_128(),
-                "unseeded, {} bytes",
-                input.len()
-            );
+        for (input, expected) in cases {
+            let mut hasher = create_hasher();
+            hasher.update(input);
+            assert_eq!(hasher.digest128(), expected, "{} bytes", input.len());
         }
+        // The one-shot `&str` fingerprint and the streaming hasher agree.
+        assert_eq!("host".fingerprint(), 0x539fc971e1a39d162f1d49ce83ae3d88);
+
+        use crate::labels::fingerprint_labels;
+        let labels = [
+            Label::new("__name__", "cpu"),
+            Label::new("host", "h1"),
+            Label::new("region", "us"),
+        ];
+        assert_eq!(
+            fingerprint_labels(labels.iter()),
+            0x1784afd961a790018d98651b6a423b71
+        );
+    }
+
+    /// `limitk`/`limit_ratio` results depend on these, and shards and the coordinator must
+    /// agree on them: seeded XXH3-128 reference values (computed with `twox-hash`).
+    #[test]
+    fn selection_hasher_produces_pinned_values() {
+        let cases: [(&[u8], u128); 4] = [
+            (b"", 0x89fe23895a7226ff7114d8e46b672ae8),
+            (b"host", 0x7e3788019bbdca50a7e21df72495c688),
+            (
+                b"__name__=cpu,host=h1,region=us",
+                0x90eb47891523d9df7bb7ca9bfbad315b,
+            ),
+            (&[7u8; 1024], 0xd9898fe9e538af29fd44bdc54262f2f6),
+        ];
+        for (input, expected) in cases {
+            let mut hasher = create_selection_hasher();
+            hasher.update(input);
+            assert_eq!(hasher.digest128(), expected, "{} bytes", input.len());
+        }
+
+        use crate::labels::selection_hash_labels;
+        let labels = [
+            Label::new("__name__", "cpu"),
+            Label::new("host", "h1"),
+            Label::new("region", "us"),
+        ];
+        assert_eq!(
+            selection_hash_labels(labels.iter()),
+            0x970c84ff2032b3b16e8fc8fef3ffdf47
+        );
     }
 }

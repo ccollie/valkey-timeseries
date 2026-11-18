@@ -1,6 +1,6 @@
 use super::labels::{has_fill_modifier, match_key_keeps};
 use crate::common::threads::IterIntoParRayon;
-use crate::labels::{SeriesFingerprint, create_unseeded_hasher, hash_key_value};
+use crate::labels::{SeriesFingerprint, create_hasher, hash_key_value};
 use crate::promql::binops::binary_op_fn;
 use crate::promql::exec::types::EvalLabels;
 use crate::promql::exec::utils::effective_fingerprint;
@@ -573,12 +573,12 @@ fn compute_binary_match_key(
     labels: &EvalLabels,
     matching: Option<&LabelModifier>,
 ) -> SeriesFingerprint {
-    let mut hasher = create_unseeded_hasher();
+    let mut hasher = create_hasher();
     labels
         .iter()
         .filter(|l| match_key_keeps(matching, l.name))
         .for_each(|label| hash_key_value(&mut hasher, label.name, label.value));
-    hasher.finish_128()
+    hasher.digest128()
 }
 
 /// Build the result label set for a matched pair.

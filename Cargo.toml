@@ -71,7 +71,7 @@ regex-syntax = "0.8.11"
 # The traits promql-parser's public `lexer()` returns its tokens through. Keep this in
 # step with promql-parser's own lrpar version, or they are two different crates.
 lrpar = "0.14.2"
-twox-hash = { version = "2.1.4", features = ["xxhash3_64"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 crc16 = "0.4.0"
 # Only for the `benchmark_dataset` tool (fixture checksums); pulled in by `test-utils`.

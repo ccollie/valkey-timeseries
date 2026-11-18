@@ -143,7 +143,18 @@ pub(crate) fn fingerprint_labels<L: SeriesLabel>(
     for label in labels {
         super::hash::hash_key_value(&mut hasher, label.name(), label.value());
     }
-    hasher.finish_128()
+    hasher.digest128()
+}
+
+/// The `limitk`/`limit_ratio` selection hash of an ordered sequence of labels: framed like
+/// [`fingerprint_labels`], under [`create_selection_hasher`](super::hash::create_selection_hasher)
+/// (see there for why it is separate and fixed).
+pub(crate) fn selection_hash_labels<L: SeriesLabel>(labels: impl IntoIterator<Item = L>) -> u128 {
+    let mut hasher = super::hash::create_selection_hasher();
+    for label in labels {
+        super::hash::hash_key_value(&mut hasher, label.name(), label.value());
+    }
+    hasher.digest128()
 }
 
 impl HasFingerprint for [Label] {

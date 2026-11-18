@@ -51,7 +51,7 @@ impl HasFingerprint for VectorSelector {
     fn fingerprint(&self) -> SeriesFingerprint {
         let mut hasher = create_hasher();
         update_hasher_for_vector_selector(self, &mut hasher);
-        hasher.finish_128()
+        hasher.digest128()
     }
 }
 
