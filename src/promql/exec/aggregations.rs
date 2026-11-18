@@ -1,7 +1,7 @@
 use crate::common::Timestamp;
 use crate::common::hash::IntMap;
 use crate::common::math::{kahan_avg, kahan_std_dev, kahan_sum, kahan_variance, quantile};
-use crate::labels::{HasFingerprint, SeriesFingerprint};
+use crate::labels::SeriesFingerprint;
 use crate::promql::common::math::{max_ignore_nan, min_ignore_nan};
 use crate::promql::deadline::{Deadline, SERIES_WORK};
 use crate::promql::exec::types::EvalLabels;
@@ -882,7 +882,7 @@ fn get_k_param(param: Option<ExprResult>, sample_len: usize, name: &str) -> Eval
 }
 
 fn sample_hash(sample: &EvalSample) -> u128 {
-    sample.labels.fingerprint()
+    sample.labels.selection_hash()
 }
 
 #[cfg(test)]

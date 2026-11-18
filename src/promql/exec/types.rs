@@ -4,7 +4,7 @@ use crate::common::string_interner::InternedString;
 use crate::common::{Sample, Timestamp};
 use crate::labels::{
     HasFingerprint, InternedLabel, Labels, MetricName, SeriesFingerprint, fingerprint_labels,
-    hash_label,
+    hash_label, selection_hash_labels,
 };
 use crate::promql::exec::bitset::BitSet;
 use crate::promql::hashers::{GridPreloadKey, MatrixPreloadKey, PreloadKey};
@@ -729,6 +729,17 @@ impl HasFingerprint for EvalLabels {
         match self.as_label_slice() {
             Some(slice) => fingerprint_labels(slice.iter()),
             None => fingerprint_labels(self.iter()),
+        }
+    }
+}
+
+impl EvalLabels {
+    /// The hash `limitk` and `limit_ratio` select and order by; see
+    /// [`selection_hash_labels`].
+    pub(crate) fn selection_hash(&self) -> u128 {
+        match self.as_label_slice() {
+            Some(slice) => selection_hash_labels(slice.iter()),
+            None => selection_hash_labels(self.iter()),
         }
     }
 }
