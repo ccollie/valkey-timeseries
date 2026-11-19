@@ -217,6 +217,33 @@ class TestCompactionInteraction:
         diff("TS.MADD", "e:comp3:src", 350, 8.0, "e:comp3:src", 150, 2.0)
         diff("TS.RANGE", "e:comp3:dst", "-", "+")
 
+    @pytest.mark.parametrize("src_retention,dst_retention", [(50, 0), (0, 30), (50, 30)])
+    @pytest.mark.parametrize("one_call", [True, False], ids=["madd", "add"])
+    def test_source_only_batch_under_retention(self, diff, src_retention, dst_retention, one_call):
+        """A batch that writes only a rule's source, under retention on the source, the
+        destination or both, rolls up as the reference does, whether sent as one TS.MADD or one
+        TS.ADD per item. The items include one that falls outside the source's window once a
+        later item lands, and a late one that is still inside it."""
+        src, dst = "e:sret:src", "e:sret:dst"
+        diff("TS.CREATE", src, "DUPLICATE_POLICY", "LAST", "RETENTION", src_retention)
+        diff("TS.CREATE", dst, "RETENTION", dst_retention)
+        diff("TS.CREATERULE", src, dst, "AGGREGATION", "sum", 10)
+        diff("TS.ADD", src, 0, 5)
+        items = [(100, 1), (55, 2), (120, 3), (40, 4)]
+        if one_call:
+            diff("TS.MADD", *[arg for ts, value in items for arg in (src, ts, value)])
+        else:
+            latest = 0
+            for ts, value in items:
+                if src_retention and ts < latest - src_retention:
+                    with pytest.raises(ResponseError):
+                        diff("TS.ADD", src, ts, value)
+                else:
+                    diff("TS.ADD", src, ts, value)
+                latest = max(latest, ts)
+        for key in (src, dst):
+            diff("TS.RANGE", key, "-", "+")
+
 
 class TestMaddDivergences:
     """Pinned per-engine; see TestParserDivergences in test_compat_create.py."""
