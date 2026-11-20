@@ -5,7 +5,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_long};
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
-    Context, ContextFlags, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN,
+    Context, ContextFlags, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyError,
     ValkeyModule_ReplySetArrayLength, ValkeyModuleCtx, ValkeyResult, ValkeyValue, raw,
 };
 
@@ -40,10 +40,6 @@ impl IntoRawCtx for &Context {
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
         self.ctx
     }
-}
-
-pub fn reply_with_str(ctx: &Context, s: &str) -> Status {
-    reply_with_simple_str(ctx.ctx, s)
 }
 
 /// Reply with a borrowed byte slice, without copying into a [`ValkeyValue`].
@@ -307,8 +303,7 @@ fn reply_with_postponed_array<C: IntoRawCtx>(ctx: C) -> Status {
 /// Reply with a simple string. `\r`, `\n` and NUL, which would end or corrupt it on the wire,
 /// become spaces.
 pub fn reply_with_simple_string<C: IntoRawCtx>(ctx: C, s: &str) -> Status {
-    let msg = str_as_legal_resp_string(s);
-    raw::reply_with_simple_string(ctx.into_raw(), msg.as_ptr())
+    reply_with_simple_str(ctx.into_raw(), s)
 }
 
 fn reply_with_key(raw_ctx: *mut raw::RedisModuleCtx, key: ValkeyValueKey) -> Status {
@@ -330,11 +325,76 @@ fn reply_with_key(raw_ctx: *mut raw::RedisModuleCtx, key: ValkeyValueKey) -> Sta
 pub fn reply<C: IntoRawCtx>(ctx: C, result: ValkeyResult) -> Status {
     let raw_ctx = ctx.into_raw();
     match result {
-        // `Context::reply` copies every simple string into a new `CString`; a short, clean one
-        // needs no allocation.
-        Ok(ValkeyValue::SimpleStringStatic(s)) => reply_with_simple_str(raw_ctx, s),
-        Ok(ValkeyValue::SimpleString(s)) => reply_with_simple_str(raw_ctx, &s),
-        other => Context::new(raw_ctx).reply(other),
+        Ok(ValkeyValue::Bool(v)) => raw::reply_with_bool(raw_ctx, v.into()),
+        Ok(ValkeyValue::Integer(v)) => raw::reply_with_long_long(raw_ctx, v),
+        Ok(ValkeyValue::Float(v)) => raw::reply_with_double(raw_ctx, v),
+        Ok(ValkeyValue::SimpleStringStatic(s)) => reply_with_simple_string(raw_ctx, s),
+        Ok(ValkeyValue::SimpleString(s)) => reply_with_simple_string(raw_ctx, &s),
+        Ok(ValkeyValue::BulkString(s)) => reply_with_bulk_string(raw_ctx, &s),
+        Ok(ValkeyValue::BigNumber(s)) => {
+            raw::reply_with_big_number(raw_ctx, s.as_ptr().cast::<c_char>(), s.len())
+        }
+        Ok(ValkeyValue::VerbatimString((format, data))) => raw::reply_with_verbatim_string(
+            raw_ctx,
+            data.as_ptr().cast(),
+            data.len(),
+            format.0.as_ptr().cast(),
+        ),
+        Ok(ValkeyValue::BulkValkeyString(s)) => raw::reply_with_string(raw_ctx, s.inner),
+        Ok(ValkeyValue::StringBuffer(s)) => reply_with_slice(raw_ctx, &s),
+        Ok(ValkeyValue::Array(array)) => {
+            reply_with_array(raw_ctx, array.len());
+            for elem in array {
+                reply(raw_ctx, Ok(elem));
+            }
+            Status::Ok
+        }
+        Ok(ValkeyValue::Map(map)) => {
+            reply_with_map(raw_ctx, map.len());
+            for (key, value) in map {
+                reply_with_key(raw_ctx, key);
+                reply(raw_ctx, Ok(value));
+            }
+            Status::Ok
+        }
+        Ok(ValkeyValue::OrderedMap(map)) => {
+            reply_with_map(raw_ctx, map.len());
+            for (key, value) in map {
+                reply_with_key(raw_ctx, key);
+                reply(raw_ctx, Ok(value));
+            }
+            Status::Ok
+        }
+        Ok(ValkeyValue::Set(set)) => {
+            raw::reply_with_set(raw_ctx, set.len() as c_long);
+            for elem in set {
+                reply_with_key(raw_ctx, elem);
+            }
+            Status::Ok
+        }
+        Ok(ValkeyValue::OrderedSet(set)) => {
+            raw::reply_with_set(raw_ctx, set.len() as c_long);
+            for elem in set {
+                reply_with_key(raw_ctx, elem);
+            }
+            Status::Ok
+        }
+        Ok(ValkeyValue::Null) => raw::reply_with_null(raw_ctx),
+        Ok(ValkeyValue::NoReply) => Status::Ok,
+        Ok(ValkeyValue::StaticError(s)) => reply_error_string(raw_ctx, s),
+        Err(ValkeyError::WrongArity) => {
+            // A key-position request has no client to answer.
+            if Context::new(raw_ctx).is_keys_position_request() {
+                Status::Err
+            } else {
+                unsafe { raw::RedisModule_WrongArity.unwrap()(raw_ctx).into() }
+            }
+        }
+        Err(ValkeyError::WrongType) => {
+            reply_error_string(raw_ctx, ValkeyError::WrongType.to_string().as_str())
+        }
+        Err(ValkeyError::String(s)) => reply_error_string(raw_ctx, s.as_str()),
+        Err(ValkeyError::Str(s)) => reply_error_string(raw_ctx, s),
     }
 }
 

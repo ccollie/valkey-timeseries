@@ -428,15 +428,18 @@ mod tests {
 
 #[cfg(test)]
 mod cold_wait_tests {
-    use super::run_on_pool_cold;
+    use super::{ThreadRole, run_on_pool_cold, set_thread_role};
     use std::sync::LazyLock;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
+    /// A one-worker pool whose worker may wait, as an evaluation pool's may: a pool that
+    /// declares no role is refused a blocking wait.
     fn one_worker(name: &'static str) -> rayon_core::ThreadPool {
         rayon_core::ThreadPoolBuilder::new()
             .num_threads(1)
             .thread_name(move |_| name.to_string())
+            .start_handler(|_| set_thread_role(ThreadRole::BlockingPool))
             .build()
             .unwrap()
     }

@@ -144,7 +144,7 @@ fn reply_metric_verbose(ctx: &Context, reading: &MetricReading) {
         reply_with_simple_string(ctx, "valueHuman");
         reply_human_value(ctx, &reading.value);
     }
-    reply_with_str(ctx, "description");
+    reply_with_simple_string(ctx, "description");
     reply_with_bulk_string(ctx, reading.help);
 }
 

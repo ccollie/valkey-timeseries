@@ -2,14 +2,21 @@ use super::raw_replies::{
     IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_bulk_string,
     reply_with_sample,
 };
+use crate::common::Sample;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{Context, Status, ValkeyResult, raw};
 
 /// `ReplyContext` is a thin wrapper around `RedisModuleCtx` that provides efficient,
-/// zero-allocation reply helpers and automatic database state management.
+/// zero-allocation reply helpers, writing straight to the client rather than through an
+/// intermediate `ValkeyValue`.
+///
+/// Also the writer a worker thread answers a blocked client with (see
+/// [`ThreadSafeReplyContext`](super::ThreadSafeReplyContext)): replies need no GIL, so its reply
+/// methods are safe there. It deliberately does not dereference to [`Context`]: anything else a
+/// `Context` offers — key access, flags, ACL lookups — needs the GIL, and goes through the
+/// explicit [`Self::context`] on the main thread only.
 ///
 /// It carries the client's protocol, so the reply helpers that pick a RESP2 or RESP3 shape
 /// ([`Self::reply_with_set`], [`Self::is_resp3`]) never ask the server for it. That is what
@@ -55,7 +62,7 @@ impl<'a> ReplyContext<'a> {
     /// [`super::raw_replies`] that take an [`IntoRawCtx`] rather than a `ReplyContext`.
     #[inline]
     pub(crate) fn raw(&self) -> *mut raw::RedisModuleCtx {
-        self.ctx.ctx
+        self.raw_ctx
     }
 
     /// The wrapped [`Context`], for helpers that need the crate type — key access, context flags,
@@ -85,43 +92,43 @@ impl<'a> ReplyContext<'a> {
 
     /// Reply with a 64-bit integer value.
     pub fn reply_with_integer(&self, value: i64) -> Status {
-        raw::reply_with_long_long(self.ctx.ctx, value)
+        raw::reply_with_long_long(self.raw_ctx, value)
     }
 
     /// Reply with a double-precision floating point value.
     pub fn reply_with_double(&self, value: f64) -> Status {
-        raw::reply_with_double(self.ctx.ctx, value)
+        raw::reply_with_double(self.raw_ctx, value)
     }
 
     /// Reply with a boolean value.
     pub fn reply_with_bool(&self, value: bool) -> Status {
-        raw::reply_with_bool(self.ctx.ctx, value.into())
+        raw::reply_with_bool(self.raw_ctx, value.into())
     }
 
     /// Reply with an error string.
     pub fn reply_error_string(&self, s: &str) -> Status {
-        reply_error_string(self.ctx.ctx, s)
+        reply_error_string(self.raw_ctx, s)
     }
 
     /// Reply with a bulk string.
     pub fn reply_with_string(&self, value: &str) -> Status {
-        reply_with_bulk_string(self.ctx.ctx, value)
+        reply_with_bulk_string(self.raw_ctx, value)
     }
 
     /// Reply with a `[timestamp, value]` pair.
     pub fn reply_with_sample(&self, sample: &Sample) -> Status {
-        reply_with_sample(self.ctx.ctx, sample);
+        reply_with_sample(self.raw_ctx, sample);
         Status::Ok
     }
 
     /// Start an array reply with the given length.
     pub fn reply_with_array(&self, len: usize) -> Status {
-        raw::reply_with_array(self.ctx.ctx, len as c_long)
+        raw::reply_with_array(self.raw_ctx, len as c_long)
     }
 
     /// Start a map reply with the given length.
     pub fn reply_with_map(&self, len: usize) -> Status {
-        raw::reply_with_map(self.ctx.ctx, len as c_long)
+        raw::reply_with_map(self.raw_ctx, len as c_long)
     }
 
     /// Start a set reply (RESP3) or array reply (RESP2) with the given length.
@@ -139,26 +146,12 @@ impl<'a> ReplyContext<'a> {
     /// Forward a `ValkeyResult` to the reply machinery.
     #[allow(clippy::must_use_candidate)]
     pub fn reply(&self, result: ValkeyResult) -> Status {
-        reply(self.ctx.ctx, result)
-    }
-}
-
-impl Deref for ReplyContext<'_> {
-    type Target = Context;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ctx
+        reply(self.raw_ctx, result)
     }
 }
 
 impl IntoRawCtx for &ReplyContext<'_> {
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
         self.raw_ctx
-    }
-}
-
-impl IntoRawCtx for &ReplyContext {
-    fn into_raw(self) -> *mut raw::RedisModuleCtx {
-        self.ctx.ctx
     }
 }

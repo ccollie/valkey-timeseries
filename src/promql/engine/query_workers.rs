@@ -129,11 +129,17 @@ where
     let slot = QUERY_WORKERS
         .try_reserve()
         .map_err(|rejected| ValkeyError::String(format!("TSDB: {}", rejection(rejected))))?;
-    let blocked_client = block_client(ctx);
+    // Refused by the server (a client already blocked, or not a normal one): nothing has been
+    // written to it, so it gets an error now. The reservation is given back as it drops.
+    let Some(blocked_client) = block_client(ctx) else {
+        return Err(ValkeyError::Str(error_consts::CANNOT_BLOCK_CLIENT));
+    };
     let cancel = blocked_client.cancel_token();
     let admitted = Instant::now();
 
-    slot.spawn(move || {
+    // A job the lane refuses is dropped unrun, and its blocked client answers with an error as
+    // it drops; the client is blocked, so the command must not answer it as well.
+    let _ = slot.spawn(move || {
         metrics::QUEUE_WAIT.observe_duration(admitted.elapsed());
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
         match answer(deadline, current_time_millis(), cancel, prepare, evaluate) {

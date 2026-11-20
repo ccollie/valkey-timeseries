@@ -82,6 +82,8 @@ enum InfoSection {
     Compaction,
     /// A `TS._DEBUG METRICS` section, mirrored under its own name.
     Metrics(Section),
+    /// `ts_promql`: the `TS.QUERY` / `TS.QUERYRANGE` worker pool and its caches.
+    Promql,
 }
 
 /// Every section, in emission order.
@@ -96,6 +98,7 @@ const SECTIONS: &[InfoSection] = &[
     InfoSection::Metrics(Section::IndexReconciliation),
     InfoSection::Metrics(Section::Fanout),
     InfoSection::Metrics(Section::Chunk),
+    InfoSection::Promql,
 ];
 
 impl InfoSection {
@@ -104,6 +107,7 @@ impl InfoSection {
             InfoSection::Index => "index",
             InfoSection::Compaction => "compaction",
             InfoSection::Metrics(section) => section.as_str(),
+            InfoSection::Promql => "promql",
         }
     }
 
@@ -122,7 +126,10 @@ impl InfoSection {
     ///   atomic byte count, both read without creating the pool (zero before its first string).
     /// - `fanout`: counters, and two map sizes read the same way, without a guard and without
     ///   creating the maps.
-    /// - `clustermap`, `exec`: not mirrored, so not audited; not safe until they are.
+    /// - `clustermap`, `exec`, and the `promql` metrics: not mirrored, so not audited; not safe
+    ///   until they are.
+    /// - `ts_promql` itself reads the query cache, a `LazyLock` the report would create: not
+    ///   safe.
     ///
     /// The mirrored metrics are read through metered's registry, which takes no lock either, and
     /// only once it exists ([`Self::readable_in_crash_report`]).
@@ -139,8 +146,9 @@ impl InfoSection {
                 | Section::IndexReconciliation
                 | Section::StringInterning
                 | Section::Fanout => true,
-                Section::Clustermap | Section::Exec => false,
+                Section::Clustermap | Section::Exec | Section::Promql => false,
             },
+            InfoSection::Promql => false,
         }
     }
 
@@ -156,7 +164,7 @@ impl InfoSection {
     /// holds for [`Self::fields`].
     fn readable_in_crash_report(self) -> bool {
         match self {
-            InfoSection::Index | InfoSection::Compaction => true,
+            InfoSection::Index | InfoSection::Compaction | InfoSection::Promql => true,
             InfoSection::Metrics(_) => metrics::registries_built(),
         }
     }
@@ -170,6 +178,7 @@ impl InfoSection {
                 info_fields_from(metrics::current_if_built(&[section]).unwrap_or_default())
             }
             InfoSection::Metrics(section) => info_fields(section),
+            InfoSection::Promql => promql_fields(),
         }
     }
 }
@@ -440,32 +449,6 @@ mod tests {
         );
     }
 
-    /// A plain `INFO` emits every section; a crash report leaves out the index walk, which takes
-    /// locks the faulting thread may hold.
-    #[test]
-    fn crash_report_skips_only_the_index_section() {
-        let emitted = |for_crash_report| -> Vec<_> {
-            SECTIONS
-                .iter()
-                .filter(|section| section.emitted(for_crash_report))
-                .map(|section| section.name())
-                .collect()
-        };
-        let all: Vec<_> = SECTIONS.iter().map(|section| section.name()).collect();
-        assert_eq!(emitted(false), all);
-        let crash = emitted(true);
-        assert_eq!(crash, all[1..]);
-        assert!(!crash.contains(&"index"));
-    }
-
-    #[test]
-    fn section_names_are_unique() {
-        let names: Vec<_> = SECTIONS.iter().map(|section| section.name()).collect();
-        for (i, name) in names.iter().enumerate() {
-            assert!(!names[..i].contains(name), "{name} listed twice");
-        }
-    }
-
     /// Prefixed with the section, counters ending in `_total`, the byte gauge with its twin.
     #[test]
     fn promql_fields_follow_metric_naming() {
@@ -496,5 +479,35 @@ mod tests {
                 "promql_subquery_grids_declined_total",
             ]
         );
+    }
+
+    /// A plain `INFO` emits every section; a crash report leaves out the index walk, which takes
+    /// locks the faulting thread may hold, and PromQL's, which may create its query cache.
+    #[test]
+    fn crash_report_skips_only_the_index_and_promql_sections() {
+        let emitted = |for_crash_report| -> Vec<_> {
+            SECTIONS
+                .iter()
+                .filter(|section| section.emitted(for_crash_report))
+                .map(|section| section.name())
+                .collect()
+        };
+        let all: Vec<_> = SECTIONS.iter().map(|section| section.name()).collect();
+        assert_eq!(emitted(false), all);
+        let crash = emitted(true);
+        let expected: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|name| !["index", "promql"].contains(name))
+            .collect();
+        assert_eq!(crash, expected);
+    }
+
+    #[test]
+    fn section_names_are_unique() {
+        let names: Vec<_> = SECTIONS.iter().map(|section| section.name()).collect();
+        for (i, name) in names.iter().enumerate() {
+            assert!(!names[..i].contains(name), "{name} listed twice");
+        }
     }
 }

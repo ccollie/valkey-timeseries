@@ -1,11 +1,11 @@
+use super::client_cancellation::{CancelToken, Registration, mark_disconnected, stop_all};
 use crate::common::logging::log_warning;
 use crate::common::replies::{IntoRawCtx, ReplyContext, is_resp3_client, reply};
 use crate::common::sync::lock;
 use crate::error_consts;
-use std::collections::HashMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -135,12 +135,11 @@ pub struct BlockedClient {
     pub(crate) inner: *mut raw::RedisModuleBlockedClient,
     /// Whether a reply has been written or handed to a writer.
     answered: bool,
+    /// The client's disconnect flag; dropped before the client is unblocked.
+    cancellation: Option<Registration>,
     /// Whether the client negotiated RESP3, read on the main thread when it was blocked: the
     /// reply is written from another thread, where the server cannot be asked.
     resp3: bool,
-    /// Reports the client's disconnect: nobody will read the reply, so the work answering it
-    /// can stop.
-    disconnect: DisconnectWatch,
 }
 
 // We need to be able to send the inner pointer to another thread
@@ -159,8 +158,9 @@ impl BlockedClient {
 
 impl Drop for BlockedClient {
     fn drop(&mut self) {
-        // Before the unblock, after which the server may free the handle and reuse its address.
-        self.disconnect.forget();
+        // Before the unblock below: once unblocked the server may reuse the handle's address
+        // for another blocked client, which must not find this one's registration.
+        drop(self.cancellation.take());
         unsafe {
             if !self.answered {
                 let ctx = raw::RedisModule_GetThreadSafeContext.unwrap()(self.inner);
@@ -174,7 +174,8 @@ impl Drop for BlockedClient {
 
 /// Blocks the client of `ctx` until the returned handle is dropped, with no timeout: the work
 /// answering it runs to the end unless the client disconnects first, which
-/// [`ThreadSafeReplyContext::disconnected`] reports. Main thread only.
+/// [`BlockedClient::cancel_token`] reports. Main thread only: the disconnect callback is
+/// installed on the handle here, and the server only calls it from the main thread.
 ///
 /// `None` when the server refuses to block the client (one already blocked, a client that is
 /// not a normal one, a temporary module context). Nothing has been written to it then, so the
@@ -191,11 +192,13 @@ pub(crate) fn block_client(ctx: &Context) -> Option<BlockedClient> {
     if inner.is_null() {
         return None;
     }
+    let registration = Registration::new(inner as u64);
+    unsafe { raw::RedisModule_SetDisconnectCallback.unwrap()(inner, Some(on_disconnect)) };
     Some(BlockedClient {
         inner,
         answered: false,
+        cancellation: Some(registration),
         resp3: is_resp3_client(ctx),
-        disconnect: DisconnectWatch::new(inner),
     })
 }
 
@@ -251,7 +254,7 @@ impl ThreadSafeReplyContext {
     #[allow(clippy::must_use_candidate)]
     pub fn reply(&self, r: ValkeyResult) -> raw::Status {
         if !matches!(r, Ok(ValkeyValue::NoReply)) {
-            self.answered.store(true, Ordering::Relaxed);
+            self.answered.set(true);
         }
         reply(self.ctx, r)
     }
@@ -260,7 +263,7 @@ impl ThreadSafeReplyContext {
     /// frees the server context it writes to). The caller takes responsibility for writing
     /// the reply: the client counts as answered from here.
     pub fn get_reply_context(&self) -> ReplyContext<'_> {
-        self.answered.store(true, Ordering::Relaxed);
+        self.answered.set(true);
         ReplyContext::with_protocol(self.ctx, self.blocked_client.resp3)
     }
 }

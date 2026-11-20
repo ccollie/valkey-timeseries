@@ -438,7 +438,19 @@ pub(crate) mod mem_io {
 #[cfg(test)]
 mod tests {
     use super::mem_io::{Item, MemIo};
-    use super::{narrow, rdb_load_optional_f64, rdb_save_optional_f64};
+    use super::{
+        MAX_RDB_COLLECTION_LEN, MAX_RDB_PREALLOC, narrow, rdb_load_optional_f64, rdb_prealloc,
+        rdb_save_optional_f64,
+    };
+
+    #[test]
+    fn prealloc_never_exceeds_the_cap() {
+        assert_eq!(rdb_prealloc(0), 0);
+        assert_eq!(rdb_prealloc(7), 7);
+        assert_eq!(rdb_prealloc(MAX_RDB_PREALLOC), MAX_RDB_PREALLOC);
+        assert_eq!(rdb_prealloc(MAX_RDB_COLLECTION_LEN), MAX_RDB_PREALLOC);
+        assert_eq!(rdb_prealloc(usize::MAX), MAX_RDB_PREALLOC);
+    }
 
     /// Prometheus's stale marker, once the in-band encoding of `None`.
     const STALE_NAN_BITS: u64 = 0x7ff0000000000002;
