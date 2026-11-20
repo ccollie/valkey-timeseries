@@ -14,7 +14,7 @@ mod labels;
 
 pub(in crate::promql) use labels::*;
 
-/// Re-exported for the external Criterion benchmark crates (`benches/fast_path.rs`),
+/// Re-exported for the external Criterion benchmark crates (`benches/promql_ops.rs`),
 /// which reach these through `promql::binops`.
 #[cfg(feature = "bench")]
 pub use bench::{

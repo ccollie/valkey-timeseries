@@ -183,7 +183,7 @@ harness = false
 required-features = ["enable-system-alloc"]
 
 [[bench]]
-name = "fast_path"
+name = "promql_ops"
 harness = false
 # `bench` exposes the bench_eval_* helpers; `enable-system-alloc` swaps the Valkey
 # allocator for the system one, without which a standalone bench binary aborts on

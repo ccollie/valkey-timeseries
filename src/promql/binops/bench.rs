@@ -1,5 +1,5 @@
 //! Binary-operator benchmark cases. Compiled only under the `bench` feature,
-//! for the external Criterion crate (`benches/fast_path.rs`). Each case is
+//! for the external Criterion crate (`benches/promql_ops.rs`). Each case is
 //! built once, each iteration gets a fresh input from `input()` inside
 //! Criterion's untimed setup, and `run()` returns its result so the output is
 //! freed untimed too.
