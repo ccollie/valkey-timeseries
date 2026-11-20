@@ -2,7 +2,7 @@
 //! union preload is cached under.
 
 use super::*;
-use crate::common::{Sample, hash::DeterministicHasher};
+use crate::common::{Sample, hash::StableHasher};
 use crate::promql::engine::sample_budget::Retained;
 use crate::promql::exec::types::StepMerger;
 use std::borrow::Cow;
@@ -557,8 +557,9 @@ impl SubqueryKey {
     pub(super) fn of(subquery: &SubqueryExpr) -> Self {
         let text: Arc<str> = format!("{subquery:?}").into();
         // Fixed keys: every key must hash alike, and the map rehashes the word.
-        let hasher = DeterministicHasher::default();
-        let hash = std::hash::BuildHasher::hash_one(&hasher, &*text);
+        let mut hasher = StableHasher::new();
+        std::hash::Hash::hash(&*text, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
         Self { hash, text }
     }
 

@@ -225,11 +225,20 @@ fn thread_acl_scope_active() -> bool {
 /// to say "root", so the receiving side then checks as its own context's user (the `default`
 /// user on a fan-out shard), which may be stricter: such a call fails closed rather than open.
 ///
+/// A thread running under a [`ThreadAclScope`] works for that scope's user, whatever its
+/// context's own client is, so the scope's name wins: PromQL's selector executor fans out
+/// from a query worker on `MODULE_CONTEXT`, whose client has no user of its own.
+///
 /// Fails for a user name that is not UTF-8. The server accepts any bytes but whitespace and
 /// NUL in a name, while the name travels as text (a fan-out header field, a `String` on the
 /// background job), so a lossy rendering would be re-resolved on the other side as a
 /// different user. Refusing keeps such a caller from ever running as someone else.
 pub(crate) fn caller_user_name(ctx: &Context) -> ValkeyResult<Option<String>> {
+    if let Some(identity) = thread_identity()
+        && identity.user.is_some()
+    {
+        return user_name_text(identity.name.as_slice());
+    }
     match current_user_name(ctx) {
         Some(name) => user_name_text(name.as_slice()),
         None => Ok(None),

@@ -9,7 +9,7 @@ use crate::common::replies::{
 use crate::labels::Label;
 use crate::series::chunks::ChunkOps;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
+use valkey_module::{Status, ValkeyResult, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
     let raw_ctx = ctx.into_raw();
@@ -77,7 +77,7 @@ impl MRangeReplyShape {
     }
 }
 
-pub fn reply_with_mrange_series_result(ctx: &Context, series: &MRangeSeriesResult) {
+pub fn reply_with_mrange_series_result(ctx: &ReplyContext<'_>, series: &MRangeSeriesResult) {
     reply_with_array(ctx, 3);
 
     // Raw bytes, not a `&str`: key names are binary-safe, so the client must get back exactly
@@ -90,7 +90,7 @@ pub fn reply_with_mrange_series_result(ctx: &Context, series: &MRangeSeriesResul
     reply_with_mrange_series_samples(ctx, series);
 }
 
-fn reply_with_mrange_series_samples(ctx: &Context, series: &MRangeSeriesResult) {
+fn reply_with_mrange_series_samples(ctx: &ReplyContext<'_>, series: &MRangeSeriesResult) {
     match &series.data {
         SeriesResultData::Chunk(chunk) => reply_with_samples(ctx, chunk.iter()),
         SeriesResultData::Rows(rows) => reply_with_multi_samples(ctx, rows.iter()),

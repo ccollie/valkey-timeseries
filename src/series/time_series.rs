@@ -732,16 +732,44 @@ impl TimeSeries {
         if start_time > end_time {
             return Ok(Vec::new());
         }
-        if !self.overlaps(start_time, end_time) {
+        if self.is_empty() || !self.overlaps(start_time, end_time) {
             return Ok(Vec::new());
         }
         let Some(range) = self.get_chunk_index_bounds(start_time, end_time) else {
             return Ok(Vec::new());
         };
         let (start_index, end_index) = range;
+        let chunks = &self.chunks[start_index..=end_index];
+        if chunks.len() < PARALLEL_RANGE_MIN_CHUNKS || on_pool_worker() {
+            // Decode on this thread when the range is small, or when the caller
+            // is already a pool worker — a fan-out across series, where a
+            // nested scope per series costs more than it parallelizes (and its
+            // ordered merge frees a medium block per series, which the
+            // allocator hands back to the OS). One presized buffer also
+            // replaces a growth-by-doubling `collect` per chunk plus a
+            // concatenating copy. Chunks are ordered and disjoint, so appending
+            // in chunk order is already sorted.
+            //
+            // The estimate comes from persisted sample counts, which a corrupt RDB can make
+            // absurd, so the reservation is fallible, as in the chunks' own `get_range`.
+            let capacity = chunks
+                .iter()
+                .map(|chunk| estimate_range_len(chunk, start_time, end_time))
+                .fold(0usize, usize::saturating_add);
+            let mut samples = Vec::new();
+            samples.try_reserve_exact(capacity).map_err(|e| {
+                TsdbError::DecodingError(format!(
+                    "cannot reserve {capacity} samples for a range read: {e}"
+                ))
+            })?;
+            for chunk in chunks {
+                samples.extend(chunk.range_iter(start_time, end_time));
+            }
+            return Ok(samples);
+        }
         // In timestamp order as read: chunks are disjoint and ascending, and the pool's
         // `collect` keeps input order.
-        get_range_parallel(&self.chunks[start_index..=end_index], start_time, end_time)
+        get_range_parallel(chunks, start_time, end_time)
     }
 
     /// Bounds on how many samples [`Self::get_range`] returns for this range, without decoding
@@ -2000,6 +2028,68 @@ mod tests {
         assert_eq!(ts.last_sample_in_range(0, 5), None);
     }
 
+    #[test]
+    fn last_sample_in_range_uses_the_cached_head() {
+        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
+
+        fn sample(timestamp: Timestamp) -> Sample {
+            Sample::new(timestamp, timestamp as f64)
+        }
+
+        let ts = TimeSeries::from_chunks(vec![
+            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+                sample(10),
+                sample(20),
+            ])),
+            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+                sample(30),
+                sample(40),
+            ])),
+        ])
+        .unwrap();
+
+        // `end` at or beyond the head returns the head itself.
+        assert_eq!(ts.last_sample_in_range(0, 40), Some(sample(40)));
+        assert_eq!(ts.last_sample_in_range(0, 1_000), Some(sample(40)));
+        assert_eq!(ts.last_sample_in_range(40, 1_000), Some(sample(40)));
+        // A window entirely ahead of the head matches nothing.
+        assert_eq!(ts.last_sample_in_range(41, 1_000), None);
+        // An empty series has no head to short-circuit on.
+        let empty = TimeSeries::from_chunks(vec![]).unwrap();
+        assert_eq!(empty.last_sample_in_range(0, 1_000), None);
+    }
+
+    #[test]
+    fn test_find_start_chunk_index_linear_scan_agrees_with_binary_search() {
+        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
+
+        // Chunks covering [0,9], [20,29], [40,49], [60,69].
+        let chunks: Vec<TimeSeriesChunk> = (0..4)
+            .map(|c| {
+                let samples: Vec<Sample> = (0..10)
+                    .map(|i| Sample {
+                        timestamp: c * 20 + i,
+                        value: i as f64,
+                    })
+                    .collect();
+                TimeSeriesChunk::Uncompressed(UncompressedChunk::new(1024, &samples))
+            })
+            .collect();
+        assert!(chunks.len() <= LINEAR_SCAN_MAX);
+
+        for ts in -5..80 {
+            let expected = if ts <= chunks[0].first_timestamp() {
+                0
+            } else {
+                binary_search_chunks_by_timestamp(&chunks, ts).0
+            };
+            assert_eq!(find_start_chunk_index(&chunks, ts), expected, "ts={ts}");
+        }
+        assert_eq!(find_start_chunk_index(&chunks, 45), 2);
+        assert_eq!(find_start_chunk_index(&chunks, 35), 2);
+        assert_eq!(find_start_chunk_index(&chunks, 70), 4);
+    }
+
     /// `get_chunk_index` reports a miss as the insertion point in both branches, which is what
     /// lets `upsert_sample` route a gap sample without a second scan.
     #[test]
@@ -2068,67 +2158,5 @@ mod tests {
             );
             assert_eq!(series.total_samples, chunk_count as usize * 10 + 1);
         }
-    }
-
-    #[test]
-    fn last_sample_in_range_uses_the_cached_head() {
-        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
-
-        fn sample(timestamp: Timestamp) -> Sample {
-            Sample::new(timestamp, timestamp as f64)
-        }
-
-        let ts = TimeSeries::from_chunks(vec![
-            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
-                sample(10),
-                sample(20),
-            ])),
-            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
-                sample(30),
-                sample(40),
-            ])),
-        ])
-        .unwrap();
-
-        // `end` at or beyond the head returns the head itself.
-        assert_eq!(ts.last_sample_in_range(0, 40), Some(sample(40)));
-        assert_eq!(ts.last_sample_in_range(0, 1_000), Some(sample(40)));
-        assert_eq!(ts.last_sample_in_range(40, 1_000), Some(sample(40)));
-        // A window entirely ahead of the head matches nothing.
-        assert_eq!(ts.last_sample_in_range(41, 1_000), None);
-        // An empty series has no head to short-circuit on.
-        let empty = TimeSeries::from_chunks(vec![]).unwrap();
-        assert_eq!(empty.last_sample_in_range(0, 1_000), None);
-    }
-
-    #[test]
-    fn test_find_start_chunk_index_linear_scan_agrees_with_binary_search() {
-        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
-
-        // Chunks covering [0,9], [20,29], [40,49], [60,69].
-        let chunks: Vec<TimeSeriesChunk> = (0..4)
-            .map(|c| {
-                let samples: Vec<Sample> = (0..10)
-                    .map(|i| Sample {
-                        timestamp: c * 20 + i,
-                        value: i as f64,
-                    })
-                    .collect();
-                TimeSeriesChunk::Uncompressed(UncompressedChunk::new(1024, &samples))
-            })
-            .collect();
-        assert!(chunks.len() <= LINEAR_SCAN_MAX);
-
-        for ts in -5..80 {
-            let expected = if ts <= chunks[0].first_timestamp() {
-                0
-            } else {
-                binary_search_chunks_by_timestamp(&chunks, ts).0
-            };
-            assert_eq!(find_start_chunk_index(&chunks, ts), expected, "ts={ts}");
-        }
-        assert_eq!(find_start_chunk_index(&chunks, 45), 2);
-        assert_eq!(find_start_chunk_index(&chunks, 35), 2);
-        assert_eq!(find_start_chunk_index(&chunks, 70), 4);
     }
 }

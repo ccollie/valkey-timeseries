@@ -156,18 +156,13 @@ pub fn exec_command<OP: FanoutCommand, F>(
 where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
+    // Validate up front (cluster mode enabled, not in MULTI/Lua) so we fail early
+    // with a clear error before setting up any fanout machinery or dispatching
+    // local/remote requests.
+    validate_cluster_exec(ctx)?;
+
     // First: a caller whose name cannot be carried to the shards fails before any work.
     let fanout_user = caller_user_name(ctx)?;
-    // Validate up front (cluster mode enabled, not in MULTI/Lua) so we fail early
-    // with a clear error before setting up any fanout machinery or dispatching
-    // local/remote requests.
-    validate_cluster_exec(ctx)?;
-
-    // Validate up front (cluster mode enabled, not in MULTI/Lua) so we fail early
-    // with a clear error before setting up any fanout machinery or dispatching
-    // local/remote requests.
-    validate_cluster_exec(ctx)?;
-
     let op = command;
     let deadline = started + timeout;
     // Before the targets: an ownership change after this point fails the local share
@@ -421,8 +416,7 @@ where
         if state.still_wanted(deadline, &target) {
             deliver_response(&state, &owned, &target);
         }
-    });
-    Ok(())
+    })
 }
 
 /// Decode one shard's response and hand it to the fan-out.

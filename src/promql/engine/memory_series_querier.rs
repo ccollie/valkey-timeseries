@@ -161,7 +161,7 @@ impl QueryReader for MemorySeriesQuerier {
 
         let samples = self.select_series(selector, |ts| {
             // Fetch samples in the inclusive range [start_inclusive, timestamp].
-            let samples = ts.get_range(start_inclusive, timestamp);
+            let samples = ts.get_range(start_inclusive, timestamp)?;
             if samples.is_empty() {
                 return Ok(None);
             }
