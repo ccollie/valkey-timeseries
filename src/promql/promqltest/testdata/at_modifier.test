@@ -298,3 +298,14 @@ eval instant at 20m stddev_over_time(test_metric{job="b"}[20m])
 
 eval instant at 20m stdvar_over_time(test_metric{job="b"}[20m])
   {job="b"} 0
+# An @ time before the epoch stays negative. Clamped to 0, `@ -100` would see
+# the samples at 0; its lookback window (-400s, -100s] holds none.
+clear
+
+load 10s
+  metric{job="1"} 0+1x10
+
+eval instant at 10s metric @ -100
+
+eval instant at 10s metric @ 0
+  metric{job="1"} 0
