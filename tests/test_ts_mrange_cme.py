@@ -841,6 +841,51 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command('TS.MRANGE', '-', '+', 'FILTER', 'kind=grp')
         assert len(result) == len(series)
 
+    @pytest.mark.parametrize('command', ['TS.MRANGE', 'TS.MREVRANGE'])
+    def test_mrange_cme_groupby_reduce_share_spans_shards(self, command):
+        """REDUCE share pre-reduces per shard as match and value counts: each bucket's share is
+        over every member on every shard, including a shard none of whose values match."""
+        cluster_client: ValkeyCluster = self.new_cluster_client()
+        series = {
+            's:{slot1}:a': [(1000, 3), (2000, 1), (3000, 5)],
+            's:{slot2}:b': [(1000, 1), (2000, 4), (3000, 6)],
+            's:{slot3}:c': [(1000, 2), (2000, 9)],
+        }
+        for key, points in series.items():
+            cluster_client.execute_command('TS.CREATE', key, 'LABELS', 'kind', 'share', 'g', 'x')
+            for timestamp, value in points:
+                cluster_client.execute_command('TS.ADD', key, timestamp, value)
+
+        reverse = command == 'TS.MREVRANGE'
+        client = self.new_client_for_primary(0)
+
+        def reduce(*extra):
+            result = client.execute_command(command, '-', '+', *extra, 'FILTER', 'kind=share',
+                                            'GROUPBY', 'g', 'REDUCE', 'share>2')
+            assert len(result) == 1 and result[0][0] == b'g=x', result
+            return [[ts] + [float(v) for v in values] for ts, *values in result[0][2]]
+
+        def flat(rows):
+            # pytest.approx takes no nested lists.
+            return [cell for row in rows for cell in row]
+
+        def expect(rows):
+            return pytest.approx(flat(rows[::-1] if reverse else rows))
+
+        cases = {
+            'raw': ([], [[1000, 1 / 3], [2000, 2 / 3], [3000, 1.0]]),
+            'aggregated': (['AGGREGATION', 'max', 2000], [[0, 1 / 3], [2000, 1.0]]),
+            'multi_aggregation': (['AGGREGATION', 'min,max', 2000],
+                                  [[0, 1 / 3, 1 / 3], [2000, 2 / 3, 1.0]]),
+            'filter_by_ts': (['FILTER_BY_TS', 1000, 2000], [[1000, 1 / 3], [2000, 2 / 3]]),
+        }
+        for name, (extra, rows) in cases.items():
+            assert flat(reduce(*extra)) == expect(rows), name
+
+        newest_first = [[3000, 1.0], [2000, 2 / 3], [1000, 1 / 3]]
+        expected = newest_first[:2] if reverse else newest_first[::-1][:2]
+        assert flat(reduce('COUNT', 2)) == pytest.approx(flat(expected))
+
     def test_mrange_cme_large_resp3_reply_keeps_its_shape(self):
         """A merged reply large enough to be written off the main thread still uses the
         client's protocol: RESP3 gets a map keyed by series, with the samples RESP2 gets."""

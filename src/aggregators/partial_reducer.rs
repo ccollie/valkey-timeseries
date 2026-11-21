@@ -48,6 +48,9 @@ pub enum PartialReducerKind {
     StdS,
     VarP,
     VarS,
+    /// count = values seen, acc1 = how many matched the CONDITION; finalize acc1 / count.
+    /// The CONDITION doesn't gate acceptance here, since a miss still counts toward the share.
+    Share,
 }
 
 /// Mergeable accumulator for one bucket timestamp.
@@ -119,9 +122,10 @@ impl PartialReducer {
             At::StdS => (PartialReducerKind::StdS, NanAcceptance::Reject),
             At::VarP => (PartialReducerKind::VarP, NanAcceptance::Reject),
             At::VarS => (PartialReducerKind::VarS, NanAcceptance::Reject),
+            At::Share => (PartialReducerKind::Share, NanAcceptance::Reject),
             // The coordinator reduces these itself, or the parser rejected them; see
             // `AggregationType::reducer_support`, which a test pins against this match.
-            At::All | At::Any | At::None | At::Share => return None,
+            At::All | At::Any | At::None => return None,
             At::First | At::Last | At::Rate | At::IRate | At::Increase => return None,
         };
         Some(Self {
@@ -142,7 +146,8 @@ impl PartialReducer {
                 if value.is_nan() {
                     return false;
                 }
-                self.filter.as_ref().is_none_or(|f| f.compare(value))
+                self.kind == PartialReducerKind::Share
+                    || self.filter.as_ref().is_none_or(|f| f.compare(value))
             }
             NanAcceptance::All => true,
             NanAcceptance::NanOnly => value.is_nan(),
@@ -169,6 +174,11 @@ impl PartialReducer {
                 s.acc2 += value * AVG_SHADOW_SCALE;
             }
             PartialReducerKind::Count | PartialReducerKind::CountIf => {}
+            PartialReducerKind::Share => {
+                if self.filter.is_some_and(|f| f.compare(value)) {
+                    s.acc1 += 1.0;
+                }
+            }
             PartialReducerKind::Min => {
                 s.acc1 = if first_value {
                     value
@@ -243,6 +253,7 @@ impl PartialReducer {
                 into.acc2 += other.acc2;
             }
             PartialReducerKind::Count | PartialReducerKind::CountIf => {}
+            PartialReducerKind::Share => into.acc1 += other.acc1,
             PartialReducerKind::Min => into.acc1 = into.acc1.min(other.acc1),
             PartialReducerKind::Max => into.acc1 = into.acc1.max(other.acc1),
             PartialReducerKind::Range => {
@@ -287,6 +298,8 @@ impl PartialReducer {
             // here, and e.g. min must preserve a -0.0).
             PartialReducerKind::Min | PartialReducerKind::Max => state.acc1,
             PartialReducerKind::Count | PartialReducerKind::CountIf => n,
+            // `ShareAggregatorState::share`'s division, so both paths round alike.
+            PartialReducerKind::Share => state.acc1 / n,
             PartialReducerKind::Range => state.acc2 - state.acc1,
             PartialReducerKind::Avg => mean_of(
                 &KahanSum::from_parts(state.acc1, state.acc1_c),
@@ -495,6 +508,7 @@ mod tests {
         // must match their 0.0-on-zero-matches finalization.
         configs.push(AggregatorConfig::new(At::Count, Some(filter)).unwrap());
         configs.push(AggregatorConfig::new(At::Sum, Some(filter)).unwrap());
+        configs.push(AggregatorConfig::new(At::Share, Some(filter)).unwrap());
         configs
     }
 
@@ -736,6 +750,37 @@ mod tests {
                 assert_eq!((partial, ordinary), (0.0, 0.0), "{ty} over {value}");
             }
         }
+    }
+
+    /// Share is matches over every non-NaN value, so a shard whose values all miss the
+    /// CONDITION still counts toward the denominator, and a group with no non-NaN value has no
+    /// share at all.
+    #[test]
+    fn test_share_partials_count_non_matching_shards() {
+        let filter = ValueComparisonFilter {
+            operator: ComparisonOperator::GreaterThan,
+            value: 2.0,
+        };
+        let config = AggregatorConfig::new(AggregationType::Share, Some(filter)).unwrap();
+        let template = PartialReducer::for_config(&config).expect("share is decomposable");
+        let kind = template.kind();
+        let reduce = |shards: &[&[f64]]| {
+            let mut merged = PartialState::default();
+            for part in shards {
+                let mut reducer = template.clone();
+                for &value in *part {
+                    reducer.update(value);
+                }
+                PartialReducer::merge(kind, &mut merged, &reducer.take_state());
+            }
+            PartialReducer::finalize(kind, &merged)
+        };
+
+        assert_eq!(reduce(&[&[3.0, f64::NAN], &[1.0, 2.0]]), 1.0 / 3.0);
+        assert_eq!(reduce(&[&[1.0], &[2.0]]), 0.0);
+        assert_eq!(reduce(&[&[5.0], &[]]), 1.0);
+        assert!(reduce(&[&[f64::NAN], &[]]).is_nan());
+        assert!(reduce(&[]).is_nan());
     }
 
     #[test]

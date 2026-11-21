@@ -814,10 +814,12 @@ fn finish_series_list(
 mod tests {
     use super::*;
     use crate::aggregators::AggregationType;
+    use crate::common::binop::ComparisonOperator;
     use crate::common::constants::SOURCE_KEY;
     use crate::series::chunks::UncompressedChunk;
     use crate::series::request_types::{
         AggregationOptions, AggregatorConfig, RangeGroupingOptions, RangeOptions,
+        ValueComparisonFilter,
     };
 
     /// The merge over peers' series alone, as most of these tests exercise it.
@@ -1215,6 +1217,22 @@ mod tests {
         assert!(command.pushdown_group);
         assert!(command.generate_request().apply_group_reduce);
 
+        // Share is pushed down too, its CONDITION included.
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(
+                AggregationType::Share,
+                Some(ValueComparisonFilter {
+                    operator: ComparisonOperator::GreaterThan,
+                    value: 2.0,
+                }),
+            )
+            .unwrap(),
+            group_label: "region".into(),
+        });
+        let command = MRangeFanoutCommand::new(options.clone());
+        assert!(command.pushdown_group);
+        assert!(command.generate_request().apply_group_reduce);
+
         // Non-decomposable reducer: per-series buckets
         options.grouping = grouping_with(AggregationType::Increase);
         let command = MRangeFanoutCommand::new(options.clone());
@@ -1288,6 +1306,60 @@ mod tests {
             samples(&[(200, 7.0), (100, 3.0)])
         );
         assert!(results[0].labels.is_empty());
+    }
+
+    /// Share partials merge as match and value counts, so a bucket's share covers every
+    /// shard's members; MREVRANGE reverses the finalized buckets and COUNT keeps the newest.
+    #[test]
+    fn test_handle_share_group_partials() {
+        use crate::aggregators::PartialSampleReducer;
+
+        let mut options = mrange_options(0, 1000);
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(
+                AggregationType::Share,
+                Some(ValueComparisonFilter {
+                    operator: ComparisonOperator::GreaterThan,
+                    value: 2.0,
+                }),
+            )
+            .unwrap(),
+            group_label: "region".into(),
+        });
+        let reducer =
+            PartialReducer::for_config(&options.grouping.as_ref().unwrap().aggregation).unwrap();
+        let shard_partial = |keys: &[&str], shard_samples: Vec<Sample>| {
+            let (bucket_timestamps, states): (Vec<i64>, Vec<PartialState>) =
+                PartialSampleReducer::new(shard_samples.into_iter(), reducer.clone()).unzip();
+            GroupPartialSeries {
+                group_label_value: "us".into(),
+                source_keys: keys.iter().map(|s| s.as_bytes().to_vec()).collect(),
+                bucket_timestamps,
+                states: states.into_iter().map(Into::into).collect(),
+                column_count: 1,
+            }
+        };
+
+        let shard1 = shard_partial(&["a"], samples(&[(0, 3.0), (100, 1.0), (200, f64::NAN)]));
+        let shard2 = shard_partial(
+            &["b", "c"],
+            samples(&[(0, 1.0), (0, 2.0), (100, 4.0), (200, f64::NAN)]),
+        );
+
+        let results =
+            handle_group_partials(vec![shard1.clone(), shard2.clone()], &options).unwrap();
+        assert_eq!(
+            result_samples(&results[0]),
+            samples(&[(0, 1.0 / 3.0), (100, 0.5), (200, f64::NAN)])
+        );
+
+        options.is_reverse = true;
+        options.range.count = Some(2);
+        let results = handle_group_partials(vec![shard1, shard2], &options).unwrap();
+        assert_eq!(
+            result_samples(&results[0]),
+            samples(&[(200, f64::NAN), (100, 0.5)])
+        );
     }
 
     fn limit_for(is_reverse: bool, count: usize) -> SampleLimit {

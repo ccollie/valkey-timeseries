@@ -259,11 +259,11 @@ impl AggregationType {
             | AggregationType::StdP
             | AggregationType::StdS
             | AggregationType::VarP
-            | AggregationType::VarS => ReducerSupport::Decomposable,
-            AggregationType::All
-            | AggregationType::Any
-            | AggregationType::None
-            | AggregationType::Share => ReducerSupport::FallbackOnly,
+            | AggregationType::VarS
+            | AggregationType::Share => ReducerSupport::Decomposable,
+            AggregationType::All | AggregationType::Any | AggregationType::None => {
+                ReducerSupport::FallbackOnly
+            }
             AggregationType::First
             | AggregationType::Last
             | AggregationType::Rate
