@@ -207,12 +207,8 @@ impl FanoutCommand for AggregationFanoutCommand {
         super::check_unique_series(samples.iter().map(|s| &s.labels))
             .map_err(|e| super::shard_error(QueryError::Execution(e)))?;
 
-        let series_read = samples.len() as u64;
-        let mut response =
-            aggregate_locally(operation, samples, req.eval_timestamp, &read.deadline)
-                .map_err(super::shard_error)?;
-        response.series_read = series_read;
-        Ok(response)
+        aggregate_locally(operation, samples, req.eval_timestamp, &read.deadline)
+            .map_err(super::shard_error)
     }
 
     fn generate_request(&self) -> AggregationQuery {
@@ -228,7 +224,8 @@ impl FanoutCommand for AggregationFanoutCommand {
         if self.state.stopped.is_some() {
             return Ok(());
         }
-        self.series_read = self.series_read.saturating_add(resp.series_read);
+        let series_read = super::reported_series_read(resp.series_read, target)?;
+        self.series_read = self.series_read.saturating_add(series_read);
         let labels = resp.labels.take().unwrap_or_default();
         let mut resolver = symbol_table::EvalLabelResolver::new(&labels);
         let samples = std::mem::take(&mut resp.samples)
@@ -281,8 +278,9 @@ impl FanoutCommand for AggregationFanoutCommand {
 
 /// This shard's half of `operation` over the instant vector it read: the
 /// partial states of a reduction, or the samples a selection keeps (or
-/// `count_values` counts), stamped with `eval_timestamp`. Stops once
-/// `deadline` has passed: the coordinator would no longer wait for the answer.
+/// `count_values` counts), stamped with `eval_timestamp`, and how many series
+/// fed it (`series_read`). Stops once `deadline` has passed: the coordinator
+/// would no longer wait for the answer.
 fn aggregate_locally(
     operation: AggregationOperation,
     samples: Vec<EvalSample>,
@@ -297,11 +295,12 @@ fn aggregate_locally(
     let Some(strategy) = kind.pushdown_strategy() else {
         unreachable!("decoding refuses an operator with no push-down form");
     };
-    match strategy {
+    let series_read = samples.len() as u64;
+    let mut response = match strategy {
         PushdownStrategy::Reduce => {
             let mut groups = PartialGroups::new(kind);
             groups.accumulate(modifier.as_ref(), samples, deadline)?;
-            Ok(partials_response(groups))
+            partials_response(groups)
         }
         PushdownStrategy::Select | PushdownStrategy::CountValues => {
             let param = param.as_ref().map(AggregationParam::to_expr_result);
@@ -313,9 +312,11 @@ fn aggregate_locally(
                 eval_timestamp,
                 deadline,
             )?;
-            Ok(samples_response(aggregated))
+            samples_response(aggregated)
         }
-    }
+    };
+    response.series_read = Some(series_read);
+    Ok(response)
 }
 
 /// A reduction's answer: one partial per group, its labels as refs into the
@@ -330,7 +331,7 @@ fn partials_response(groups: PartialGroups) -> AggregationQueryResponse {
         partials,
         samples: Vec::new(),
         labels: Some(symbols.finish()),
-        series_read: 0,
+        series_read: None,
     }
 }
 
@@ -354,7 +355,7 @@ fn samples_response(samples: Vec<EvalSample>) -> AggregationQueryResponse {
         partials: Vec::new(),
         samples,
         labels: Some(symbols.finish()),
-        series_read: 0,
+        series_read: None,
     }
 }
 
@@ -638,13 +639,49 @@ mod tests {
             let mut cmd = command(request(kind, None, param));
             for (port, series_read) in [(7000, 2), (7001, 0), (7002, 5)] {
                 let response = AggregationQueryResponse {
-                    series_read,
+                    series_read: Some(series_read),
                     ..Default::default()
                 };
                 cmd.on_response(response, &node(port)).unwrap();
             }
             assert_eq!(cmd.series_read(), 7, "{kind:?}");
         }
+    }
+
+    /// A peer of a build that predates `series_read` sends none. Its share of the read
+    /// cannot be bounded, so its answer is refused as unsupported, not read as zero
+    /// series: the fan-out hands the error to `on_error`, which latches the fallback to
+    /// evaluating without the push-down.
+    #[test]
+    fn test_a_response_without_series_read_falls_back() {
+        let mut cmd = command(params(AggregationKind::Sum, None));
+        let counted = AggregationQueryResponse {
+            series_read: Some(2),
+            ..Default::default()
+        };
+        cmd.on_response(counted, &node(7000)).unwrap();
+        let err = cmd
+            .on_response(AggregationQueryResponse::default(), &node(7001))
+            .expect_err("an answer without series_read");
+        assert_eq!(err.kind, crate::fanout::ErrorKind::UnsupportedFeatures);
+        assert!(err.to_string().contains("series_read"), "{err}");
+        cmd.on_error(err, &node(7001));
+        assert!(cmd.peer_unsupported());
+    }
+
+    /// `series_read` is sent even when zero, so a shard that read nothing is told
+    /// apart from one that predates the field.
+    #[test]
+    fn test_a_zero_series_read_is_on_the_wire() {
+        use prost::Message;
+        let zero = AggregationQueryResponse {
+            series_read: Some(0),
+            ..Default::default()
+        };
+        let decoded = AggregationQueryResponse::decode(zero.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.series_read, Some(0));
+        let absent = AggregationQueryResponse::decode(&[][..]).unwrap();
+        assert_eq!(absent.series_read, None);
     }
 
     /// An operator this node cannot push down — a newer coordinator's — is refused as
@@ -673,7 +710,7 @@ mod tests {
                 ..Default::default()
             }],
             labels: None,
-            series_read: 0,
+            series_read: Some(0),
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
 
@@ -687,7 +724,7 @@ mod tests {
             partials: vec![GroupPartial::default()],
             samples: Vec::new(),
             labels: None,
-            series_read: 0,
+            series_read: Some(0),
         };
         assert!(cmd.on_response(stray, &node(7000)).is_err());
     }
@@ -750,7 +787,7 @@ mod tests {
                 names: vec!["job".to_string()],
                 values: vec!["z".to_string()],
             }),
-            series_read: 0,
+            series_read: Some(0),
         };
         for (what, state) in [
             ("no state", None),

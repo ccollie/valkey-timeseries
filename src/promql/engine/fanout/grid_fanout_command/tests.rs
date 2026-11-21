@@ -143,6 +143,7 @@ fn test_partial_without_samples_is_rejected() {
     let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
     let step_ts = request.window_ends()[0];
     let response = |state: Option<AggregationPartialState>| GridQueryResponse {
+        series_read: Some(0),
         series: Vec::new(),
         partials: vec![GroupPartial {
             label_name_refs: vec![0],
@@ -184,12 +185,33 @@ fn test_series_read_is_summed_over_the_shards() {
     let mut cmd = command(request);
     for (port, series_read) in [(7000, 3), (7001, 0), (7002, 4)] {
         let response = GridQueryResponse {
-            series_read,
+            series_read: Some(series_read),
             ..Default::default()
         };
         cmd.on_response(response, &node(port)).unwrap();
     }
     assert_eq!(cmd.series_read(), 7);
+}
+
+/// A peer of a build that predates `series_read` sends none: its share of the read
+/// cannot be bounded, so its answer is refused as unsupported (latching the fallback
+/// once the fan-out hands it to `on_error`), not read as zero series.
+#[test]
+fn test_a_response_without_series_read_falls_back() {
+    let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
+    let mut cmd = command(request);
+    let counted = GridQueryResponse {
+        series_read: Some(3),
+        ..Default::default()
+    };
+    cmd.on_response(counted, &node(7000)).unwrap();
+    let err = cmd
+        .on_response(GridQueryResponse::default(), &node(7001))
+        .expect_err("an answer without series_read");
+    assert_eq!(err.kind, crate::fanout::ErrorKind::UnsupportedFeatures);
+    assert!(err.to_string().contains("series_read"), "{err}");
+    cmd.on_error(err, &node(7001));
+    assert!(cmd.peer_unsupported());
 }
 
 /// A peer that rejects the operation as unknown (an older build) latches the
@@ -209,7 +231,10 @@ fn test_unsupported_peer_latches_fallback() {
 /// One shard's response, produced the way `get_local_response` produces it
 /// once the windows have been read.
 fn response(request: &GridRequest, windows: Vec<RangeSample<EvalLabels>>) -> GridQueryResponse {
-    shard_response(request, &request.window_ends(), windows).unwrap()
+    let series_read = windows.len() as u64;
+    let mut response = shard_response(request, &request.window_ends(), windows).unwrap();
+    response.series_read = Some(series_read);
+    response
 }
 
 /// A response carrying every series raw, whatever its size.
@@ -220,6 +245,7 @@ fn raw_response(windows: Vec<RangeSample<EvalLabels>>) -> GridQueryResponse {
         .map(|s| range_sample_to_proto(s, &mut symbols).unwrap())
         .collect();
     GridQueryResponse {
+        series_read: Some(0),
         raw,
         labels: Some(symbols.finish()),
         ..Default::default()
@@ -1209,7 +1235,8 @@ fn test_promoted_members_fold_a_chunk_at_a_time() {
     );
     // The chunking itself (by output, not raw samples) is pinned by
     // `a_sparse_expansion_is_chunked_and_charged_by_its_output`.
-    let shard = grid.finish().unwrap();
+    let mut shard = grid.finish().unwrap();
+    shard.series_read = Some(windows.len() as u64);
     assert!(shard.raw.is_empty(), "every sparse member was promoted");
     assert_eq!(
         shard.partials.len(),
@@ -1628,6 +1655,7 @@ fn test_malformed_columns_are_rejected() {
         let err = cmd
             .on_response(
                 GridQueryResponse {
+                    series_read: Some(0),
                     series: vec![series],
                     ..Default::default()
                 },
@@ -1654,6 +1682,7 @@ fn test_series_without_requested_sample_times_are_refused() {
     let err = cmd
         .on_response(
             GridQueryResponse {
+                series_read: Some(0),
                 series: vec![without_lag.clone()],
                 ..Default::default()
             },
@@ -1672,6 +1701,7 @@ fn test_series_without_requested_sample_times_are_refused() {
     };
     let mut cmd = command(request);
     let response = GridQueryResponse {
+        series_read: Some(0),
         series: vec![without_lag],
         ..Default::default()
     };
@@ -1686,6 +1716,7 @@ fn test_a_partial_off_the_grid_is_refused() {
     let request = fused(stepped_grid_request(), AggregationKind::Sum, &["job"]);
     let off_grid = request.window_ends()[0] + 1;
     let response = GridQueryResponse {
+        series_read: Some(0),
         partials: vec![GroupPartial {
             label_name_refs: vec![0],
             label_value_refs: vec![0],
@@ -1937,6 +1968,7 @@ fn test_decode_rejects_malformed_requests() {
 fn test_mismatched_payload_is_rejected() {
     let mut cmd = command(stepped_grid_request());
     let stray = GridQueryResponse {
+        series_read: Some(0),
         series: Vec::new(),
         partials: vec![GroupPartial::default()],
         ..Default::default()
@@ -1949,6 +1981,7 @@ fn test_mismatched_payload_is_rejected() {
         &["__name__"],
     ));
     let stray = GridQueryResponse {
+        series_read: Some(0),
         series: vec![ProtoGridSeries::default()],
         partials: vec![GroupPartial::default()],
         ..Default::default()
@@ -1960,6 +1993,7 @@ fn test_mismatched_payload_is_rejected() {
     let mut symbols = SymbolTableBuilder::default();
     let raw = range_sample_to_proto(series("0", &[(EVAL_TS, 1.0)]), &mut symbols).unwrap();
     let mixed = GridQueryResponse {
+        series_read: Some(0),
         series: vec![ProtoGridSeries::default()],
         raw: vec![raw],
         labels: Some(symbols.finish()),
@@ -1970,6 +2004,7 @@ fn test_mismatched_payload_is_rejected() {
     // A raw series whose chunk does not decode is a corrupt response.
     let mut cmd = command(stepped_grid_request());
     let garbage = GridQueryResponse {
+        series_read: Some(0),
         raw: vec![crate::promql::generated::RangeSample {
             data: Some(crate::promql::generated::SampleData {
                 version: 1,
@@ -2100,7 +2135,8 @@ fn test_shard_grid_in_batches_answers_as_one_batch() {
         for batch in windows.chunks(7) {
             grid.add(batch.to_vec()).unwrap();
         }
-        let split = grid.finish().unwrap();
+        let mut split = grid.finish().unwrap();
+        split.series_read = Some(windows.len() as u64);
 
         assert_eq!(split.raw.len(), whole.raw.len(), "{what}: raw spans");
         assert_eq!(split.series.len(), whole.series.len(), "{what}: series");

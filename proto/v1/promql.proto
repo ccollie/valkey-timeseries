@@ -350,7 +350,11 @@ message GridQueryResponse {
   /// the windows, before any reduction. The coordinator sums them to apply
   /// `ts-promql-max-series-per-selector` to the whole cluster's read, as a
   /// single node applies it, rather than to each shard's share.
-  uint64 series_read = 5;
+  ///
+  /// Always set, zero included: absent means a peer that predates the count,
+  /// whose share the coordinator cannot bound, so it evaluates without the
+  /// push-down rather than read the share as zero series.
+  optional uint64 series_read = 5;
 }
 
 /// The labels of the series a selector matches on this node, for the
@@ -408,6 +412,7 @@ message AggregationQueryResponse {
   /// The symbol table the label refs of `samples` and `partials` index into.
   SymbolTable labels = 3;
   /// How many series the selector read on this shard: those with a sample in
-  /// the lookback window, before aggregation. See `GridQueryResponse.series_read`.
-  uint64 series_read = 4;
+  /// the lookback window, before aggregation. Always set; see
+  /// `GridQueryResponse.series_read`.
+  optional uint64 series_read = 4;
 }

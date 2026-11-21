@@ -21,7 +21,7 @@ pub(in crate::promql) use type_conversions::{
 use valkey_module::{ValkeyError, ValkeyResult};
 
 use crate::error_consts;
-use crate::fanout::{ErrorKind, FanoutContext, FanoutError, register_fanout_operation};
+use crate::fanout::{ErrorKind, FanoutContext, FanoutError, NodeInfo, register_fanout_operation};
 use crate::labels::filters::SeriesSelector;
 use crate::promql::QueryError;
 use crate::promql::deadline::Deadline;
@@ -81,6 +81,24 @@ impl PushdownState {
     pub(super) fn on_error(&mut self, error: &FanoutError) {
         self.unsupported_peer |= error.is_unsupported_operation();
     }
+}
+
+/// A shard's `series_read`, which the coordinator sums to bound the whole
+/// cluster's read. A peer that predates the field sends none; read as zero, its
+/// share would escape `ts-promql-max-series-per-selector`. So its answer is
+/// refused as unsupported, and the fan-out's `on_error` latches the fallback to
+/// evaluating without the push-down, as for a peer that lacks the operation.
+pub(super) fn reported_series_read(
+    series_read: Option<u64>,
+    target: &NodeInfo,
+) -> Result<u64, FanoutError> {
+    series_read.ok_or_else(|| FanoutError {
+        kind: ErrorKind::UnsupportedFeatures,
+        message: format!(
+            "TSDB: peer {} predates series_read and cannot be bounded",
+            target.socket_address
+        ),
+    })
 }
 
 /// A field a fan-out request must carry, or the error the shard answers with.

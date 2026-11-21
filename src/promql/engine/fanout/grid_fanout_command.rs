@@ -209,7 +209,7 @@ impl FanoutCommand for GridFanoutCommand {
             |windows| grid.add(windows),
         )?;
         let mut response = grid.finish()?;
-        response.series_read = series_read;
+        response.series_read = Some(series_read);
         Ok(response)
     }
 
@@ -238,7 +238,8 @@ impl FanoutCommand for GridFanoutCommand {
         if self.state.stopped.is_some() {
             return Ok(());
         }
-        self.series_read = self.series_read.saturating_add(resp.series_read);
+        let series_read = super::reported_series_read(resp.series_read, target)?;
+        self.series_read = self.series_read.saturating_add(series_read);
         // Every element's labels are refs into the response's symbol table,
         // resolved to interned labels: each distinct pair once per response.
         let table = resp.labels.take().unwrap_or_default();
@@ -647,6 +648,6 @@ fn respond(
         partials,
         raw,
         labels: Some(symbols.finish()),
-        series_read: 0,
+        series_read: None,
     })
 }

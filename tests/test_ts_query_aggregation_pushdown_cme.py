@@ -414,6 +414,23 @@ class TestPromQLAggregationPushdownCluster(ValkeyTimeSeriesClusterTestCase):
                   for series in result.result}
         assert by_job == {'api': [600.0, 6.0], 'web': [3000.0, 30.0]}
 
+    def test_every_shard_reports_the_series_it_read(self):
+        """Each shard's aggregation and grid answers carry `series_read`, which the
+        coordinator sums for `ts-promql-max-series-per-selector`. An answer without it
+        is taken for an older build's, and the query quietly evaluates without the
+        push-down: the answer stays right, so only the coordinator's warning shows it."""
+        self.setup_fleet()
+
+        self.assert_values_close(
+            self.values_by_label(self.instant_query('sum by (job) (http_requests_total)'), 'job'),
+            {'api': 6.0, 'web': 30.0}, 'instant')
+        result = self.range_query('sum by (job) (http_requests_total)', T0, T1, '60s')
+        assert {s.metric['job']: [v.value for v in s.values] for s in result.result} == \
+            {'api': [600.0, 6.0], 'web': [3000.0, 30.0]}
+
+        assert not self.get_primary(0).verify_string_in_logfile(
+            'push-down unsupported by a peer')
+
     # ── empty inputs ──────────────────────────────────────────────────
 
     def test_aggregation_over_no_matching_series(self):

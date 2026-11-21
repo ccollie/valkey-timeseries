@@ -64,6 +64,15 @@ old shard's silence would read as "I aggregated", and the coordinator would merg
 raw samples as if they were partial states. Correctness would depend on every
 peer being new — which is the property we are trying not to need.
 
+A count the coordinator enforces a limit with has no such safe zero: an old
+shard's silence would read as "I read nothing", and its share would escape the
+limit. Such a field is declared `optional`, the shard always sets it (zero
+included), and an answer without it is refused as `UnsupportedFeatures`, which
+sends the query down the no-push-down fallback. `series_read` on the grid and
+aggregation responses works this way: the coordinator sums it to apply
+`ts-promql-max-series-per-selector` to the whole cluster's read
+(`reported_series_read` in `src/promql/engine/fanout/mod.rs`).
+
 The same reasoning covers enums. Enum fields decode to a raw `i32`, so an
 unrecognized value is detectable rather than silently mapped onto a neighbour:
 

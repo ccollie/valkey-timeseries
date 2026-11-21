@@ -822,8 +822,12 @@ pub struct GridQueryResponse {
     /// / the windows, before any reduction. The coordinator sums them to apply
     /// / `ts-promql-max-series-per-selector` to the whole cluster's read, as a
     /// / single node applies it, rather than to each shard's share.
-    #[prost(uint64, tag = "5")]
-    pub series_read: u64,
+    /// /
+    /// / Always set, zero included: absent means a peer that predates the count,
+    /// / whose share the coordinator cannot bound, so it evaluates without the
+    /// / push-down rather than read the share as zero series.
+    #[prost(uint64, optional, tag = "5")]
+    pub series_read: ::core::option::Option<u64>,
 }
 /// / The labels of the series a selector matches on this node, for the
 /// / coordinator's derived filter push-down (a range query narrows one operand
@@ -896,9 +900,10 @@ pub struct AggregationQueryResponse {
     #[prost(message, optional, tag = "3")]
     pub labels: ::core::option::Option<SymbolTable>,
     /// / How many series the selector read on this shard: those with a sample in
-    /// / the lookback window, before aggregation. See `GridQueryResponse.series_read`.
-    #[prost(uint64, tag = "4")]
-    pub series_read: u64,
+    /// / the lookback window, before aggregation. Always set; see
+    /// / `GridQueryResponse.series_read`.
+    #[prost(uint64, optional, tag = "4")]
+    pub series_read: ::core::option::Option<u64>,
 }
 /// / A PromQL aggregation operator. Mirrors
 /// / `crate::promql::exec::aggregations::AggregationKind`; QUANTILE has no
