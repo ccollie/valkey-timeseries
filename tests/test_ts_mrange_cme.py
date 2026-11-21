@@ -370,6 +370,37 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
                                             'GROUPBY', 'k', 'REDUCE', reducer)
             assert result[0][2] == expected, reducer
 
+    @pytest.mark.parametrize('command', ['TS.MRANGE', 'TS.MREVRANGE'])
+    def test_mrange_cme_count_with_groupby_spans_members_chunks(self, command):
+        """A shard copies only each member's own first or last COUNT samples for a raw group
+        COUNT. The group's buckets must still be whole, with members on different timestamp
+        grids, ending at different times, over many chunks, on several shards."""
+        cluster_client: ValkeyCluster = self.new_cluster_client()
+        members = {
+            # key: (first timestamp, step, samples)
+            'cc:{slot1}:a': (0, 10, 400),
+            'cc:{slot2}:b': (5, 15, 250),
+            'cc:{slot3}:c': (0, 10, 300),
+            'cc:{slot1}:d': (3, 7, 500),
+        }
+        for n, (key, (first, step, count)) in enumerate(members.items()):
+            cluster_client.execute_command('TS.CREATE', key, 'CHUNK_SIZE', 48,
+                                           'LABELS', 'kind', 'cc', 'g', 'x')
+            args = []
+            for i in range(count):
+                args += [key, first + i * step, n * 100 + i % 17]
+            cluster_client.execute_command('TS.MADD', *args)
+
+        client = self.new_client_for_primary(0)
+        for reducer in ('sum', 'share>50', 'max'):
+            full = client.execute_command(command, '-', '+', 'FILTER', 'kind=cc',
+                                          'GROUPBY', 'g', 'REDUCE', reducer)[0][2]
+            for count in (1, 5, 37, 400, 5000):
+                result = client.execute_command(command, '-', '+', 'COUNT', count,
+                                                'FILTER', 'kind=cc',
+                                                'GROUPBY', 'g', 'REDUCE', reducer)
+                assert result[0][2] == full[:count], (reducer, count)
+
     def test_mrange_cme_empty_result(self):
         """Test TS.MRANGE with no matching series across slots."""
         self.setup_clustered_data()

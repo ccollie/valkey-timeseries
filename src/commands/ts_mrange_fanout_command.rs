@@ -162,7 +162,7 @@ impl FanoutClientCommand for MRangeFanoutCommand {
                 let (_, reducer) = group_partial_reducer(&options)?;
                 let snapshots = {
                     let ctx = ctx.lock_unexpired()?;
-                    snapshot_shard_group_partials(&ctx, &options)?
+                    snapshot_shard_group_partials(&ctx, &options, limit)?
                 };
                 decode_group_partials(snapshots, &options, &reducer, limit, &expired)?
             } else {

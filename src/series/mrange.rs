@@ -1636,9 +1636,20 @@ pub(crate) fn decode_shard_snapshots(
 pub(crate) fn snapshot_shard_group_partials(
     ctx: &Context,
     options: &MRangeOptions,
+    limit: Option<SampleLimit>,
 ) -> ValkeyResult<Vec<SnapshotSeries>> {
-    // No limit: COUNT applies to each group's reduced stream, not to a member's own.
-    snapshot_shard_mrange(ctx, options, None)
+    snapshot_shard_mrange(ctx, options, group_member_limit(options, limit))
+}
+
+/// What of a group member's own window a group COUNT of `limit` needs copied. COUNT applies
+/// to the group's reduced stream, but on a raw read each of the group's last `count`
+/// timestamps is among the last `count` samples of every member holding it (and likewise
+/// for the first): a member's sample there has fewer than `count` group timestamps after it,
+/// so fewer than `count` samples of its own. Aggregation and `FILTER_BY_VALUE` break that
+/// count, so those members keep their whole window.
+fn group_member_limit(options: &MRangeOptions, limit: Option<SampleLimit>) -> Option<SampleLimit> {
+    let range = &options.range;
+    limit.filter(|_| range.aggregation.is_none() && range.value_filter.is_none())
 }
 
 /// [`process_mrange_group_partials`] over snapshots: group by the captured label (series
@@ -2823,6 +2834,186 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A series on its own timestamp grid over many small chunks.
+    fn stepped_series(first: i64, step: i64, count: i64, offset: f64) -> TimeSeries {
+        let mut series = TimeSeries::new();
+        series.chunk_size_bytes = 64;
+        for i in 0..count {
+            let _ = series.add(first + i * step, offset + (i % 13) as f64, None);
+        }
+        assert!(series.chunks.len() > 4, "fixture must span several chunks");
+        series
+    }
+
+    /// Group partials under a COUNT are the same from members snapshotted with
+    /// `group_member_limit` as from their live pipelines: members on different grids and of
+    /// different lengths, raw and aggregated, filtered, with LATEST, in both directions.
+    #[test]
+    fn test_group_partials_from_count_bounded_snapshots_match_live_pipelines() {
+        let members = [
+            (stepped_series(0, 10, 300, 0.0), "a"),
+            (stepped_series(5, 15, 180, 100.0), "b"),
+            (stepped_series(0, 10, 200, 7.0), "c"),
+            (TimeSeries::default(), "d"),
+        ];
+        let filters = [
+            None,
+            Some(crate::series::ValueFilter::new(3.0, 108.0).unwrap()),
+        ];
+        let limits = [
+            SampleLimit::Head(1),
+            SampleLimit::Head(9),
+            SampleLimit::Tail(1),
+            SampleLimit::Tail(9),
+            SampleLimit::Tail(40),
+            SampleLimit::Tail(10_000),
+        ];
+        for reduce in [AggregationType::Sum, AggregationType::Count] {
+            for agg in limit_test_aggregations() {
+                for value_filter in filters {
+                    for (from, to) in [(95, 2405), (0, 5000), (1500, 1600)] {
+                        for with_latest in [false, true] {
+                            let options = MRangeOptions {
+                                range: RangeOptions {
+                                    date_range: crate::series::TimestampRange::from_timestamps(
+                                        from, to,
+                                    )
+                                    .unwrap(),
+                                    aggregation: agg.clone(),
+                                    value_filter,
+                                    ..Default::default()
+                                },
+                                grouping: Some(RangeGroupingOptions {
+                                    aggregation: AggregatorConfig::new(reduce, None).unwrap(),
+                                    group_label: "grp".into(),
+                                }),
+                                ..Default::default()
+                            };
+                            let (_, reducer) = group_partial_reducer(&options).unwrap();
+                            let latest = |s: &TimeSeries| {
+                                (with_latest && !s.is_empty() && to >= 3000).then_some(Sample {
+                                    timestamp: 3000,
+                                    value: 4.0,
+                                })
+                            };
+                            for limit in limits {
+                                let case = format!(
+                                    "reduce={reduce:?} limit={limit:?} agg={agg:?} \
+                                     filter={value_filter:?} window={from}..{to} \
+                                     latest={with_latest}"
+                                );
+                                let snapshots = members
+                                    .iter()
+                                    .map(|(s, key)| {
+                                        let mut snapshot = snapshot_one(
+                                            s,
+                                            (*key).into(),
+                                            latest(s),
+                                            &options,
+                                            group_member_limit(&options, Some(limit)),
+                                        );
+                                        snapshot.group_label_value = Some("g".into());
+                                        snapshot
+                                    })
+                                    .collect();
+                                let got = decode_group_partials(
+                                    snapshots,
+                                    &options,
+                                    &reducer,
+                                    Some(limit),
+                                    &|| false,
+                                )
+                                .unwrap();
+                                assert_eq!(got.len(), 1, "{case}");
+
+                                let (timestamps, states) =
+                                    match agg.as_ref().filter(|a| a.is_multi()) {
+                                        Some(a) => reduce_group_rows(
+                                            members
+                                                .iter()
+                                                .map(|(s, _)| {
+                                                    create_row_iterator(
+                                                        s,
+                                                        &options.range,
+                                                        latest(s),
+                                                        false,
+                                                    )
+                                                })
+                                                .collect(),
+                                            &reducer,
+                                            a.aggregations.len(),
+                                            Some(limit),
+                                        ),
+                                        None => reduce_group_samples(
+                                            members
+                                                .iter()
+                                                .map(|(s, _)| {
+                                                    create_range_iterator(
+                                                        s,
+                                                        &options.range,
+                                                        latest(s),
+                                                        false,
+                                                    )
+                                                })
+                                                .collect(),
+                                            &reducer,
+                                            Some(limit),
+                                        ),
+                                    };
+                                assert_eq!(got[0].timestamps, timestamps, "{case}");
+                                assert_eq!(
+                                    format!("{:?}", got[0].states),
+                                    format!("{states:?}"),
+                                    "{case}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A raw group COUNT copies only the chunks holding each member's own first or last
+    /// `count` samples, as a per-series COUNT does: the group's first or last `count`
+    /// timestamps all lie among them. Anything aggregated or filtered keeps the window.
+    #[test]
+    fn test_group_count_bounds_each_members_copy() {
+        let series = stepped_series(0, 10, 300, 0.0);
+        let options = |aggregation: Option<AggregationOptions>| MRangeOptions {
+            range: RangeOptions {
+                date_range: crate::series::TimestampRange::from_timestamps(0, 5000).unwrap(),
+                aggregation,
+                ..Default::default()
+            },
+            grouping: Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+                group_label: "grp".into(),
+            }),
+            ..Default::default()
+        };
+        let copied = |options: &MRangeOptions, limit| {
+            let member = group_member_limit(options, limit);
+            snapshot_one(&series, b"a".to_vec(), None, options, member)
+                .snapshot
+                .copied_bytes()
+        };
+
+        let raw = options(None);
+        let whole = copied(&raw, None);
+        assert!(copied(&raw, Some(SampleLimit::Tail(3))) < whole / 4);
+        assert!(copied(&raw, Some(SampleLimit::Head(3))) < whole / 4);
+
+        let aggregated = options(Some(AggregationOptions {
+            aggregations: smallvec::smallvec![AggregationType::Avg.into()],
+            bucket_duration: 50,
+            timestamp_output: Default::default(),
+            alignment: Default::default(),
+            report_empty: false,
+        }));
+        assert_eq!(copied(&aggregated, Some(SampleLimit::Tail(3))), whole);
     }
 
     /// Aggregations for the limit tests: plain, a counter (which carries a baseline across a
