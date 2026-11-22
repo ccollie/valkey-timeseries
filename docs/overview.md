@@ -235,6 +235,27 @@ Query operations are performed by one node of each shard on its local index, and
 form a full command response. Query operations are subject to increasing overhead as the cluster shard count increases,
 meaning that query operations may scale sub-linearly with increasing shard count.
 
+## Consistency during resharding
+
+A multi-series read (`TS.MRANGE`, `TS.MGET`, `TS.QUERY`, `TS.QUERYRANGE`, the label and index queries) reads each
+shard at a slightly different moment. How it behaves while slots move depends on how they are moved.
+
+* **Atomic slot migration (`CLUSTER MIGRATESLOTS`, Valkey 9.0 and later): consistent.** Series arriving on the
+  destination stay hidden from reads until the migration completes, and a read that overlaps the moment a slot changes
+  hands, on any shard it reads, fails with `A multi-shard command failed because the cluster topology has changed`.
+  Such a read can be retried as it is; the next attempt is routed by the new slot map.
+* **Key-by-key resharding with `MIGRATE` (`CLUSTER SETSLOT ... IMPORTING`/`MIGRATING`, then `MIGRATE` per batch of
+  keys, then `CLUSTER SETSLOT ... NODE`): not detected.** Each moved key looks like an ordinary `RESTORE` on the
+  destination and an ordinary delete on the source, and the slot map doesn't change until the final `SETSLOT`. A key
+  is readable on the destination as soon as it arrives. So a read that runs while keys are moving can miss a series
+  (read on the destination before it arrived, and on the source after it left) or count it twice (read on the source,
+  then moved, then read on the destination). The command succeeds, and an aggregate such as `sum` or a `GROUPBY`
+  `REDUCE` is silently off by those series.
+
+Prefer atomic slot migration where it is available. With `MIGRATE`-based resharding, treat multi-series results taken
+during the resharding as approximate, or pause the queries that need exact answers until it finishes. Single-key
+commands are unaffected: Valkey redirects them to the key's current owner.
+
 ## Aggregation push-down (TS.MRANGE / TS.MREVRANGE)
 
 Because each time series lives entirely on one shard, per-series `AGGREGATION` for `TS.MRANGE`/`TS.MREVRANGE` is

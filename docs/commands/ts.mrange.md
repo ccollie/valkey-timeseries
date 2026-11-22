@@ -427,6 +427,8 @@ O(n×m×k) where:
 
 - All filter selectors must match for a series to be included (logical AND)
 - For clustered deployments, the command fans out to all shards automatically
+- While a cluster reshards with `MIGRATE` (rather than atomic slot migration), a moving series can be missing from the
+  reply or appear in it twice; see [Consistency during resharding](../overview.md#consistency-during-resharding)
 - `EXCLUDEEMPTY` is applied on every shard and again on the coordinator, so a
   series is omitted regardless of which shard owns it
 - When using `GROUPBY`, series are grouped by the specified label value
