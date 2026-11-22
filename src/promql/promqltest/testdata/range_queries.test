@@ -72,8 +72,6 @@ eval range from 0 to 2m step 1m requests * 2
 
 clear
 
-ignore
-
 load 10s
   some_metric{env="a"} 1+1x5
   some_metric{env="b"} 2+2x5
@@ -85,8 +83,6 @@ eval instant at 1m some_metric[1m]
   some_metric{env="b"} 4 6 8 10 12
 
 clear
-
-resume
 
 load 1m
   some_metric{env="1"} 0+1x4

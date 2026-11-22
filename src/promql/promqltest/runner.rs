@@ -132,15 +132,27 @@ where
                             Err(_) => Ok(()),
                         }
                     } else {
-                        result.and_then(|result| {
-                            assert_results(
+                        result.and_then(|result| match eval_cmd.range_vector {
+                            Some(range) => assert_results_on_grid(
                                 result,
                                 eval_cmd.expected.clone(),
                                 eval_cmd.expect_ordered,
                                 name,
                                 eval_count,
                                 &eval_cmd.query,
-                            )
+                                Some(StepGrid {
+                                    start_ms: range.from.as_millis() as i64,
+                                    step_ms: range.step.as_millis() as i64,
+                                }),
+                            ),
+                            None => assert_results(
+                                result,
+                                eval_cmd.expected.clone(),
+                                eval_cmd.expect_ordered,
+                                name,
+                                eval_count,
+                                &eval_cmd.query,
+                            ),
                         })
                     };
                     record(at_line(eval_cmd.line_number, outcome))?;

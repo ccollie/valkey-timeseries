@@ -24,8 +24,20 @@ pub struct EvalInstantCmd {
     pub expected: QueryValue,
     pub expect_ordered: bool,
     pub expect_fail: bool,
+    /// The `expect range vector from <a> to <b> step <s>` grid, when given:
+    /// the expected matrix's values sit on it by position, so its sample
+    /// timestamps are checked, not only their values.
+    pub range_vector: Option<ExpectedRangeVector>,
     /// 1-based line of the `eval` directive, for failure messages.
     pub line_number: usize,
+}
+
+/// The grid an `expect range vector` directive places the expected samples on.
+#[derive(Debug, Clone, Copy)]
+pub struct ExpectedRangeVector {
+    /// Time of the first position, from the epoch.
+    pub from: Duration,
+    pub step: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +215,12 @@ impl Parser {
         let (time_str, query) = Self::parse_time_and_query(rest, lines, line_idx)?;
         let time = parse_time(&time_str)?;
 
-        let (expected, expect_ordered, expect_fail) = parse_expectations(lines, line_idx)?;
+        let Expectations {
+            expected,
+            expect_ordered,
+            expect_fail,
+            range_vector,
+        } = parse_expectations(lines, line_idx)?;
         let expect_fail = expect_fail || fail_directive;
 
         Ok(Some(Command::EvalInstant(EvalInstantCmd {
@@ -212,6 +229,7 @@ impl Parser {
             expected,
             expect_ordered,
             expect_fail,
+            range_vector,
             line_number,
         })))
     }
@@ -246,7 +264,13 @@ impl Parser {
         let start = UNIX_EPOCH + from;
         let end = UNIX_EPOCH + to;
 
-        let (expected, _expect_ordered, expect_fail) = parse_expectations(lines, line_idx)?;
+        // A range eval's grid is its own START/STEP; `expect range vector`
+        // describes an instant eval's matrix, so it has nothing to add here.
+        let Expectations {
+            expected,
+            expect_fail,
+            ..
+        } = parse_expectations(lines, line_idx)?;
 
         let cmd = EvalRangeCmd {
             start,
@@ -629,7 +653,32 @@ enum ExpectDirective {
     Ordered,
     Fail,
     String(QueryValue),
+    RangeVector(ExpectedRangeVector),
     Ignored,
+}
+
+/// `expect range vector from <from> to <to> step <step>`. `to` bounds the
+/// grid in the upstream DSL; the sample count already pins where it ends.
+fn parse_range_vector_directive(rest: &str) -> Result<ExpectedRangeVector, String> {
+    let invalid = || format!("invalid 'expect range vector' directive: {rest}");
+    let mut words = rest.split_whitespace();
+    let (Some("from"), Some(from), Some("to"), Some(_to), Some("step"), Some(step), None) = (
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+    ) else {
+        return Err(invalid());
+    };
+    let from = parse_duration(from).map_err(|e| format!("{}: {e}", invalid()))?;
+    let step = parse_duration(step).map_err(|e| format!("{}: {e}", invalid()))?;
+    if step.is_zero() {
+        return Err(invalid());
+    }
+    Ok(ExpectedRangeVector { from, step })
 }
 
 fn parse_expect_directive(trimmed_line: &str) -> Result<Option<ExpectDirective>, String> {
@@ -650,6 +699,10 @@ fn parse_expect_directive(trimmed_line: &str) -> Result<Option<ExpectDirective>,
         let value = unquote_string(raw)
             .map_err(|e| format!("Invalid expected string value '{}': {}", raw, e))?;
         return Ok(Some(ExpectDirective::String(QueryValue::String(value))));
+    }
+
+    if let Some(rest) = trimmed_line.strip_prefix("expect range vector ") {
+        return parse_range_vector_directive(rest).map(|r| Some(ExpectDirective::RangeVector(r)));
     }
 
     Ok(Some(ExpectDirective::Ignored))
@@ -718,13 +771,18 @@ fn build_expected_query_value(
     QueryValue::Matrix(expected_ranges)
 }
 
-fn parse_expectations(
-    lines: &[&str],
-    line_idx: &mut usize,
-) -> Result<(QueryValue, bool, bool), String> {
+struct Expectations {
+    expected: QueryValue,
+    expect_ordered: bool,
+    expect_fail: bool,
+    range_vector: Option<ExpectedRangeVector>,
+}
+
+fn parse_expectations(lines: &[&str], line_idx: &mut usize) -> Result<Expectations, String> {
     let mut expected_ranges: Vec<RangeSample> = Vec::new();
     let mut expect_ordered = false;
     let mut expect_fail = false;
+    let mut range_vector = None;
     let mut expected_value: Option<QueryValue> = None;
     let mut had_label_only_syntax: Vec<bool> = Vec::new();
 
@@ -759,6 +817,11 @@ fn parse_expectations(
                     consume_remaining_indented_block(lines, line_idx);
                     break;
                 }
+                ExpectDirective::RangeVector(grid) => {
+                    range_vector = Some(grid);
+                    *line_idx += 1;
+                    continue;
+                }
                 ExpectDirective::Ignored => {
                     *line_idx += 1;
                     continue;
@@ -789,7 +852,12 @@ fn parse_expectations(
     let expected =
         build_expected_query_value(expected_ranges, expected_value, had_label_only_syntax);
 
-    Ok((expected, expect_ordered, expect_fail))
+    Ok(Expectations {
+        expected,
+        expect_ordered,
+        expect_fail,
+        range_vector,
+    })
 }
 
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -858,6 +926,30 @@ pub fn parse_test_file(input: &str) -> Result<Vec<Command>, String> {
 mod tests {
     use super::*;
     use crate::promql::QueryValue;
+
+    /// `expect range vector` used to be skipped like an unknown directive, so
+    /// instant matrix expectations compared values only and any timestamps passed.
+    #[test]
+    fn expect_range_vector_sets_the_instant_eval_grid() {
+        let input = "load 10s\n  m 1+1x5\n\neval instant at 1m m[1m]\n  expect range vector from 9m10s to 10m step 10s\n  m 2 3\n";
+        let commands = parse_test_file(input).unwrap();
+        let Some(Command::EvalInstant(eval)) = commands.last() else {
+            panic!("expected an instant eval, got {commands:?}");
+        };
+        let range = eval.range_vector.expect("directive parsed");
+        assert_eq!(range.from, Duration::from_secs(550));
+        assert_eq!(range.step, Duration::from_secs(10));
+
+        for bad in [
+            "from 10s to 1m",
+            "from 10s to 1m step 0s",
+            "from 10s until 1m step 10s",
+            "from 10s to 1m step 10s extra",
+        ] {
+            let input = format!("eval instant at 1m m[1m]\n  expect range vector {bad}\n");
+            assert!(parse_test_file(&input).is_err(), "accepted `{bad}`");
+        }
+    }
 
     /// Prometheus expands `a+bxN` by repeated addition, and fixtures can depend
     /// on the rounding that accumulates: a counter that lands just above the next
