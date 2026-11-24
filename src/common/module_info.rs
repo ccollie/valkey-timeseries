@@ -11,6 +11,8 @@
 use crate::common::humanize::bytes_to_human;
 use crate::common::metrics::promql as outcomes;
 use crate::common::metrics::{self, MetricValue, Section};
+use crate::promql::engine::{admission, query_cache, query_workers};
+use crate::promql::subquery_grid_counts;
 use crate::series::index::{index_memory_usage, roaring_heap_bytes};
 use crate::series::{COMPACTION_FAILURES, COMPACTION_POLICY_SKIPS, COMPACTION_STATE_REBUILDS};
 use metered::Scalar;

@@ -202,6 +202,7 @@ required-features = ["test-utils", "enable-system-alloc"]
 
 [features]
 default = ["min-valkey-compatibility-version-8-0"]
+bench = []
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
 use-redismodule-api = [] # We don't support this feature flag which is why it is empty.
